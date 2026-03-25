@@ -1953,6 +1953,45 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
 
   const REASONS = ["Damaged", "Broken", "Weather Damage", "Theft", "Defective", "Water Damage", "Missing", "Other"];
 
+  const deleteDamage = (r) => {
+    // Restore inventory
+    const it = items.find((i) => i.id === r.itemId);
+    if (it && r.qty) {
+      const v = { ...(it.variants || getVariants(it)) };
+      const opt = r.option || "_default";
+      const curV = v[opt] || { qty: 0, wac: r.unitCost || 0 };
+      v[opt] = { ...curV, qty: (curV.qty || 0) + r.qty };
+      const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+      sI(items.map((i) => i.id === r.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+    }
+    sSh(shrinkLog.filter((x) => x.id !== r.id));
+    setDeleteWarn(null); setEnlarged(null);
+  };
+
+  const startEdit = (r) => {
+    setEditing(r); setEditQty(String(r.qty || "")); setEditReason(r.reason || "Damaged"); setEditNote(r.note || "");
+  };
+
+  const saveEdit = () => {
+    if (!editing) return;
+    const oldQty = editing.qty || 0;
+    const newQty = +editQty || 0;
+    const diff = newQty - oldQty;
+    if (diff !== 0) {
+      const it = items.find((i) => i.id === editing.itemId);
+      if (it) {
+        const v = { ...(it.variants || getVariants(it)) };
+        const opt = editing.option || "_default";
+        const curV = v[opt] || { qty: 0, wac: editing.unitCost || 0 };
+        v[opt] = { ...curV, qty: Math.max(0, (curV.qty || 0) - diff) };
+        const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+        sI(items.map((i) => i.id === editing.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+      }
+    }
+    sSh(shrinkLog.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote, lostValue: newQty * (x.unitCost || 0) } : x));
+    setEditing(null); setEnlarged(null);
+  };
+
   const incidents = shrinkLog.filter((r) => {
     if (filter === "damage" && r.type !== "damage") return false;
     if (filter === "shrinkage" && r.type !== "shrinkage") return false;
@@ -2057,10 +2096,24 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
             <h2 style={{ fontSize: 20, fontWeight: 900, color: C.red, marginBottom: 8 }}>DELETE THIS REPORT?</h2>
             <p style={{ fontSize: 14, marginBottom: 6 }}><strong>{deleteWarn.itemName}</strong> — {deleteWarn.reason}</p>
             <p style={{ color: C.t2, fontSize: 13, marginBottom: 6 }}>{deleteWarn.qty} units · {fmt$(deleteWarn.lostValue || 0)} loss · {fD(deleteWarn.date)}</p>
-            <p style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>This will remove the report. Inventory will NOT be restored — adjust manually if needed.</p>
+            <p style={{ color: C.grn, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>This will remove the report and restore {deleteWarn.qty} unit{deleteWarn.qty !== 1 ? "s" : ""} back to inventory.</p>
             <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
               <button onClick={() => setDeleteWarn(null)} style={{ ...bS, padding: "12px 28px", fontSize: 14 }}>Cancel</button>
-              <button onClick={() => { sSh(shrinkLog.filter((x) => x.id !== deleteWarn.id)); setDeleteWarn(null); }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete Report</button>
+              <button onClick={() => {
+                // Restore inventory
+                const r = deleteWarn;
+                const opt = r.option || "_default";
+                sI(items.map((it) => {
+                  if (it.id !== r.itemId) return it;
+                  const v = { ...(it.variants || getVariants(it)) };
+                  const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
+                  v[opt] = { ...curV, qty: (curV.qty || 0) + (r.qty || 0) };
+                  const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+                  return { ...it, variants: v, qtyOnHand: totalQ };
+                }));
+                sSh(shrinkLog.filter((x) => x.id !== r.id));
+                setDeleteWarn(null);
+              }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Restore Inventory</button>
             </div>
           </div>
         </Modal>
