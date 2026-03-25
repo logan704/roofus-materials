@@ -799,7 +799,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                     </div>
                   )}
                   <Rw g={8}>
-                    <Cl f={1}><div style={{ fontSize: 10, color: C.t2, marginBottom: 2 }}>QTY ({it.unit || "each"})</div><input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} style={{ ...inp, padding: "6px 8px", fontSize: 13, textAlign: "center" }} /></Cl>
+                    <Cl f={1}><div style={{ fontSize: 10, color: C.t2, marginBottom: 2 }}>QTY ({it.unit || "each"})</div><input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} onFocus={(e) => e.target.select()} style={{ ...inp, padding: "6px 8px", fontSize: 13, textAlign: "center" }} /></Cl>
                   </Rw>
                   <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11 }}>
                     <span style={{ color: C.t2 }}>Cost: {fmt$(l.unitCost)} · Sell: {fmt$(l.markupCost)}</span>
