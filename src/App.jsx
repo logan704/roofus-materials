@@ -302,7 +302,8 @@ export default function App() {
   const isA = user?.role === "admin";
   const isM = user?.role === "manager";
   const canApprove = isA || isM;
-  const canEditOrders = isA || isM;
+  const canEditOrders = true; // everyone can edit
+  const canDeleteOrders = isA || isM;
   const [matDrop, setMatDrop] = useState(false);
   const [settDrop, setSettDrop] = useState(false);
 
@@ -391,7 +392,7 @@ export default function App() {
         {pg === "settings" && isA && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
-        onDelete={canEditOrders ? (id) => {
+        onDelete={canDeleteOrders ? (id) => {
           const ord = orders.find((o) => o.id === id);
           if (ord) {
             const updatedItems = items.map((it) => {
