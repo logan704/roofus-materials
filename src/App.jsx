@@ -704,7 +704,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
                   <div key={it.id} style={{ padding: "8px 4px", borderBottom: `1px solid ${C.brd}` }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                       <div style={{ flex: "1 1 180px", minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{it.name}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span></div>
                         <div style={{ fontSize: 10, color: C.t2, marginTop: 1 }}>{it.category} · {totalStock(it)} {it.unit}</div>
                       </div>
                       {hasOpts ? (
@@ -747,7 +747,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
               return (
                 <div key={l.key} style={{ padding: "10px 0", borderBottom: `1px solid ${C.brd}`, background: needsOpt ? C.wrn + "08" : "transparent", marginLeft: needsOpt ? -8 : 0, marginRight: needsOpt ? -8 : 0, paddingLeft: needsOpt ? 8 : 0, paddingRight: needsOpt ? 8 : 0, borderRadius: needsOpt ? 6 : 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name}{l.option && l.option !== "_default" ? <span style={{ fontWeight: 400, color: C.t2 }}> · {l.option}</span> : null}</div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span>{l.option && l.option !== "_default" ? <span style={{ fontWeight: 400, color: C.t2 }}> · {l.option}</span> : null}</div>
                     <button onClick={() => rmLn(i)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
                   </div>
                   {needsOpt && (
@@ -772,7 +772,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
                     </div>
                   )}
                   <Rw g={8}>
-                    <Cl f={1}><div style={{ fontSize: 10, color: C.t2, marginBottom: 2 }}>QTY</div><input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} style={{ ...inp, padding: "6px 8px", fontSize: 13, textAlign: "center" }} /></Cl>
+                    <Cl f={1}><div style={{ fontSize: 10, color: C.t2, marginBottom: 2 }}>QTY ({it.unit || "each"})</div><input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} style={{ ...inp, padding: "6px 8px", fontSize: 13, textAlign: "center" }} /></Cl>
                   </Rw>
                   <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11 }}>
                     <span style={{ color: C.t2 }}>Cost: {fmt$(l.unitCost)} · Sell: {fmt$(l.markupCost)}</span>
@@ -1590,7 +1590,7 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
               return (
                 <div key={it.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px", borderBottom: `1px solid ${C.brd}` }}>
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>{it.name}</div>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span></div>
                     <div style={{ fontSize: 10, color: C.t2 }}>{it.category}{it.options?.length ? ` · ${it.options.length} options` : ""}</div>
                   </div>
                   <button onClick={() => addItem(it)} disabled={!!added}
@@ -1613,7 +1613,7 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
                   <button onClick={moveUp} disabled={i === 0} style={{ background: "none", border: "none", color: i === 0 ? C.brd : C.t2, cursor: i === 0 ? "default" : "pointer", padding: 0, lineHeight: 1 }}><ArrowUp size={11} /></button>
                   <button onClick={moveDown} disabled={i === tplItems.length - 1} style={{ background: "none", border: "none", color: i === tplItems.length - 1 ? C.brd : C.t2, cursor: i === tplItems.length - 1 ? "default" : "pointer", padding: 0, lineHeight: 1 }}><ArrowDown size={11} /></button>
                 </div>
-                <div style={{ flex: 1, fontSize: 12, fontWeight: 600 }}>{it.name}{ti.option ? <span style={{ color: C.t2, fontWeight: 400 }}> · {ti.option}</span> : null}</div>
+                <div style={{ flex: 1, fontSize: 12, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span>{ti.option ? <span style={{ color: C.t2, fontWeight: 400 }}> · {ti.option}</span> : null}</div>
                 <input type="number" min="1" value={ti.qty} onChange={(e) => { const n = [...tplItems]; n[i] = { ...n[i], qty: Math.max(1, +e.target.value) }; setTplItems(n); }} style={{ ...inp, width: 60, padding: "4px 6px", textAlign: "center", fontSize: 12 }} />
                 <button onClick={() => setTplItems(tplItems.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={12} /></button>
               </div>
