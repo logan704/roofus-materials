@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
-import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download } from "lucide-react";
+import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 // Storage imported from ./storage.js
 import { ld, sv, ldL, svL } from "./storage.js"
@@ -25,6 +25,30 @@ const MN = `'IBM Plex Mono',monospace`;
 const BC = `'Barlow Condensed',sans-serif`;
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+// Compress and resize photo from file input → base64 string
+function compressPhoto(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const MAX = 800;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.5));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 const fmt$ = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fD = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const hP = (p) => { let h = 0; for (let i = 0; i < p.length; i++) { h = ((h << 5) - h) + p.charCodeAt(i); h |= 0; } return "h" + Math.abs(h).toString(36); };
@@ -85,22 +109,28 @@ function downloadPDF(order, items) {
   const ls = order.lines || [];
   const tCost = ls.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
   const tSell = ls.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
+  const tSupplier = ls.reduce((s, l) => s + l.qty * (l.supplierCost || 0), 0);
   const marginPct = tSell > 0 ? ((1 - tCost / tSell) * 100).toFixed(1) : "0";
+  const savingsVsMarkup = tSell - tCost;
+  const savingsVsSupplier = tSupplier - tCost;
   const rows = ls.map((l) => {
     const it = iMap[l.itemId] || { name: "?", unit: "" };
     const opt = l.option && l.option !== "_default" ? l.option : "—";
-    return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r">${fmt$(l.markupCost)}</td><td class="r">${fmt$(l.qty*l.unitCost)}</td><td class="r" style="font-weight:700">${fmt$(l.qty*l.markupCost)}</td></tr>`;
+    return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r">${fmt$(l.markupCost)}</td><td class="r">${fmt$(l.supplierCost||0)}</td><td class="r">${fmt$(l.qty*l.unitCost)}</td><td class="r" style="font-weight:700">${fmt$(l.qty*l.markupCost)}</td></tr>`;
   }).join("");
   const html = `<!DOCTYPE html><html><head><title>${(order.poNumber||"Order")} Material Order</title>
-<style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:760px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#666}td{padding:6px;border-bottom:1px solid #ddd;font-size:11px}.r{text-align:right}.hd{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234}.tot{margin-top:14px;padding:12px;background:#f0f2f5;border-radius:5px;border-left:4px solid #B22234}.tr{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}.trb{font-size:14px;font-weight:800;border-top:2px solid #1B2A4A;padding-top:7px;margin-top:5px}@media print{body{padding:20px}@page{margin:0.5in}}</style></head><body>
+<style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#666}td{padding:6px;border-bottom:1px solid #ddd;font-size:11px}.r{text-align:right}.hd{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234}.tot{margin-top:14px;padding:12px;background:#f0f2f5;border-radius:5px;border-left:4px solid #B22234}.tr{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}.trb{font-size:14px;font-weight:800;border-top:2px solid #1B2A4A;padding-top:7px;margin-top:5px}.sav{margin-top:10px;padding:10px;background:#d4edda;border-radius:4px;font-size:11px}@media print{body{padding:20px}@page{margin:0.5in}}</style></head><body>
 <div class="hd"><div><div style="font-size:24px;font-weight:900;letter-spacing:-0.02em">ROOFUS<span style="color:#B22234">.</span></div><div style="font-size:10px;color:#666;margin-top:2px">Construction, LLC · Columbia, MO</div></div>
 <div style="text-align:right;font-size:11px;color:#666"><div style="font-weight:800;font-size:13px;color:#1B2A4A">${order.type==="return"?"RETURN":"MATERIAL ORDER"}</div><div style="margin-top:3px">PO: <strong style="color:#1a1a1a">${order.poNumber||"—"}</strong></div><div>Date: ${fD(order.date)}</div><div>By: ${order.userName||"—"}</div>
 <div style="margin-top:4px"><span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;background:${order.status==="approved"?"#d4edda":"#fff3cd"};color:${order.status==="approved"?"#155724":"#856404"}">${(order.status||"pending").toUpperCase()}</span></div></div></div>
 ${order.jobName?`<div style="margin-bottom:12px;font-size:12px"><strong>Job:</strong> ${order.jobName}${order.jobAddress?" — "+order.jobAddress:""}</div>`:""}
-<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r">Sell Price</th><th class="r">Cost Ext</th><th class="r">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r">Markup Price</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="tot"><div class="tr"><span>Total (Our Cost):</span><span>${fmt$(tCost)}</span></div>
-<div class="tr trb"><span>Total (Sell Price):</span><span>${fmt$(tSell)}</span></div>
-<div class="tr" style="color:#1E8449"><span>Margin:</span><span>${fmt$(tSell-tCost)} (${marginPct}%)</span></div></div>
+<div class="tr trb"><span>Total (Markup Price):</span><span>${fmt$(tSell)}</span></div>
+<div class="tr"><span>Markup Margin:</span><span style="color:#1E8449">${fmt$(savingsVsMarkup)} (${marginPct}%)</span></div>
+${tSupplier > 0 ? `<div class="tr" style="border-top:1px solid #ccc;padding-top:4px;margin-top:4px"><span>Total (Supplier Would Charge):</span><span>${fmt$(tSupplier)}</span></div>
+<div class="tr"><span>Savings vs Supplier:</span><span style="color:${savingsVsSupplier >= 0 ? '#1E8449' : '#B22234'}">${savingsVsSupplier >= 0 ? '+' : ''}${fmt$(savingsVsSupplier)}</span></div>` : ''}
+</div>
 ${order.notes?`<div style="margin-top:14px;padding:8px;background:#f5f5f5;border-radius:4px;font-size:11px"><strong>Notes:</strong> ${order.notes}</div>`:""}
 <div style="margin-top:30px;text-align:center;font-size:8px;color:#bbb">Roofus Construction, LLC · Columbia, MO</div></body></html>`;
 
@@ -120,6 +150,10 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
   const ls = order.lines || [];
   const tCost = ls.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
   const tSell = ls.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
+  const tSupplier = ls.reduce((s, l) => s + l.qty * (l.supplierCost || 0), 0);
+  const savingsVsMarkup = tSell - tCost;
+  const savingsVsSupplier = tSupplier - tCost;
+  const marginPct = tSell > 0 ? ((1 - tCost / tSell) * 100).toFixed(1) : "0";
   const [showDeleteWarn, setShowDeleteWarn] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editLines, setEditLines] = useState([]);
@@ -153,7 +187,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
       <div style={{ overflowX: "auto", marginBottom: 14 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-            {["Item", "Color/Style", "Qty", "Our Cost", "Sell", "Cost Ext", "Sell Ext"].map((h) => (
+            {["Item", "Color/Style", "Qty", "Our Cost", "Markup", "Supplier $", "Cost Ext", "Sell Ext"].map((h) => (
               <th key={h} style={{ padding: "8px", textAlign: ["Item", "Color/Style"].includes(h) ? "left" : "right", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
             ))}
           </tr></thead>
@@ -166,6 +200,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{l.qty} {it.unit}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{fmt$(l.unitCost)}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{fmt$(l.markupCost)}</td>
+                <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN, color: C.blu }}>{fmt$(l.supplierCost || 0)}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{fmt$(l.qty * l.unitCost)}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN, fontWeight: 700, color: C.ac }}>{fmt$(l.qty * l.markupCost)}</td>
               </tr>
@@ -173,10 +208,22 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
           })}</tbody>
         </table>
       </div>
+      {/* TOTALS & SAVINGS */}
       <div style={{ background: C.sf, borderRadius: 8, padding: 14, marginBottom: 14, borderLeft: `4px solid ${C.ac}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>Our Cost</span><span style={{ fontFamily: MN }}>{fmt$(tCost)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, borderTop: `2px solid ${C.brdL}`, paddingTop: 8, marginTop: 6 }}><span>Sell Price</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)} ({tSell > 0 ? ((1 - tCost / tSell) * 100).toFixed(1) : 0}%)</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, borderTop: `2px solid ${C.brdL}`, paddingTop: 8, marginTop: 6 }}><span>Markup Price</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Markup Margin</span><span style={{ fontFamily: MN }}>{fmt$(savingsVsMarkup)} ({marginPct}%)</span></div>
+        {tSupplier > 0 && (
+          <>
+            <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 8, paddingTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>Supplier Would Charge</span><span style={{ fontFamily: MN }}>{fmt$(tSupplier)}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: savingsVsSupplier >= 0 ? C.grn : C.red, marginTop: 2 }}>
+                <span>Savings vs Supplier</span>
+                <span style={{ fontFamily: MN, fontWeight: 700 }}>{savingsVsSupplier >= 0 ? "+" : ""}{fmt$(savingsVsSupplier)}</span>
+              </div>
+            </div>
+          </>
+        )}
       </div>
       {order.notes && <div style={{ fontSize: 12, color: C.t2, marginBottom: 14, padding: 10, background: C.sf, borderRadius: 6 }}><strong>Notes:</strong> {order.notes}</div>}
 
@@ -279,17 +326,18 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
           <NavBtn icon={Home} label="Home" active={pg === "home"} onClick={() => setPg("home")} />
           {canApprove && <NavBtn icon={Clock} label="Approvals" active={pg === "approvals"} onClick={() => setPg("approvals")} badge={pendCt} />}
+          {(isA || isM) && <NavBtn icon={Camera} label="Report Damage" active={pg === "damage"} onClick={() => setPg("damage")} />}
 
           {/* Materials Dropdown - admin only */}
           {isA && <div style={{ position: "relative" }}>
             <button onClick={() => { setMatDrop(!matDrop); setSettDrop(false); }}
-              style={{ background: ["items","inventory","shrinkage","supplier","templates"].includes(pg) ? C.sf : "transparent", border: "none",
-                color: ["items","inventory","shrinkage","supplier","templates"].includes(pg) ? C.ac : C.t2,
+              style={{ background: ["items","inventory","shrinkage","supplier","templates","gallery"].includes(pg) ? C.sf : "transparent", border: "none",
+                color: ["items","inventory","shrinkage","supplier","templates","gallery"].includes(pg) ? C.ac : C.t2,
                 padding: "7px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, transition: "all .15s" }}>
               <Package size={14} /> Materials <ChevronDown size={12} style={{ transform: matDrop ? "rotate(180deg)" : "rotate(0)", transition: "transform .2s" }} />
             </button>
             {matDrop && <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 180, zIndex: 200, overflow: "hidden" }}>
-              {[{ pg: "items", icon: Layers, l: "Items" }, { pg: "inventory", icon: Archive, l: "Receive Inventory" }, { pg: "shrinkage", icon: AlertTriangle, l: "Physical Count" }, { pg: "supplier", icon: DollarSign, l: "Supplier Cost" }, { pg: "templates", icon: Copy, l: "Templates" }].map((m) => (
+              {[{ pg: "items", icon: Layers, l: "Items" }, { pg: "inventory", icon: Archive, l: "Receive Inventory" }, { pg: "shrinkage", icon: AlertTriangle, l: "Physical Count" }, { pg: "gallery", icon: Image, l: "Reported Damage" }, { pg: "supplier", icon: DollarSign, l: "Supplier Cost" }, { pg: "templates", icon: Copy, l: "Templates" }].map((m) => (
                 <button key={m.pg} onClick={() => setPg(m.pg)}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px", border: "none", background: pg === m.pg ? C.sf : "transparent",
                     color: pg === m.pg ? C.ac : C.txt, fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "left" }}>
@@ -334,6 +382,8 @@ export default function App() {
         {pg === "items" && isA && <ItemMgr items={items} sI={sI} />}
         {pg === "inventory" && isA && <InvMgr items={items} sI={sI} />}
         {pg === "shrinkage" && isA && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
+        {pg === "damage" && (isA || isM) && <DamageReport items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} user={user} />}
+        {pg === "gallery" && isA && <DamageGallery shrinkLog={shrinkLog} items={items} />}
         {pg === "supplier" && isA && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && isA && <TplMgr templates={templates} sT={sT} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} isA={isA} isM={isM} view={setVOrd} sO={sO} />}
@@ -447,8 +497,7 @@ function Auth({ users, sU, login }) {
 }
 
 // ═══ HOME ═══
-function HomePage({ isA, go, pendCt, templates }) {
-  const [showTpl, setShowTpl] = useState(false);
+function HomePage({ isA, isM, go, pendCt, templates }) {
   return (
     <div className="fu">
       <div style={{ textAlign: "center", paddingTop: 40, paddingBottom: 30 }}>
@@ -459,13 +508,28 @@ function HomePage({ isA, go, pendCt, templates }) {
         <BigBtn icon={<FileText size={40} />} label="Start Order" sub="Build a new material order" color={RED} onClick={() => go("order")} />
         <BigBtn icon={<RotateCcw size={40} />} label="Start Return" sub="Return materials to inventory" color={C.blu} onClick={() => go("return")} />
       </div>
-      {isA && pendCt > 0 && (
+      {(isA || isM) && pendCt > 0 && (
         <div style={{ ...crd, maxWidth: 700, margin: "30px auto 0", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => go("approvals")}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ background: "#E6A81722", borderRadius: 8, padding: 10, display: "flex" }}><Clock size={20} color={C.wrn} /></div>
             <div><div style={{ fontWeight: 700 }}>{pendCt} order{pendCt > 1 ? "s" : ""} pending approval</div><div style={{ fontSize: 12, color: C.t2 }}>Review and approve submitted orders</div></div>
           </div>
           <ChevronRight size={18} color={C.t2} />
+        </div>
+      )}
+      {/* Templates — visible to everyone */}
+      {templates.length > 0 && (
+        <div style={{ maxWidth: 700, margin: "20px auto 0" }}>
+          <div style={{ ...lbl, marginBottom: 8 }}>Quick Start from Template</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {templates.map((t) => (
+              <button key={t.id} onClick={() => go("order")} style={{ ...crd, cursor: "pointer", padding: "14px 18px", border: `2px solid ${C.brd}`, flex: "1 1 200px", textAlign: "left", transition: "all .15s" }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = RED; }} onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.brd; }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{t.name}</div>
+                <div style={{ fontSize: 11, color: C.t2, marginTop: 4 }}>{(t.items || []).length} items</div>
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -1382,8 +1446,14 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
           {!tplItems.length && <div style={{ color: C.t2, fontSize: 12, padding: 16 }}>Add items from the left</div>}
           {tplItems.map((ti, i) => {
             const it = iMap[ti.itemId] || { name: "?", unit: "" };
+            const moveUp = () => { if (i === 0) return; const n = [...tplItems]; [n[i-1], n[i]] = [n[i], n[i-1]]; setTplItems(n); };
+            const moveDown = () => { if (i === tplItems.length - 1) return; const n = [...tplItems]; [n[i], n[i+1]] = [n[i+1], n[i]]; setTplItems(n); };
             return (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.brd}` }}>
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0", borderBottom: `1px solid ${C.brd}` }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  <button onClick={moveUp} disabled={i === 0} style={{ background: "none", border: "none", color: i === 0 ? C.brd : C.t2, cursor: i === 0 ? "default" : "pointer", padding: 0, lineHeight: 1 }}><ArrowUp size={11} /></button>
+                  <button onClick={moveDown} disabled={i === tplItems.length - 1} style={{ background: "none", border: "none", color: i === tplItems.length - 1 ? C.brd : C.t2, cursor: i === tplItems.length - 1 ? "default" : "pointer", padding: 0, lineHeight: 1 }}><ArrowDown size={11} /></button>
+                </div>
                 <div style={{ flex: 1, fontSize: 12, fontWeight: 600 }}>{it.name}{ti.option ? <span style={{ color: C.t2, fontWeight: 400 }}> · {ti.option}</span> : null}</div>
                 <input type="number" min="1" value={ti.qty} onChange={(e) => { const n = [...tplItems]; n[i] = { ...n[i], qty: Math.max(1, +e.target.value) }; setTplItems(n); }} style={{ ...inp, width: 60, padding: "4px 6px", textAlign: "center", fontSize: 12 }} />
                 <button onClick={() => setTplItems(tplItems.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={12} /></button>
@@ -1681,6 +1751,273 @@ function ShrinkageMgr({ items, sI, shrinkLog, sSh }) {
           </tbody>
         </table>
       </div></div>
+    </div>
+  );
+}
+
+// ═══ DAMAGE REPORT (for managers + admin) ═══
+function DamageReport({ items, sI, shrinkLog, sSh, user }) {
+  const [sel, setSel] = useState("");
+  const [selOpt, setSelOpt] = useState("");
+  const [qty, setQty] = useState("");
+  const [reason, setReason] = useState("Damaged");
+  const [note, setNote] = useState("");
+  const [photo, setPhoto] = useState(null); // base64
+  const [photoName, setPhotoName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const REASONS = ["Damaged", "Broken", "Weather Damage", "Theft", "Defective", "Water Damage", "Missing", "Other"];
+  const it = items.find((i) => i.id === sel);
+  const opts = it ? ((it.options && it.options.length > 0) ? it.options : ["_default"]) : [];
+  const variants = it ? getVariants(it) : {};
+  const selVariant = selOpt ? (variants[selOpt] || { qty: 0, wac: it?.wacCost || 0 }) : null;
+
+  const filtered = items.filter((i) => i.active !== false && (!search || i.name.toLowerCase().includes(search.toLowerCase()))).sort((a, b) => a.name.localeCompare(b.name));
+
+  const handlePhoto = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoName(file.name);
+    const compressed = await compressPhoto(file);
+    setPhoto(compressed);
+  };
+
+  const submit = () => {
+    if (!sel || !selOpt || !qty || +qty <= 0 || !photo) return;
+    setSaving(true);
+
+    // Deduct from inventory
+    const curV = variants[selOpt] || { qty: 0, wac: it.wacCost || 0 };
+    const newQty = Math.max(0, (curV.qty || 0) - (+qty));
+    const newVariants = { ...variants, [selOpt]: { ...curV, qty: newQty } };
+    const totalQ = Object.values(newVariants).reduce((s, x) => s + (x.qty || 0), 0);
+    sI(items.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
+
+    // Log it
+    const displayName = it.name + (selOpt !== "_default" ? ` (${selOpt})` : "");
+    const entry = {
+      id: uid(), itemId: sel, itemName: displayName, option: selOpt,
+      qty: +qty, unitCost: curV.wac || 0, lostValue: (+qty) * (curV.wac || 0),
+      reason, note: note.trim(), photo,
+      reportedBy: user?.name || "Unknown",
+      date: new Date().toISOString(), type: "damage",
+    };
+    sSh([entry, ...shrinkLog]);
+    setSaving(false);
+    setDone(true);
+    setTimeout(() => {
+      setDone(false); setSel(""); setSelOpt(""); setQty(""); setReason("Damaged"); setNote(""); setPhoto(null); setPhotoName("");
+    }, 2500);
+  };
+
+  const canSubmit = sel && selOpt && qty && +qty > 0 && photo && note.trim();
+
+  return (
+    <div className="fu">
+      <h1 style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, fontFamily: BC }}>REPORT DAMAGE</h1>
+      <p style={{ color: C.t2, fontSize: 13, marginBottom: 20 }}>Report damaged, broken, or missing materials. Photo required. Inventory will be automatically adjusted.</p>
+
+      {done && (
+        <div style={{ ...crd, marginBottom: 16, borderLeft: `4px solid ${C.grn}`, display: "flex", alignItems: "center", gap: 10, padding: 14 }}>
+          <CheckCircle size={20} color={C.grn} />
+          <span style={{ fontWeight: 700, color: C.grn }}>Damage reported. Inventory updated.</span>
+        </div>
+      )}
+
+      <div style={{ ...crd, marginBottom: 20 }}>
+        <Fld label="Search & Select Item">
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search items..." style={inp} />
+          <select value={sel} onChange={(e) => { setSel(e.target.value); setSelOpt(""); }} style={{ ...inp, cursor: "pointer", marginTop: 8 }}>
+            <option value="">Choose item...</option>
+            {filtered.map((i) => <option key={i.id} value={i.id}>{i.name} — {totalStock(i)} {i.unit}</option>)}
+          </select>
+        </Fld>
+
+        {it && opts.length > 0 && (
+          <Fld label={opts[0] === "_default" ? "Variant" : "Select Color / Style"}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {opts.map((opt) => {
+                const v = variants[opt] || { qty: 0 };
+                const active = selOpt === opt;
+                return (
+                  <button key={opt} onClick={() => setSelOpt(opt)}
+                    style={{ ...bS, padding: "8px 14px", fontSize: 12, borderColor: active ? C.ac : C.brd, color: active ? C.ac : C.txt, background: active ? C.ac + "15" : "transparent" }}>
+                    <span style={{ fontWeight: 700 }}>{opt === "_default" ? it.name : opt}</span>
+                    <span style={{ fontSize: 10, color: C.t2, marginLeft: 6 }}>{v.qty} on hand</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Fld>
+        )}
+
+        {selOpt && (
+          <>
+            <Rw g={12}>
+              <Cl><Fld label="Qty Damaged"><input type="number" min="1" max={selVariant?.qty || 999} value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" style={inp} /></Fld></Cl>
+              <Cl><Fld label="Reason"><select value={reason} onChange={(e) => setReason(e.target.value)} style={{ ...inp, cursor: "pointer" }}>{REASONS.map((r) => <option key={r}>{r}</option>)}</select></Fld></Cl>
+            </Rw>
+
+            {qty && +qty > 0 && selVariant && (
+              <div style={{ background: C.red + "12", border: `1px solid ${C.red}33`, borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 12 }}>
+                <strong>Impact:</strong> {selVariant.qty || 0} on hand → <strong>{Math.max(0, (selVariant.qty || 0) - (+qty))}</strong> after deduction · <strong style={{ color: C.red }}>{fmt$((+qty) * (selVariant.wac || 0))}</strong> loss
+              </div>
+            )}
+
+            {/* PHOTO UPLOAD — REQUIRED */}
+            <Fld label="Photo of Damage (required)">
+              <div style={{ border: `2px dashed ${photo ? C.grn : C.brd}`, borderRadius: 8, padding: photo ? 8 : 24, textAlign: "center", cursor: "pointer", background: photo ? C.grn + "08" : C.sf, position: "relative" }}
+                onClick={() => document.getElementById("dmg-photo-input")?.click()}>
+                {photo ? (
+                  <div>
+                    <img src={photo} alt="Damage" style={{ maxHeight: 200, maxWidth: "100%", borderRadius: 6, marginBottom: 6 }} />
+                    <div style={{ fontSize: 11, color: C.grn, fontWeight: 600 }}><CheckCircle size={12} style={{ verticalAlign: "middle" }} /> {photoName}</div>
+                    <div style={{ fontSize: 10, color: C.t2, marginTop: 2 }}>Click to replace</div>
+                  </div>
+                ) : (
+                  <div>
+                    <Camera size={32} color={C.t2} style={{ marginBottom: 8 }} />
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.txt }}>Take Photo or Upload</div>
+                    <div style={{ fontSize: 11, color: C.t2, marginTop: 4 }}>Tap to open camera or select a file</div>
+                  </div>
+                )}
+                <input id="dmg-photo-input" type="file" accept="image/*" capture="environment" onChange={handlePhoto} style={{ display: "none" }} />
+              </div>
+            </Fld>
+
+            <Fld label="Notes (required — describe the damage)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What happened? Describe the damage..." style={{ ...inp, borderColor: note.trim() ? C.brd : C.red + "66" }} /></Fld>
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+              <button onClick={submit} disabled={!canSubmit || saving}
+                style={{ ...bP, padding: "14px 30px", fontSize: 15, background: canSubmit ? C.red : C.brd, opacity: canSubmit ? 1 : 0.5 }}>
+                <AlertTriangle size={16} /> Report Damage
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Recent damage reports by this user */}
+      <h2 style={{ fontSize: 16, fontWeight: 800, marginBottom: 10 }}>Your Recent Reports</h2>
+      <div style={{ ...crd, padding: 0 }}><div style={{ overflowX: "auto", maxHeight: 300 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead><tr>{["Date", "Item", "Qty", "Reason", "Value", "Photo"].map((h) => <th key={h} style={{ padding: "9px 8px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {shrinkLog.filter((r) => r.type === "damage" && r.reportedBy === user?.name).length === 0 && <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: C.t2 }}>No damage reports yet.</td></tr>}
+            {shrinkLog.filter((r) => r.type === "damage" && r.reportedBy === user?.name).slice(0, 20).map((r) => (
+              <tr key={r.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
+                <td style={{ padding: "7px 8px", color: C.t2 }}>{fD(r.date)}</td>
+                <td style={{ padding: "7px 8px", fontWeight: 600 }}>{r.itemName}</td>
+                <td style={{ padding: "7px 8px", fontFamily: MN }}>{r.qty}</td>
+                <td style={{ padding: "7px 8px" }}>{r.reason}</td>
+                <td style={{ padding: "7px 8px", fontFamily: MN, color: C.red }}>{fmt$(r.lostValue || 0)}</td>
+                <td style={{ padding: "7px 8px" }}>{r.photo ? <img src={r.photo} alt="" style={{ height: 30, borderRadius: 3 }} /> : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div></div>
+    </div>
+  );
+}
+
+// ═══ DAMAGE GALLERY (admin only) ═══
+function DamageGallery({ shrinkLog, items }) {
+  const [filter, setFilter] = useState("all"); // all, damage, shrinkage, found
+  const [search, setSearch] = useState("");
+  const [enlarged, setEnlarged] = useState(null);
+
+  const incidents = shrinkLog.filter((r) => {
+    if (filter === "damage" && r.type !== "damage") return false;
+    if (filter === "shrinkage" && r.type !== "shrinkage") return false;
+    if (filter === "found" && r.type !== "found") return false;
+    if (search && !(r.itemName || "").toLowerCase().includes(search.toLowerCase()) && !(r.reason || "").toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const withPhotos = incidents.filter((r) => r.photo);
+  const totalLoss = incidents.filter((r) => r.type !== "found").reduce((s, r) => s + (r.lostValue || 0), 0);
+  const totalDamage = incidents.filter((r) => r.type === "damage").length;
+
+  return (
+    <div className="fu">
+      <h1 style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, fontFamily: BC }}>REPORTED DAMAGE</h1>
+      <p style={{ color: C.t2, fontSize: 13, marginBottom: 20 }}>Browse all damage reports and shrinkage incidents. Click photos or notes to enlarge.</p>
+
+      <Rw g={14}>
+        <Stat label="Total Incidents" value={incidents.length} color={NAVY} />
+        <Stat label="Photo Reports" value={withPhotos.length} sub="with documentation" color={C.ac} />
+        <Stat label="Total Loss" value={fmt$(totalLoss)} color={C.red} />
+        <Stat label="Damage Reports" value={totalDamage} sub="from team" color={C.wrn} />
+      </Rw>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 16, marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: "1 1 200px" }}>
+          <Search size={12} style={{ position: "absolute", left: 8, top: 11, color: C.t2 }} />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search..." style={{ ...inp, paddingLeft: 26 }} />
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {[{ k: "all", l: "All" }, { k: "damage", l: "Damage" }, { k: "shrinkage", l: "Physical Count" }, { k: "found", l: "Found" }].map((f) => (
+            <button key={f.k} onClick={() => setFilter(f.k)} style={{ ...bS, padding: "8px 14px", fontSize: 12, background: filter === f.k ? NAVY : "transparent", color: filter === f.k ? "#fff" : C.txt, borderColor: filter === f.k ? NAVY : C.brd }}>{f.l}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* PHOTO GRID */}
+      {withPhotos.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ ...lbl, marginBottom: 10 }}>Photos ({withPhotos.length})</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {withPhotos.slice(0, 50).map((r) => (
+              <div key={r.id} onClick={() => setEnlarged(r)} style={{ cursor: "pointer", position: "relative", borderRadius: 8, overflow: "hidden", border: `1px solid ${C.brd}`, width: 140, height: 140 }}>
+                <img src={r.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,.7)", padding: "4px 6px", color: "#fff", fontSize: 9 }}>
+                  <div style={{ fontWeight: 700 }}>{r.itemName}</div>
+                  <div>{r.reason} · {fD(r.date)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* FULL LIST */}
+      <div style={{ ...crd, padding: 0 }}><div style={{ overflowX: "auto", maxHeight: 500 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead><tr>{["Date", "Item", "Type", "Reason", "Qty", "Value", "Reported By", "Photo", "Notes"].map((h) => <th key={h} style={{ padding: "9px 8px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {!incidents.length && <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: C.t2 }}>No incidents found.</td></tr>}
+            {incidents.slice(0, 100).map((r) => (
+              <tr key={r.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
+                <td style={{ padding: "7px 8px", color: C.t2 }}>{fD(r.date)}</td>
+                <td style={{ padding: "7px 8px", fontWeight: 600 }}>{r.itemName}</td>
+                <td style={{ padding: "7px 8px" }}><span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 3, background: r.type === "damage" ? C.wrn + "20" : r.type === "found" ? C.grn + "20" : C.red + "20", color: r.type === "damage" ? C.wrn : r.type === "found" ? C.grn : C.red }}>{r.type}</span></td>
+                <td style={{ padding: "7px 8px" }}>{r.reason || "—"}</td>
+                <td style={{ padding: "7px 8px", fontFamily: MN }}>{r.qty}</td>
+                <td style={{ padding: "7px 8px", fontFamily: MN, color: C.red }}>{fmt$(r.lostValue || 0)}</td>
+                <td style={{ padding: "7px 8px", color: C.t2 }}>{r.reportedBy || "—"}</td>
+                <td style={{ padding: "7px 8px" }}>{r.photo ? <img src={r.photo} alt="" style={{ height: 28, borderRadius: 3, cursor: "pointer" }} onClick={() => setEnlarged(r)} /> : "—"}</td>
+                <td style={{ padding: "7px 8px", color: r.note ? C.ac : C.t2, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: r.note ? "pointer" : "default", textDecoration: r.note ? "underline" : "none" }} onClick={() => r.note && setEnlarged(r)}>{r.note || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div></div>
+
+      {/* Enlarged photo modal */}
+      {enlarged && (
+        <Modal open onClose={() => setEnlarged(null)} title={`${enlarged.itemName} — ${enlarged.reason}`} wide>
+          <img src={enlarged.photo} alt="" style={{ width: "100%", borderRadius: 8, marginBottom: 12 }} />
+          <div style={{ fontSize: 13 }}>
+            <div><strong>Date:</strong> {fD(enlarged.date)}</div>
+            <div><strong>Qty:</strong> {enlarged.qty} · <strong>Value:</strong> <span style={{ color: C.red }}>{fmt$(enlarged.lostValue || 0)}</span></div>
+            <div><strong>Reported by:</strong> {enlarged.reportedBy || "—"}</div>
+            {enlarged.note && <div style={{ marginTop: 6 }}><strong>Notes:</strong> {enlarged.note}</div>}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
