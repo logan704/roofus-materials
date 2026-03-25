@@ -607,17 +607,6 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
     }
   }, []);
 
-  const active = items.filter((i) => i.active !== false);
-  const cats = ["All", ...new Set(active.map((i) => i.category))];
-  const filt = active.filter((i) => {
-    if (cat !== "All" && i.category !== cat) return false;
-    if (search && !i.name.toLowerCase().includes(search.toLowerCase()) && !(i.options || []).join(" ").toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
-  const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
-  const tCost = lines.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
-  const tSell = lines.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
-
   const addLn = (it, opt) => {
     const key = it.id + ":" + (opt || "");
     if (lines.find((l) => l.key === key)) return;
