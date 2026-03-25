@@ -288,6 +288,7 @@ export default function App() {
   const [shrinkLog, setShrinkLog] = useState([]);
   const [pg, setPg] = useState("home");
   const [vOrd, setVOrd] = useState(null);
+  const [startTpl, setStartTpl] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -387,8 +388,8 @@ export default function App() {
       </div>
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
-        {pg === "home" && <HomePage isA={isA} isM={isM} go={setPg} pendCt={pendCt} templates={templates} />}
-        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} sO={sO} sI={sI} templates={templates} go={() => setPg("home")} />}
+        {pg === "home" && <HomePage isA={isA} isM={isM} go={(page, tpl) => { setStartTpl(tpl || null); setPg(page); }} pendCt={pendCt} templates={templates} />}
+        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} sO={sO} sI={sI} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
         {pg === "approvals" && canApprove && <Approvals orders={orders} sO={sO} items={items} sI={sI} view={setVOrd} />}
         {pg === "items" && isA && <ItemMgr items={items} sI={sI} />}
         {pg === "inventory" && isA && <InvMgr items={items} sI={sI} />}
@@ -550,7 +551,7 @@ function HomePage({ isA, isM, go, pendCt, templates }) {
           <div style={{ ...lbl, marginBottom: 8 }}>Quick Start from Template</div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {templates.map((t) => (
-              <button key={t.id} onClick={() => go("order")} style={{ ...crd, cursor: "pointer", padding: "14px 18px", border: `2px solid ${C.brd}`, flex: "1 1 200px", textAlign: "left", transition: "all .15s" }}
+              <button key={t.id} onClick={() => go("order", t)} style={{ ...crd, cursor: "pointer", padding: "14px 18px", border: `2px solid ${C.brd}`, flex: "1 1 200px", textAlign: "left", transition: "all .15s" }}
                 onMouseEnter={(e) => { e.currentTarget.style.borderColor = RED; }} onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.brd; }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{t.name}</div>
                 <div style={{ fontSize: 11, color: C.t2, marginTop: 4 }}>{(t.items || []).length} items</div>
@@ -575,10 +576,36 @@ function BigBtn({ icon, label, sub, color, onClick }) {
 }
 
 // ═══ ORDER BUILDER ═══
-function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
+function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, clearStartTpl, go }) {
   const [po, setPo] = useState(""); const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
   const [step, setStep] = useState("choose"); // choose, build
+
+  const active = items.filter((i) => i.active !== false);
+  const cats = ["All", ...new Set(active.map((i) => i.category))];
+  const filt = active.filter((i) => {
+    if (cat !== "All" && i.category !== cat) return false;
+    if (search && !i.name.toLowerCase().includes(search.toLowerCase()) && !(i.options || []).join(" ").toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+  const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
+  const tCost = lines.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
+  const tSell = lines.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
+
+  // Auto-load template if passed from home page
+  useEffect(() => {
+    if (startTpl && iMap) {
+      const newLines = (startTpl.items || []).map((ti) => {
+        const it = iMap[ti.itemId];
+        if (!it) return null;
+        const hasOpts = it.options && it.options.length > 0;
+        return { key: ti.itemId + ":" + uid(), itemId: ti.itemId, qty: ti.qty || 1, option: hasOpts ? "" : "_default", unitCost: it.wacCost || 0, markupCost: (it.wacCost || 0) * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0, needsOption: hasOpts };
+      }).filter(Boolean);
+      setLines(newLines);
+      setStep("build");
+      if (clearStartTpl) clearStartTpl();
+    }
+  }, []);
 
   const active = items.filter((i) => i.active !== false);
   const cats = ["All", ...new Set(active.map((i) => i.category))];
