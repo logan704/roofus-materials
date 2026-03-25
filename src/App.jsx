@@ -1056,6 +1056,11 @@ function InvMgr({ items, sI }) {
   const [done, setDone] = useState(false);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("All");
+  const [deleteReceipt, setDeleteReceipt] = useState(null);
+  const [editReceipt, setEditReceipt] = useState(null);
+  const [erQty, setErQty] = useState("");
+  const [erCost, setErCost] = useState("");
+  const [erNote, setErNote] = useState("");
 
   useEffect(() => { (async () => { setLog(await ld("inv_log", [])); })(); }, []);
   const svLog = useCallback((l) => { setLog(l); sv("inv_log", l); }, []);
@@ -1230,9 +1235,9 @@ function InvMgr({ items, sI }) {
       <h2 style={{ fontSize: 16, fontWeight: 800, marginBottom: 10, marginTop: 20 }}>Recent Receipts</h2>
       <div style={{ ...crd, padding: 0, overflow: "hidden" }}><div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>{["Date", "Item", "Option", "Qty", "Cost", "Prev WAC", "New WAC", "Total Qty", "Notes"].map((h) => <th key={h} style={{ padding: "9px 8px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>)}</tr></thead>
+          <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>{["Date", "Item", "Option", "Qty", "Cost", "Prev WAC", "New WAC", "Total Qty", "Notes", "Actions"].map((h) => <th key={h} style={{ padding: "9px 8px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>)}</tr></thead>
           <tbody>
-            {!log.length && <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: C.t2 }}>No receipts yet.</td></tr>}
+            {!log.length && <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.t2 }}>No receipts yet.</td></tr>}
             {log.slice(0, 50).map((r) => (
               <tr key={r.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
                 <td style={{ padding: "7px 8px", color: C.t2 }}>{fD(r.date)}</td>
@@ -1244,11 +1249,92 @@ function InvMgr({ items, sI }) {
                 <td style={{ padding: "7px 8px", fontFamily: MN, fontWeight: 600, color: C.ac }}>{fmt$(r.newWAC)}</td>
                 <td style={{ padding: "7px 8px", fontFamily: MN }}>{r.newQty}</td>
                 <td style={{ padding: "7px 8px", color: C.t2 }}>{r.note || "—"}</td>
+                <td style={{ padding: "7px 8px" }}>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => { setEditReceipt(r); setErQty(String(r.qty)); setErCost(String(r.unitCost)); setErNote(r.note || ""); }} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
+                    <button onClick={() => setDeleteReceipt(r)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer" }}><Trash2 size={13} /></button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div></div>
+
+      {/* DELETE RECEIPT MODAL */}
+      {deleteReceipt && (
+        <Modal open onClose={() => setDeleteReceipt(null)} title="">
+          <div style={{ textAlign: "center", padding: "10px 0" }}>
+            <div style={{ background: C.red + "15", borderRadius: 16, padding: 20, display: "inline-flex", marginBottom: 16 }}><AlertTriangle size={48} color={C.red} /></div>
+            <h2 style={{ fontSize: 20, fontWeight: 900, color: C.red, marginBottom: 8 }}>DELETE THIS RECEIPT?</h2>
+            <p style={{ fontSize: 14, marginBottom: 6 }}><strong>{deleteReceipt.itemName}</strong> — {deleteReceipt.qty} units @ {fmt$(deleteReceipt.unitCost)}</p>
+            <p style={{ color: C.grn, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>{deleteReceipt.qty} units will be removed from inventory.</p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <button onClick={() => setDeleteReceipt(null)} style={{ ...bS, padding: "12px 28px", fontSize: 14 }}>Cancel</button>
+              <button onClick={() => {
+                const r = deleteReceipt;
+                const opt = r.option || "_default";
+                sI(items.map((it) => {
+                  if (it.id !== r.itemId) return it;
+                  const v = { ...(it.variants || getVariants(it)) };
+                  const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
+                  const newQty = Math.max(0, (curV.qty || 0) - (r.qty || 0));
+                  // Recalc WAC: remove the cost contribution of this receipt
+                  const totalCostBefore = (curV.qty || 0) * (curV.wac || 0);
+                  const removedCost = (r.qty || 0) * (r.unitCost || 0);
+                  const newWac = newQty > 0 ? Math.round((totalCostBefore - removedCost) / newQty * 100) / 100 : curV.wac || 0;
+                  v[opt] = { ...curV, qty: newQty, wac: newWac };
+                  const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+                  return { ...it, variants: v, qtyOnHand: totalQ };
+                }));
+                svLog(log.filter((x) => x.id !== r.id));
+                setDeleteReceipt(null);
+              }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Update Inventory</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* EDIT RECEIPT MODAL */}
+      {editReceipt && (
+        <Modal open onClose={() => setEditReceipt(null)} title={`Edit Receipt — ${editReceipt.itemName}`}>
+          <Fld label="Quantity Received"><input type="number" min="1" value={erQty} onChange={(e) => setErQty(e.target.value)} style={inp} /></Fld>
+          <Fld label="Cost Per Unit ($)"><input type="number" step=".01" value={erCost} onChange={(e) => setErCost(e.target.value)} style={inp} /></Fld>
+          <Fld label="Notes"><input value={erNote} onChange={(e) => setErNote(e.target.value)} style={inp} /></Fld>
+          <div style={{ background: C.sf, borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 12 }}>
+            <strong>Original:</strong> {editReceipt.qty} units @ {fmt$(editReceipt.unitCost)} = {fmt$(editReceipt.qty * editReceipt.unitCost)}
+            {erQty && erCost && <div style={{ marginTop: 4 }}><strong>New:</strong> {erQty} units @ {fmt$(+erCost)} = {fmt$((+erQty) * (+erCost))}</div>}
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={() => setEditReceipt(null)} style={bS}>Cancel</button>
+            <button onClick={() => {
+              const r = editReceipt;
+              const opt = r.option || "_default";
+              const oldQty = r.qty || 0;
+              const newQty = +(erQty) || oldQty;
+              const oldCost = r.unitCost || 0;
+              const newCost = +(erCost) || oldCost;
+              const qtyDiff = newQty - oldQty;
+              // Adjust inventory: remove old contribution, add new
+              sI(items.map((it) => {
+                if (it.id !== r.itemId) return it;
+                const v = { ...(it.variants || getVariants(it)) };
+                const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
+                const adjQty = (curV.qty || 0) + qtyDiff;
+                const totalCostBefore = (curV.qty || 0) * (curV.wac || 0);
+                const costDiff = (newQty * newCost) - (oldQty * oldCost);
+                const adjWac = adjQty > 0 ? Math.round((totalCostBefore + costDiff) / adjQty * 100) / 100 : newCost;
+                v[opt] = { ...curV, qty: Math.max(0, adjQty), wac: adjWac };
+                const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+                return { ...it, variants: v, qtyOnHand: totalQ };
+              }));
+              // Update log entry
+              svLog(log.map((x) => x.id === r.id ? { ...x, qty: newQty, unitCost: newCost, note: erNote.trim() } : x));
+              setEditReceipt(null);
+            }} style={bP}><Check size={14} /> Save & Update Inventory</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
