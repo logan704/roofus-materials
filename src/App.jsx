@@ -127,7 +127,7 @@ function downloadPDF(order, items) {
   const rows = ls.map((l) => {
     const it = iMap[l.itemId] || { name: "?", unit: "" };
     const opt = l.option && l.option !== "_default" ? l.option : "—";
-    return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r">${fmt$(l.markupCost)}</td><td class="r">${fmt$(l.supplierCost||0)}</td><td class="r">${fmt$(l.qty*l.unitCost)}</td><td class="r" style="font-weight:700">${fmt$(l.qty*l.markupCost)}</td></tr>`;
+    return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r" style="background:#FFFF00;font-weight:700">${fmt$(l.markupCost)}</td><td class="r">${fmt$(l.supplierCost||0)}</td><td class="r">${fmt$(l.qty*l.unitCost)}</td><td class="r" style="font-weight:700;background:#FFFF00">${fmt$(l.qty*l.markupCost)}</td></tr>`;
   }).join("");
   const html = `<!DOCTYPE html><html><head><title>${(order.poNumber||"Order")} Material Order</title>
 <style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#666}td{padding:6px;border-bottom:1px solid #ddd;font-size:11px}.r{text-align:right}.hd{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234}.tot{margin-top:14px;padding:12px;background:#f0f2f5;border-radius:5px;border-left:4px solid #B22234}.tr{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}.trb{font-size:14px;font-weight:800;border-top:2px solid #1B2A4A;padding-top:7px;margin-top:5px}.sav{margin-top:10px;padding:10px;background:#d4edda;border-radius:4px;font-size:11px}@media print{body{padding:20px}@page{margin:0.5in}}</style></head><body>
@@ -135,9 +135,9 @@ function downloadPDF(order, items) {
 <div style="text-align:right;font-size:11px;color:#666"><div style="font-weight:800;font-size:13px;color:#1B2A4A">${order.type==="return"?"RETURN":"MATERIAL ORDER"}</div><div style="margin-top:3px">PO: <strong style="color:#1a1a1a">${order.poNumber||"—"}</strong></div><div>Date: ${fD(order.date)}</div><div>By: ${order.userName||"—"}</div>
 <div style="margin-top:4px"><span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;background:${order.status==="approved"?"#d4edda":"#fff3cd"};color:${order.status==="approved"?"#155724":"#856404"}">${(order.status||"pending").toUpperCase()}</span></div></div></div>
 ${order.jobName?`<div style="margin-bottom:12px;font-size:12px"><strong>Job:</strong> ${order.jobName}${order.jobAddress?" — "+order.jobAddress:""}</div>`:""}
-<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r">Markup Price</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r" style="background:#FFFF00">Markup Price</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r" style="background:#FFFF00">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="tot"><div class="tr"><span>Total (Our Cost):</span><span>${fmt$(tCost)}</span></div>
-<div class="tr trb"><span>Total (Markup Price):</span><span>${fmt$(tSell)}</span></div>
+<div class="tr trb" style="background:#FFFF00;padding:8px;margin:6px -12px 0;border-radius:4px"><span>Total (Markup Price):</span><span>${fmt$(tSell)}</span></div>
 <div class="tr"><span>Markup Margin:</span><span style="color:#1E8449">${fmt$(savingsVsMarkup)} (${marginPct}%)</span></div>
 ${tSupplier > 0 ? `<div class="tr" style="border-top:1px solid #ccc;padding-top:4px;margin-top:4px"><span>Total (Supplier Would Charge):</span><span>${fmt$(tSupplier)}</span></div>
 <div class="tr"><span>Savings vs Supplier:</span><span style="color:${savingsVsSupplier >= 0 ? '#1E8449' : '#B22234'}">${savingsVsSupplier >= 0 ? '+' : ''}${fmt$(savingsVsSupplier)}</span></div>` : ''}
@@ -604,7 +604,9 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
     const newLines = (tpl.items || []).map((ti) => {
       const it = iMap[ti.itemId];
       if (!it) return null;
-      return { key: ti.itemId + ":" + (ti.option || ""), itemId: ti.itemId, qty: ti.qty || 1, option: ti.option || "", unitCost: it.wacCost || 0, markupCost: (it.wacCost || 0) * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
+      const hasOpts = it.options && it.options.length > 0;
+      // Don't pre-select option — user picks in summary
+      return { key: ti.itemId + ":" + uid(), itemId: ti.itemId, qty: ti.qty || 1, option: hasOpts ? "" : "_default", unitCost: it.wacCost || 0, markupCost: (it.wacCost || 0) * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0, needsOption: hasOpts };
     }).filter(Boolean);
     setLines(newLines);
     setStep("build");
@@ -613,8 +615,15 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
   const updLn = (i, f, v) => { const n = [...lines]; n[i] = { ...n[i], [f]: v }; setLines(n); };
   const rmLn = (i) => setLines(lines.filter((_, j) => j !== i));
 
+  const allOptionsSet = lines.every((l) => {
+    const it = iMap[l.itemId];
+    if (!it) return true;
+    const hasOpts = it.options && it.options.length > 0;
+    return !hasOpts || (l.option && l.option !== "");
+  });
+
   const submit = () => {
-    if (!lines.length || !po.trim()) return;
+    if (!lines.length || !po.trim() || !allOptionsSet) return;
     const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: po.trim(), jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     if (type === "order") {
       sI(items.map((it) => {
@@ -678,7 +687,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
             <Rw><Cl f={1}><Fld label="PO # (required)"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="PO-001" style={{ ...inp, borderColor: po.trim() ? C.brd : C.red + "66" }} /></Fld></Cl>
             <Cl f={2}><Fld label="Homeowner Name (optional)"><input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl></Rw>
             <Fld label="Address (optional)"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Optional" style={inp} /></Fld>
-            <Fld label="Notes"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
+            <Fld label="Notes (for your reference — visible on order)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery instructions, reminders, special requests..." rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
           </div>
           <div style={crd}>
             <div style={{ ...lbl, marginBottom: 10 }}>Add Items</div>
@@ -733,12 +742,35 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
             {!lines.length && <div style={{ padding: 24, textAlign: "center", color: C.t2, fontSize: 13 }}>Add items from the left</div>}
             {lines.map((l, i) => {
               const it = iMap[l.itemId] || { name: "?", unit: "" };
+              const hasOpts = it.options && it.options.length > 0;
+              const needsOpt = hasOpts && (!l.option || l.option === "");
               return (
-                <div key={l.key} style={{ padding: "10px 0", borderBottom: `1px solid ${C.brd}` }}>
+                <div key={l.key} style={{ padding: "10px 0", borderBottom: `1px solid ${C.brd}`, background: needsOpt ? C.wrn + "08" : "transparent", marginLeft: needsOpt ? -8 : 0, marginRight: needsOpt ? -8 : 0, paddingLeft: needsOpt ? 8 : 0, paddingRight: needsOpt ? 8 : 0, borderRadius: needsOpt ? 6 : 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name}{l.option ? <span style={{ fontWeight: 400, color: C.t2 }}> · {l.option}</span> : null}</div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name}{l.option && l.option !== "_default" ? <span style={{ fontWeight: 400, color: C.t2 }}> · {l.option}</span> : null}</div>
                     <button onClick={() => rmLn(i)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
                   </div>
+                  {needsOpt && (
+                    <div style={{ marginBottom: 6 }}>
+                      <select value="" onChange={(e) => {
+                        if (!e.target.value) return;
+                        const opt = e.target.value;
+                        const v = getVariants(it);
+                        const vd = v[opt] || { wac: it.wacCost || 0 };
+                        updLn(i, "option", opt);
+                        updLn(i, "unitCost", vd.wac || it.wacCost || 0);
+                        updLn(i, "markupCost", (vd.wac || it.wacCost || 0) * (1 + (it.markup || 0) / 100));
+                        // Update the key so it's unique per option
+                        const n = [...lines]; n[i] = { ...n[i], key: it.id + ":" + opt, option: opt, unitCost: vd.wac || it.wacCost || 0, markupCost: (vd.wac || it.wacCost || 0) * (1 + (it.markup || 0) / 100) }; setLines(n);
+                      }} style={{ ...inp, padding: "8px 10px", fontSize: 13, borderColor: C.wrn, cursor: "pointer" }}>
+                        <option value="">⚠ Select color/style...</option>
+                        {(it.options || []).map((opt) => {
+                          const vd = (getVariants(it))[opt] || { qty: 0 };
+                          return <option key={opt} value={opt}>{opt} ({vd.qty} avail)</option>;
+                        })}
+                      </select>
+                    </div>
+                  )}
                   <Rw g={8}>
                     <Cl f={1}><div style={{ fontSize: 10, color: C.t2, marginBottom: 2 }}>QTY</div><input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} style={{ ...inp, padding: "6px 8px", fontSize: 13, textAlign: "center" }} /></Cl>
                   </Rw>
@@ -755,7 +787,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 800 }}><span>Sell Total</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)}</span></div>
               </div>
-              <button onClick={submit} disabled={!lines.length || !po.trim()} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, opacity: (!lines.length || !po.trim()) ? 0.5 : 1 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
+              <button onClick={submit} disabled={!lines.length || !po.trim() || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, opacity: (!lines.length || !po.trim() || !allOptionsSet) ? 0.5 : 1 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
             </>}
           </div>
         </div>
@@ -887,12 +919,12 @@ function ItemMgr({ items, sI }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-              {["Item", "Category", "Color/Style", "On Hand", "WAC", "Markup", "Sell", ""].map((h) => (
+              {["Item", "Category", "Color/Style", "On Hand", "WAC", "Supplier $", "Markup", "Sell", ""].map((h) => (
                 <th key={h} style={{ padding: "10px 10px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {!filt.length && <tr><td colSpan={8} style={{ padding: 30, textAlign: "center", color: C.t2 }}>No items yet.</td></tr>}
+              {!filt.length && <tr><td colSpan={9} style={{ padding: 30, textAlign: "center", color: C.t2 }}>No items yet.</td></tr>}
               {filt.map((it) => {
                 const v = getVariants(it);
                 const entries = Object.entries(v);
@@ -907,6 +939,7 @@ function ItemMgr({ items, sI }) {
                     <td style={{ padding: "9px 10px", fontWeight: 600, fontSize: 12, color: optName === "_default" ? C.t2 : C.txt }}>{optName === "_default" ? "—" : optName}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 600, color: (vData.qty || 0) <= 0 ? C.red : C.txt }}>{vData.qty || 0} {it.unit}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN }}>{fmt$(vData.wac)}</td>
+                    <td style={{ padding: "9px 10px", fontFamily: MN, color: C.blu }}>{vi === 0 ? fmt$(it.supplierCost || 0) : ""}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN }}>{vi === 0 ? `${it.markup || 0}%` : ""}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 600, color: C.ac }}>{fmt$((vData.wac || 0) * (1 + (it.markup || 0) / 100))}</td>
                     <td style={{ padding: "9px 10px" }}>
@@ -1528,10 +1561,9 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
 
   if (!open) return null;
 
-  const addItem = (it, opt) => {
-    const key = it.id + ":" + (opt || "");
-    if (tplItems.find((x) => x.itemId === it.id && (x.option || "") === (opt || ""))) return;
-    setTplItems([...tplItems, { itemId: it.id, option: opt || "", qty: 1 }]);
+  const addItem = (it) => {
+    if (tplItems.find((x) => x.itemId === it.id)) return;
+    setTplItems([...tplItems, { itemId: it.id, option: "", qty: 1 }]);
   };
 
   const filt = items.filter((i) => i.active !== false && (!search || i.name.toLowerCase().includes(search.toLowerCase())));
@@ -1549,20 +1581,20 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
       <Fld label="Template Name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder='e.g. "Standard Roof Package"' style={inp} /></Fld>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <div style={{ flex: "1 1 280px" }}>
-          <Fld label="Add Items">
+          <Fld label="Add Items (color/style is chosen when ordering)">
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search items..." style={inp} />
           </Fld>
           <div style={{ maxHeight: 250, overflow: "auto", border: `1px solid ${C.brd}`, borderRadius: 6 }}>
             {filt.map((it) => {
-              const opts = it.options && it.options.length ? it.options : [""];
+              const added = tplItems.find((x) => x.itemId === it.id);
               return (
-                <div key={it.id} style={{ padding: "6px 8px", borderBottom: `1px solid ${C.brd}` }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{it.name}</div>
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 3 }}>
-                    {opts.map((opt) => (
-                      <button key={opt || "__"} onClick={() => addItem(it, opt)} style={{ ...bS, padding: "2px 8px", fontSize: 10, borderRadius: 3 }}><Plus size={9} /> {opt || "Add"}</button>
-                    ))}
+                <div key={it.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px", borderBottom: `1px solid ${C.brd}` }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>{it.name}</div>
+                    <div style={{ fontSize: 10, color: C.t2 }}>{it.category}{it.options?.length ? ` · ${it.options.length} options` : ""}</div>
                   </div>
+                  <button onClick={() => addItem(it)} disabled={!!added}
+                    style={{ ...bP, padding: "4px 12px", fontSize: 11, opacity: added ? 0.3 : 1 }}><Plus size={10} /> {added ? "Added" : "Add"}</button>
                 </div>
               );
             })}
