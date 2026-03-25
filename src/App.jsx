@@ -614,7 +614,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
   const rmLn = (i) => setLines(lines.filter((_, j) => j !== i));
 
   const submit = () => {
-    if (!lines.length) return;
+    if (!lines.length || !po.trim()) return;
     const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: po.trim(), jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     if (type === "order") {
       sI(items.map((it) => {
@@ -675,9 +675,9 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 420px", minWidth: 300 }}>
           <div style={{ ...crd, marginBottom: 14 }}>
-            <Rw><Cl f={1}><Fld label="PO #"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="PO-001" style={inp} /></Fld></Cl>
-            <Cl f={2}><Fld label="Job Name"><input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Customer / Job" style={inp} /></Fld></Cl></Rw>
-            <Fld label="Job Address"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Optional" style={inp} /></Fld>
+            <Rw><Cl f={1}><Fld label="PO # (required)"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="PO-001" style={{ ...inp, borderColor: po.trim() ? C.brd : C.red + "66" }} /></Fld></Cl>
+            <Cl f={2}><Fld label="Homeowner Name (optional)"><input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl></Rw>
+            <Fld label="Address (optional)"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Optional" style={inp} /></Fld>
             <Fld label="Notes"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
           </div>
           <div style={crd}>
@@ -690,21 +690,35 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
               {filt.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.t2, fontSize: 13 }}>No items found.</div>}
               {filt.map((it) => {
                 const opts = it.options && it.options.length > 0 ? it.options : [""];
+                const hasOpts = opts.length > 1 || (opts.length === 1 && opts[0] !== "");
                 return (
                   <div key={it.id} style={{ padding: "8px 4px", borderBottom: `1px solid ${C.brd}` }}>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.t2, fontSize: 11 }}>· {it.category} · {totalStock(it)} {it.unit} total</span></div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-                      {opts.map((opt) => {
-                        const added = lines.find((l) => l.key === it.id + ":" + opt);
-                        const vData = (getVariants(it))[opt] || { qty: 0 };
-                        return (
-                          <button key={opt || "__none"} onClick={() => addLn(it, opt)} disabled={!!added}
-                            style={{ ...bS, padding: "3px 10px", fontSize: 11, borderRadius: 4, opacity: added ? 0.3 : 1, flexDirection: "column", alignItems: "flex-start", gap: 1 }}>
-                            <span><Plus size={10} /> {opt || "Add"}</span>
-                            <span style={{ fontSize: 9, color: C.t2 }}>{vData.qty} avail</span>
-                          </button>
-                        );
-                      })}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                      <div style={{ flex: "1 1 180px", minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{it.name}</div>
+                        <div style={{ fontSize: 10, color: C.t2, marginTop: 1 }}>{it.category} · {totalStock(it)} {it.unit}</div>
+                      </div>
+                      {hasOpts ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <select id={`opt-${it.id}`} defaultValue="" style={{ ...inp, padding: "6px 10px", fontSize: 12, width: "auto", minWidth: 130, cursor: "pointer" }}>
+                            <option value="" disabled>Select option...</option>
+                            {opts.map((opt) => {
+                              const added = lines.find((l) => l.key === it.id + ":" + opt);
+                              const vData = (getVariants(it))[opt] || { qty: 0 };
+                              return <option key={opt} value={opt} disabled={!!added}>{opt} ({vData.qty} avail){added ? " ✓" : ""}</option>;
+                            })}
+                          </select>
+                          <button onClick={() => {
+                            const sel = document.getElementById(`opt-${it.id}`);
+                            if (sel && sel.value) { addLn(it, sel.value); sel.value = ""; }
+                          }} style={{ ...bP, padding: "6px 12px", fontSize: 12, whiteSpace: "nowrap" }}><Plus size={12} /> Add</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => addLn(it, opts[0])} disabled={!!lines.find((l) => l.key === it.id + ":" + opts[0])}
+                          style={{ ...bP, padding: "6px 12px", fontSize: 12, opacity: lines.find((l) => l.key === it.id + ":" + opts[0]) ? 0.3 : 1 }}>
+                          <Plus size={12} /> Add
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -741,7 +755,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, go }) {
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 800 }}><span>Sell Total</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)}</span></div>
               </div>
-              <button onClick={submit} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
+              <button onClick={submit} disabled={!lines.length || !po.trim()} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, opacity: (!lines.length || !po.trim()) ? 0.5 : 1 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
             </>}
           </div>
         </div>
