@@ -383,7 +383,7 @@ export default function App() {
         {pg === "inventory" && isA && <InvMgr items={items} sI={sI} />}
         {pg === "shrinkage" && isA && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
         {pg === "damage" && (isA || isM) && <DamageReport items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} user={user} />}
-        {pg === "gallery" && isA && <DamageGallery shrinkLog={shrinkLog} items={items} />}
+        {pg === "gallery" && isA && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
         {pg === "supplier" && isA && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && isA && <TplMgr templates={templates} sT={sT} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} isA={isA} isM={isM} view={setVOrd} sO={sO} />}
@@ -456,21 +456,38 @@ export default function App() {
 function Auth({ users, sU, login }) {
   const [mode, setMode] = useState("login");
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [show, setShow] = useState(false); const [err, setErr] = useState("");
+  const [pending, setPending] = useState(false);
   const go = () => {
     setErr("");
     if (mode === "login") {
       const u = users.find((x) => x.email.toLowerCase() === email.toLowerCase().trim());
       if (!u) { setErr("No account found."); return; }
       if (u.pw !== hP(pw)) { setErr("Wrong password."); return; }
+      if (u.role === "pending") { setErr("Your account is waiting for admin approval."); return; }
       login(u);
     } else {
       if (!name.trim() || !email.trim() || !pw.trim()) { setErr("All fields required."); return; }
       if (users.find((x) => x.email.toLowerCase() === email.toLowerCase().trim())) { setErr("Email taken."); return; }
       if (pw.length < 4) { setErr("4+ characters."); return; }
-      const u = { id: uid(), name: name.trim(), email: email.trim().toLowerCase(), pw: hP(pw), role: "user", created: new Date().toISOString() };
-      sU([...users, u]); login(u);
+      const u = { id: uid(), name: name.trim(), email: email.trim().toLowerCase(), pw: hP(pw), role: "pending", created: new Date().toISOString() };
+      sU([...users, u]);
+      setPending(true);
     }
   };
+
+  if (pending) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, padding: 20 }}>
+        <div className="fu" style={{ ...crd, maxWidth: 400, width: "100%", textAlign: "center" }}>
+          <img src={LOGO} alt="Roof USA" style={{ height: 80, marginBottom: 12 }} />
+          <div style={{ display: "inline-flex", background: C.wrn + "20", borderRadius: 16, padding: 20, marginBottom: 16 }}><Clock size={48} color={C.wrn} /></div>
+          <h2 style={{ fontSize: 20, fontWeight: 900, marginBottom: 8 }}>Account Created</h2>
+          <p style={{ color: C.t2, fontSize: 14, marginBottom: 20 }}>Your account is waiting for admin approval. You'll be able to log in once an administrator approves your access.</p>
+          <button onClick={() => { setPending(false); setMode("login"); setErr(""); }} style={bP}>Back to Login</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, padding: 20 }}>
       <div className="fu" style={{ ...crd, maxWidth: 400, width: "100%" }}>
@@ -1924,10 +1941,17 @@ function DamageReport({ items, sI, shrinkLog, sSh, user }) {
 }
 
 // ═══ DAMAGE GALLERY (admin only) ═══
-function DamageGallery({ shrinkLog, items }) {
+function DamageGallery({ shrinkLog, sSh, items, sI }) {
   const [filter, setFilter] = useState("all"); // all, damage, shrinkage, found
   const [search, setSearch] = useState("");
   const [enlarged, setEnlarged] = useState(null);
+  const [deleteWarn, setDeleteWarn] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [editQty, setEditQty] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [editNote, setEditNote] = useState("");
+
+  const REASONS = ["Damaged", "Broken", "Weather Damage", "Theft", "Defective", "Water Damage", "Missing", "Other"];
 
   const incidents = shrinkLog.filter((r) => {
     if (filter === "damage" && r.type !== "damage") return false;
@@ -1986,9 +2010,9 @@ function DamageGallery({ shrinkLog, items }) {
       {/* FULL LIST */}
       <div style={{ ...crd, padding: 0 }}><div style={{ overflowX: "auto", maxHeight: 500 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead><tr>{["Date", "Item", "Type", "Reason", "Qty", "Value", "Reported By", "Photo", "Notes"].map((h) => <th key={h} style={{ padding: "9px 8px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card }}>{h}</th>)}</tr></thead>
+          <thead><tr>{["Date", "Item", "Type", "Reason", "Qty", "Value", "Reported By", "Photo", "Notes", "Actions"].map((h) => <th key={h} style={{ padding: "9px 8px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card }}>{h}</th>)}</tr></thead>
           <tbody>
-            {!incidents.length && <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: C.t2 }}>No incidents found.</td></tr>}
+            {!incidents.length && <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.t2 }}>No incidents found.</td></tr>}
             {incidents.slice(0, 100).map((r) => (
               <tr key={r.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
                 <td style={{ padding: "7px 8px", color: C.t2 }}>{fD(r.date)}</td>
@@ -2000,6 +2024,12 @@ function DamageGallery({ shrinkLog, items }) {
                 <td style={{ padding: "7px 8px", color: C.t2 }}>{r.reportedBy || "—"}</td>
                 <td style={{ padding: "7px 8px" }}>{r.photo ? <img src={r.photo} alt="" style={{ height: 28, borderRadius: 3, cursor: "pointer" }} onClick={() => setEnlarged(r)} /> : "—"}</td>
                 <td style={{ padding: "7px 8px", color: r.note ? C.ac : C.t2, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: r.note ? "pointer" : "default", textDecoration: r.note ? "underline" : "none" }} onClick={() => r.note && setEnlarged(r)}>{r.note || "—"}</td>
+                <td style={{ padding: "7px 8px" }}>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => { setEditing(r); setEditQty(String(r.qty || "")); setEditReason(r.reason || "Damaged"); setEditNote(r.note || ""); }} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
+                    <button onClick={() => setDeleteWarn(r)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer" }}><Trash2 size={13} /></button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -2015,6 +2045,42 @@ function DamageGallery({ shrinkLog, items }) {
             <div><strong>Qty:</strong> {enlarged.qty} · <strong>Value:</strong> <span style={{ color: C.red }}>{fmt$(enlarged.lostValue || 0)}</span></div>
             <div><strong>Reported by:</strong> {enlarged.reportedBy || "—"}</div>
             {enlarged.note && <div style={{ marginTop: 6 }}><strong>Notes:</strong> {enlarged.note}</div>}
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete confirmation */}
+      {deleteWarn && (
+        <Modal open onClose={() => setDeleteWarn(null)} title="">
+          <div style={{ textAlign: "center", padding: "10px 0" }}>
+            <div style={{ background: C.red + "15", borderRadius: 16, padding: 20, display: "inline-flex", marginBottom: 16 }}><AlertTriangle size={48} color={C.red} /></div>
+            <h2 style={{ fontSize: 20, fontWeight: 900, color: C.red, marginBottom: 8 }}>DELETE THIS REPORT?</h2>
+            <p style={{ fontSize: 14, marginBottom: 6 }}><strong>{deleteWarn.itemName}</strong> — {deleteWarn.reason}</p>
+            <p style={{ color: C.t2, fontSize: 13, marginBottom: 6 }}>{deleteWarn.qty} units · {fmt$(deleteWarn.lostValue || 0)} loss · {fD(deleteWarn.date)}</p>
+            <p style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>This will remove the report. Inventory will NOT be restored — adjust manually if needed.</p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <button onClick={() => setDeleteWarn(null)} style={{ ...bS, padding: "12px 28px", fontSize: 14 }}>Cancel</button>
+              <button onClick={() => { sSh(shrinkLog.filter((x) => x.id !== deleteWarn.id)); setDeleteWarn(null); }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete Report</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Edit modal */}
+      {editing && (
+        <Modal open onClose={() => setEditing(null)} title={`Edit Report — ${editing.itemName}`}>
+          <Fld label="Quantity"><input type="number" min="1" value={editQty} onChange={(e) => setEditQty(e.target.value)} style={inp} /></Fld>
+          <Fld label="Reason"><select value={editReason} onChange={(e) => setEditReason(e.target.value)} style={{ ...inp, cursor: "pointer" }}>{REASONS.map((r) => <option key={r}>{r}</option>)}</select></Fld>
+          <Fld label="Notes"><input value={editNote} onChange={(e) => setEditNote(e.target.value)} style={inp} /></Fld>
+          {editing.photo && <div style={{ marginBottom: 12 }}><img src={editing.photo} alt="" style={{ maxHeight: 150, borderRadius: 6 }} /></div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={() => setEditing(null)} style={bS}>Cancel</button>
+            <button onClick={() => {
+              const newQty = +editQty || editing.qty;
+              const newCost = (editing.unitCost || 0);
+              sSh(shrinkLog.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote.trim(), lostValue: newQty * newCost } : x));
+              setEditing(null);
+            }} style={bP}><Check size={14} /> Save Changes</button>
           </div>
         </Modal>
       )}
@@ -2880,12 +2946,42 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
     setEditUser(null);
   };
 
-  const roleColors = { admin: { bg: RED + "15", c: RED, border: RED + "44" }, manager: { bg: NAVY + "15", c: NAVY, border: NAVY + "44" }, user: { bg: C.sf, c: C.t2, border: C.brd } };
+  const roleColors = { admin: { bg: RED + "15", c: RED, border: RED + "44" }, manager: { bg: NAVY + "15", c: NAVY, border: NAVY + "44" }, user: { bg: C.sf, c: C.t2, border: C.brd }, pending: { bg: C.wrn + "15", c: C.wrn, border: C.wrn + "44" } };
+  const pendingUsers = users.filter((u) => u.role === "pending");
+  const activeUsers = users.filter((u) => u.role !== "pending");
+
+  const approveUser = (u, role) => {
+    sU(users.map((x) => x.id === u.id ? { ...x, role } : x));
+  };
+  const rejectUser = (u) => {
+    sU(users.filter((x) => x.id !== u.id));
+  };
 
   return (
     <div className="fu">
       <h1 style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, fontFamily: BC }}>SETTINGS</h1>
       <p style={{ color: C.t2, fontSize: 13, marginBottom: 24 }}>Manage users, roles, and system settings.</p>
+
+      {/* PENDING APPROVALS */}
+      {pendingUsers.length > 0 && (
+        <div style={{ ...crd, marginBottom: 20, borderLeft: `4px solid ${C.wrn}` }}>
+          <div style={{ ...lbl, marginBottom: 10, color: C.wrn }}>Pending Approval ({pendingUsers.length})</div>
+          <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>These people signed up and are waiting for your approval before they can log in.</p>
+          {pendingUsers.map((u) => (
+            <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${C.brd}`, flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{u.name}</div>
+                <div style={{ fontSize: 12, color: C.t2 }}>{u.email} · signed up {fD(u.created)}</div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => approveUser(u, "user")} style={{ ...bP, padding: "6px 14px", fontSize: 12, background: C.grn }}><Check size={12} /> Approve as User</button>
+                <button onClick={() => approveUser(u, "manager")} style={{ ...bP, padding: "6px 14px", fontSize: 12, background: NAVY }}><Check size={12} /> Approve as Manager</button>
+                <button onClick={() => rejectUser(u)} style={{ ...bD, padding: "6px 14px", fontSize: 12 }}><X size={12} /> Reject</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* USER MANAGEMENT */}
       <div style={{ ...crd, marginBottom: 20 }}>
@@ -2902,7 +2998,7 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
                 <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr></thead>
-            <tbody>{users.map((u) => {
+            <tbody>{activeUsers.map((u) => {
               const rc = roleColors[u.role] || roleColors.user;
               return (
                 <tr key={u.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
