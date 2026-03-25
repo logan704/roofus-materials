@@ -326,7 +326,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
           <NavBtn icon={Home} label="Home" active={pg === "home"} onClick={() => setPg("home")} />
           {canApprove && <NavBtn icon={Clock} label="Approvals" active={pg === "approvals"} onClick={() => setPg("approvals")} badge={pendCt} />}
-          {(isA || isM) && <NavBtn icon={Camera} label="Report Damage" active={pg === "damage"} onClick={() => setPg("damage")} />}
+          <NavBtn icon={Camera} label="Report Damage" active={pg === "damage"} onClick={() => setPg("damage")} />
 
           {/* Materials Dropdown - admin only */}
           {isA && <div style={{ position: "relative" }}>
@@ -382,7 +382,7 @@ export default function App() {
         {pg === "items" && isA && <ItemMgr items={items} sI={sI} />}
         {pg === "inventory" && isA && <InvMgr items={items} sI={sI} />}
         {pg === "shrinkage" && isA && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
-        {pg === "damage" && (isA || isM) && <DamageReport items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} user={user} />}
+        {pg === "damage" && <DamageReport items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} user={user} />}
         {pg === "gallery" && isA && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
         {pg === "supplier" && isA && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && isA && <TplMgr templates={templates} sT={sT} items={items} />}
