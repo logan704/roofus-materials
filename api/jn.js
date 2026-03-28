@@ -4,109 +4,78 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const KEY = "mn9nk0ezvo8k986n";
-  const API = "https://app.jobnimbus.com/api1";
-  const H = { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" };
-  const action = req.query.action;
+  var KEY = "mn9nk0ezvo8k986n";
+  var API = "https://app.jobnimbus.com/api1";
+  var action = req.query.action;
+
+  function makeHeaders() {
+    return { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" };
+  }
 
   try {
     if (action === "jobs") {
-      const resp = await fetch(API + "/jobs?select=display_name,number,first_name,last_name,name,address_line1,city,state_text,zip,status_name,record_type_name&limit=1000&sort_field=date_updated&sort_direction=desc", { headers: H });
-      const data = await resp.json();
-      const jobs = (data.results || []).map(function(j) {
-        var ownerName = [j.first_name, j.last_name].filter(Boolean).join(" ").trim();
-        return {
-          id: j.jnid,
-          name: ownerName || j.name || j.display_name || "Untitled",
-          jobName: j.display_name || j.number || "",
-          number: j.number || "",
-          address: [j.address_line1, j.city, j.state_text, j.zip].filter(Boolean).join(", "),
-          status: j.status_name || "",
-        };
-      });
-      return res.status(200).json({ jobs: jobs });
+      var r1 = await fetch(API + "/jobs?select=display_name,number,first_name,last_name,name,address_line1,city,state_text,zip,status_name&limit=1000&sort_field=date_updated&sort_direction=desc", { headers: makeHeaders() });
+      var d1 = await r1.json();
+      return res.status(200).json({ jobs: (d1.results || []).map(function(j) {
+        var own = [j.first_name, j.last_name].filter(Boolean).join(" ").trim();
+        return { id: j.jnid, name: own || j.name || j.display_name || "Untitled", jobName: j.display_name || j.number || "", number: j.number || "", address: [j.address_line1, j.city, j.state_text, j.zip].filter(Boolean).join(", "), status: j.status_name || "" };
+      })});
     }
 
     if (action === "contacts") {
-      const resp = await fetch(API + "/contacts?select=display_name,first_name,last_name,address_line1,city,state_text,zip,status_name&limit=1000&sort_field=date_updated&sort_direction=desc", { headers: H });
-      const data = await resp.json();
-      const contacts = (data.results || []).map(function(c) {
-        return {
-          id: c.jnid,
-          name: c.display_name || ((c.first_name || "") + " " + (c.last_name || "")).trim() || "Untitled",
-          address: [c.address_line1, c.city, c.state_text, c.zip].filter(Boolean).join(", "),
-          status: c.status_name || "",
-        };
-      });
-      return res.status(200).json({ contacts: contacts });
+      var r2 = await fetch(API + "/contacts?select=display_name,first_name,last_name,address_line1,city,state_text,zip,status_name&limit=1000&sort_field=date_updated&sort_direction=desc", { headers: makeHeaders() });
+      var d2 = await r2.json();
+      return res.status(200).json({ contacts: (d2.results || []).map(function(c) {
+        return { id: c.jnid, name: c.display_name || ((c.first_name || "") + " " + (c.last_name || "")).trim() || "Untitled", address: [c.address_line1, c.city, c.state_text, c.zip].filter(Boolean).join(", "), status: c.status_name || "" };
+      })});
     }
 
     if (action === "upload" && req.method === "POST") {
-      var body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      var body = req.body;
+      if (typeof body === "string") { try { body = JSON.parse(body); } catch(e) { body = {}; } }
       if (!body || !body.relatedId || !body.htmlContent || !body.fileName) {
-        return res.status(400).json({ error: "Missing fields", body: Object.keys(body || {}) });
+        return res.status(400).json({ error: "Missing fields", keys: Object.keys(body || {}) });
       }
-      // Strip HTML to plain text
       var plain = String(body.htmlContent).replace(/<[^>]*>/g, " ").replace(/&[^;]+;/g, " ").replace(/\s+/g, " ").trim();
       if (plain.length > 3000) plain = plain.substring(0, 3000);
+      var rid = String(body.relatedId);
 
-      // Try creating a task/note on the job
-      var postBody = JSON.stringify({
-        record_type_name: "Note",
-        note: plain,
-        primary: String(body.relatedId)
-      });
-
-      var resp2 = await fetch(API + "/activities", {
+      var r3 = await fetch(API + "/activities", {
         method: "POST",
-        headers: H,
-        body: postBody,
+        headers: makeHeaders(),
+        body: JSON.stringify({ record_type_name: "Note", note: plain, primary: rid }),
       });
-
-      // If activities fails, try tasks endpoint
-      if (!resp2.ok) {
-        var errText1 = await resp2.text();
-        // Try as a task instead
-        var postBody2 = JSON.stringify({
-          record_type_name: "Task",
-          description: plain,
-          title: String(body.fileName).replace(".html", ""),
-          primary: String(body.relatedId),
-          is_completed: true
-        });
-        var resp3 = await fetch(API + "/tasks", {
-          method: "POST",
-          headers: H,
-          body: postBody2,
-        });
-        if (!resp3.ok) {
-          var errText2 = await resp3.text();
-          return res.status(400).json({
-            error: "Both endpoints failed",
-            activities_error: errText1,
-            tasks_error: errText2,
-            sent_id: String(body.relatedId),
-          });
-        }
-        var result2 = await resp3.json();
-        return res.status(200).json({ success: true, fileId: result2.jnid || "ok", method: "task" });
+      if (r3.ok) {
+        var d3 = await r3.json();
+        return res.status(200).json({ success: true, fileId: d3.jnid || "ok" });
       }
+      var e3 = await r3.text();
 
-      var result = await resp2.json();
-      return res.status(200).json({ success: true, fileId: result.jnid || "ok", method: "activity" });
+      // Fallback: try tasks
+      var r4 = await fetch(API + "/tasks", {
+        method: "POST",
+        headers: makeHeaders(),
+        body: JSON.stringify({ record_type_name: "Task", description: plain, title: String(body.fileName).replace(".html",""), primary: rid, is_completed: true }),
+      });
+      if (r4.ok) {
+        var d4 = await r4.json();
+        return res.status(200).json({ success: true, fileId: d4.jnid || "ok" });
+      }
+      var e4 = await r4.text();
+
+      return res.status(400).json({ error: "Both failed", a: e3, t: e4, id: rid });
     }
 
     if (action === "delete" && req.method === "DELETE") {
-      var delId = req.query.id;
-      if (!delId || delId === "ok") return res.status(200).json({ success: true });
-      // Try both endpoints
-      await fetch(API + "/activities/" + delId, { method: "DELETE", headers: H }).catch(function(){});
-      await fetch(API + "/tasks/" + delId, { method: "DELETE", headers: H }).catch(function(){});
+      var did = req.query.id;
+      if (!did || did === "ok") return res.status(200).json({ success: true });
+      try { await fetch(API + "/activities/" + did, { method: "DELETE", headers: makeHeaders() }); } catch(ex){}
+      try { await fetch(API + "/tasks/" + did, { method: "DELETE", headers: makeHeaders() }); } catch(ex){}
       return res.status(200).json({ success: true });
     }
 
     if (action === "ping") {
-      return res.status(200).json({ ok: true, v: 3, time: new Date().toISOString() });
+      return res.status(200).json({ ok: true, v: 4, time: new Date().toISOString() });
     }
 
     return res.status(400).json({ error: "Unknown action" });
