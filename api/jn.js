@@ -49,31 +49,19 @@ module.exports = async function(req, res) {
         return { id: c.jnid, name: c.display_name || ((c.first_name || "") + " " + (c.last_name || "")).trim() || "Untitled", address: [c.address_line1, c.city, c.state_text, c.zip].filter(Boolean).join(", "), status: c.status_name || "" };
       })});
     }
-    if (action === "linkedfile") {
-      var f = await jnGet("/files?limit=5&sort_field=date_created&sort_direction=asc");
-      return res.status(200).json(f);
-    }
     if (action === "testupload") {
-      var testHtml = "<html><body><h1>Roofus Test v23</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var testHtml = "<html><body><h1>Roofus Test v24</h1><p>" + new Date().toISOString() + "</p></body></html>";
       var testB64 = Buffer.from(testHtml).toString("base64");
       var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
-      var contactId = "c151216dcc05460d9bf0d51e3d69ff22";
-      var results = {};
-      var r1 = await jnPost("/jobs/" + jobId + "/files", {
+      var r1 = await jnPost("/files", {
         data: testB64,
-        filename: "test-job-path.html",
+        filename: "test-v24-linked.html",
         type: 10,
-        description: "Test via job path"
+        description: "Test with typed related and primary",
+        primary: { id: jobId, type: "job" },
+        related: [{ id: jobId, type: "job" }]
       });
-      results.jobPath = { code: r1.code, body: r1.body };
-      var r2 = await jnPost("/contacts/" + contactId + "/files", {
-        data: testB64,
-        filename: "test-contact-path.html",
-        type: 10,
-        description: "Test via contact path"
-      });
-      results.contactPath = { code: r2.code, body: r2.body };
-      return res.status(200).json(results);
+      return res.status(200).json({ code: r1.code, body: r1.body });
     }
     if (action === "upload" && req.method === "POST") {
       var body = JSON.parse(JSON.stringify(req.body || {}));
@@ -83,7 +71,9 @@ module.exports = async function(req, res) {
         data: b64,
         filename: String(body.fileName),
         type: 10,
-        description: body.description || "Material Order - Roofus Construction"
+        description: body.description || "Material Order - Roofus Construction",
+        primary: { id: String(body.relatedId), type: "job" },
+        related: [{ id: String(body.relatedId), type: "job" }]
       });
       if (r3.code >= 200 && r3.code < 300) {
         var d3 = {}; try { d3 = JSON.parse(r3.body); } catch(e) {}
@@ -95,7 +85,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 23 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 24 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
