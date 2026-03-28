@@ -50,14 +50,15 @@ module.exports = async function(req, res) {
       })});
     }
     if (action === "testupload") {
-      var testHtml = "<html><body><h1>Roofus Test Upload</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var testHtml = "<html><body><h1>Roofus Test</h1><p>" + new Date().toISOString() + "</p></body></html>";
       var testB64 = Buffer.from(testHtml).toString("base64");
+      var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
       var r = await jnPost("/files", {
         data: testB64,
         filename: "roofus-test-" + Date.now() + ".html",
-        type: "job",
-        customer: "d6d7b2c344ac43b5bd81b60d19e0e1f5",
-        description: "Roofus test upload"
+        type: 10,
+        description: "Roofus test upload",
+        related_to: jobId
       });
       return res.status(200).json({ code: r.code, response: r.body });
     }
@@ -68,9 +69,9 @@ module.exports = async function(req, res) {
       var r3 = await jnPost("/files", {
         data: b64,
         filename: String(body.fileName),
-        type: "job",
-        customer: String(body.relatedId),
-        description: body.description || "Material Order - Roofus Construction"
+        type: 10,
+        description: body.description || "Material Order - Roofus Construction",
+        related_to: String(body.relatedId)
       });
       if (r3.code >= 200 && r3.code < 300) {
         var d3 = {}; try { d3 = JSON.parse(r3.body); } catch(e) {}
@@ -82,7 +83,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 15 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 16 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
