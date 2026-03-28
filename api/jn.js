@@ -66,27 +66,32 @@ module.exports = async function(req, res) {
       return res.status(200).json(j);
     }
     if (action === "testupload") {
-      var testHtml = "<html><body><h1>Roofus Test v19</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var testHtml = "<html><body><h1>Roofus Test v20</h1><p>" + new Date().toISOString() + "</p></body></html>";
       var testB64 = Buffer.from(testHtml).toString("base64");
       var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
       var contactId = "c151216dcc05460d9bf0d51e3d69ff22";
       var results = {};
       var r1 = await jnPost("/files", {
         data: testB64,
-        filename: "test-contact-link.html",
+        filename: "test-then-put.html",
         type: 10,
-        description: "Test with contact ID",
-        customer: contactId
+        description: "Upload then PUT to link"
       });
-      results.contactLink = { code: r1.code, body: r1.body };
-      var r2 = await jnPost("/files", {
-        data: testB64,
-        filename: "test-related-array.html",
-        type: 10,
-        description: "Test with related array",
-        related: [{ id: jobId }]
-      });
-      results.relatedArray = { code: r2.code, body: r2.body };
+      results.upload = { code: r1.code, body: r1.body };
+      if (r1.code >= 200 && r1.code < 300) {
+        var f1 = {}; try { f1 = JSON.parse(r1.body); } catch(e) {}
+        var fid = f1.jnid;
+        if (fid) {
+          var r2 = await jnPut("/files/" + fid, {
+            related: [{ id: contactId, type: "contact" }]
+          });
+          results.putContact = { code: r2.code, body: r2.body };
+          var r3 = await jnPut("/files/" + fid, {
+            primary: { id: jobId }
+          });
+          results.putJobPrimary = { code: r3.code, body: r3.body };
+        }
+      }
       return res.status(200).json(results);
     }
     if (action === "upload" && req.method === "POST") {
@@ -110,7 +115,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 19 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 20 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
