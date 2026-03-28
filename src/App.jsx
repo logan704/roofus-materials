@@ -611,14 +611,13 @@ function BigBtn({ icon, label, sub, color, onClick }) {
 
 // ═══ ORDER BUILDER ═══
 function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, clearStartTpl, go }) {
-  const [po, setPo] = useState(""); const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
+  const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
-  const [step, setStep] = useState("choose"); // choose, build
+  const [step, setStep] = useState("choose"); // choose, job, build
   const [jnJobId, setJnJobId] = useState("");
-  const [jnJobs, setJnJobs] = useState([]);
-  const [jnLoading, setJnLoading] = useState(false);
   const [jnAll, setJnAll] = useState([]);
   const [showJnDrop, setShowJnDrop] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
 
   // Auto-load JN jobs on mount
   useEffect(() => {
@@ -626,13 +625,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
       try {
         const r = await fetch("/api/jn?action=jobs");
         const data = await r.json();
-        const jobs = data.jobs || [];
-        setJnAll(jobs);
-        // Also load contacts and merge
-        const r2 = await fetch("/api/jn?action=contacts");
-        const d2 = await r2.json();
-        const contacts = (d2.contacts || []).map((c) => ({ ...c, isContact: true }));
-        setJnAll([...jobs, ...contacts]);
+        setJnAll(data.jobs || []);
       } catch (e) { console.error(e); }
     })();
   }, []);
@@ -641,7 +634,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
     if (!job.trim()) return false;
     const s = job.toLowerCase();
     return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s) || (j.jobName || "").toLowerCase().includes(s);
-  }).slice(0, 8);
+  }).slice(0, 6);
 
   const active = items.filter((i) => i.active !== false);
   const cats = ["All", ...new Set(active.map((i) => i.category))];
@@ -702,7 +695,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
 
   const submit = () => {
     if (!lines.length || !allOptionsSet) return;
-    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: po.trim(), jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
+    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: "", jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     if (type === "order") {
       sI(items.map((it) => {
         const ls2 = lines.filter((l) => l.itemId === it.id);
@@ -734,10 +727,11 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
 
   if (done) return (
     <div className="fu" style={{ textAlign: "center", paddingTop: 60 }}>
-      <div style={{ display: "inline-flex", background: C.grn + "22", borderRadius: 16, padding: 20, marginBottom: 20 }}><CheckCircle size={48} color={C.grn} /></div>
-      <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8 }}>{type === "return" ? "Return" : "Order"} Submitted</h2>
-      <p style={{ color: C.t2, marginBottom: 24 }}>PO #{po || "N/A"} submitted for approval.</p>
-      <button onClick={go} style={bP}><Home size={14} /> Back Home</button>
+      <div style={{ display: "inline-flex", background: C.grn + "15", borderRadius: 24, padding: 24, marginBottom: 24 }}><CheckCircle size={56} color={C.grn} /></div>
+      <h2 style={{ fontSize: 26, fontWeight: 800, marginBottom: 8 }}>{type === "return" ? "Return" : "Order"} Submitted!</h2>
+      <p style={{ color: C.t2, fontSize: 15, marginBottom: 8 }}>{job ? `Job: ${job}` : "Submitted for approval."}</p>
+      <p style={{ color: C.t2, fontSize: 13, marginBottom: 30 }}>{lines.length} item{lines.length !== 1 ? "s" : ""} · {fmt$(tSell)} total</p>
+      <button onClick={go} style={{ ...bP, padding: "16px 40px", fontSize: 16, borderRadius: 14 }}><Home size={16} /> Back Home</button>
     </div>
   );
 
@@ -756,58 +750,109 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
 
   return (
     <div className="fu">
-      <button onClick={step === "build" && templates.length > 0 && type === "order" ? () => setStep("choose") : go} style={{ ...bS, marginBottom: 16, padding: "8px 14px", fontSize: 13 }}><ArrowLeft size={14} /> Back</button>
-      <h1 style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, fontFamily: BC }}>NEW {type === "return" ? "RETURN" : "ORDER"}</h1>
-      <p style={{ color: C.t2, fontSize: 13, marginBottom: 20 }}>Select items, choose options, enter quantities, and submit for approval.</p>
-      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div style={{ flex: "1 1 420px", minWidth: 300 }}>
-          <div style={{ ...crd, marginBottom: 14 }}>
-            <Rw><Cl f={1}><Fld label="PO #"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl>
-            <Cl f={2}><Fld label="Homeowner / Job Name">
-              <div style={{ position: "relative" }}>
-                <input value={job} onChange={(e) => { setJob(e.target.value); setShowJnDrop(true); if (e.target.value.trim() === "") { setJnJobId(""); setAddr(""); } }}
-                  onFocus={() => setShowJnDrop(true)} onBlur={() => setTimeout(() => setShowJnDrop(false), 200)}
-                  placeholder="Start typing to search JobNimbus..." style={inp} autoComplete="off" />
-                {showJnDrop && jnFiltered.length > 0 && (
-                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 200, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", maxHeight: 280, overflow: "auto", marginTop: 4 }}>
-                    {jnFiltered.map((j) => (
-                      <div key={j.id} onMouseDown={(e) => { e.preventDefault(); setJob(j.name || ""); setAddr(j.address || ""); setJnJobId(j.id || ""); setShowJnDrop(false); }}
-                        style={{ padding: "10px 12px", cursor: "pointer", borderBottom: `1px solid ${C.brd}`, transition: "background .1s" }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = C.sf; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                        <div style={{ fontWeight: 700, fontSize: 13 }}>{j.name}{j.jobName && j.jobName !== j.name ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 11 }}> · {j.jobName}</span> : null}</div>
-                        {j.address && <div style={{ fontSize: 11, color: C.t2, marginTop: 1 }}>{j.address}</div>}
+      <button onClick={step === "build" && templates.length > 0 && type === "order" ? () => setStep("choose") : go} style={{ ...bS, marginBottom: 16, padding: "8px 14px", fontSize: 13, borderRadius: 10 }}><ArrowLeft size={14} /> Back</button>
+      <h1 style={{ fontSize: 26, fontWeight: 900, marginBottom: 4, fontFamily: BC, letterSpacing: "-.02em" }}>NEW {type === "return" ? "RETURN" : "ORDER"}</h1>
+      <p style={{ color: C.t2, fontSize: 14, marginBottom: 24 }}>Select a job, add materials, and submit.</p>
+
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ flex: "1 1 440px", minWidth: 300 }}>
+
+          {/* ── JOB SELECTION ── */}
+          <div style={{ background: C.card, borderRadius: 16, border: `1px solid ${C.brd}`, padding: 24, marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.t2, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 12 }}>Job Info</div>
+
+            {!manualMode ? (
+              <>
+                <div style={{ position: "relative", marginBottom: 4 }}>
+                  <Search size={16} style={{ position: "absolute", left: 14, top: 14, color: C.t2 }} />
+                  <input value={job} onChange={(e) => { setJob(e.target.value); setShowJnDrop(true); if (!e.target.value.trim()) { setJnJobId(""); setAddr(""); } }}
+                    onFocus={() => setShowJnDrop(true)} onBlur={() => setTimeout(() => setShowJnDrop(false), 200)}
+                    placeholder="Search jobs in JobNimbus..." style={{ ...inp, paddingLeft: 40, padding: "14px 14px 14px 40px", fontSize: 15, borderRadius: 12, background: C.sf }} autoComplete="off" />
+
+                  {showJnDrop && job.trim().length > 0 && (
+                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 200, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.15)", maxHeight: 320, overflow: "auto", marginTop: 6 }}>
+                      {jnFiltered.map((j) => (
+                        <div key={j.id} onMouseDown={(e) => { e.preventDefault(); setJob(j.name || ""); setAddr(j.address || ""); setJnJobId(j.id || ""); setShowJnDrop(false); }}
+                          style={{ padding: "14px 16px", cursor: "pointer", borderBottom: `1px solid ${C.brd}`, transition: "background .15s" }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = C.sf; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "#fff"; }}>
+                          <div style={{ fontWeight: 600, fontSize: 14, color: C.txt }}>{j.name}</div>
+                          {j.address && <div style={{ fontSize: 12, color: C.t2, marginTop: 3 }}>{j.address}</div>}
+                          {j.status && <div style={{ fontSize: 10, color: C.t2, marginTop: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{j.status}</div>}
+                        </div>
+                      ))}
+                      {jnFiltered.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: C.t2, fontSize: 13 }}>No jobs match "{job}"</div>}
+                      <div onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowJnDrop(false); }}
+                        style={{ padding: "12px 16px", cursor: "pointer", background: C.sf, borderTop: `1px solid ${C.brd}`, borderRadius: "0 0 12px 12px", textAlign: "center", fontWeight: 600, fontSize: 13, color: C.ac, transition: "background .15s" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = C.brd; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = C.sf; }}>
+                        Enter manually without JobNimbus
                       </div>
-                    ))}
+                    </div>
+                  )}
+                </div>
+
+                {jnJobId && (
+                  <div style={{ marginTop: 12, background: C.grn + "10", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+                    <CheckCircle size={16} color={C.grn} />
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>{job}</div>
+                      {addr && <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{addr}</div>}
+                    </div>
+                    <button onClick={() => { setJob(""); setAddr(""); setJnJobId(""); }} style={{ marginLeft: "auto", background: "none", border: "none", color: C.t2, cursor: "pointer", padding: 4 }}><X size={14} /></button>
                   </div>
                 )}
-              </div>
-            </Fld></Cl></Rw>
-            <Fld label="Address"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Auto-filled from JobNimbus or type manually" style={inp} /></Fld>
-            {jnJobId && <div style={{ fontSize: 11, color: C.grn, marginBottom: 10, fontWeight: 600 }}>✓ Linked to JobNimbus — PDF will upload to this job on approval</div>}
-            <Fld label="Notes (for your reference — visible on order)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery instructions, reminders, special requests..." rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
+
+                {!jnJobId && !job.trim() && (
+                  <button onClick={() => setManualMode(true)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer", fontSize: 13, marginTop: 8, padding: 0, textDecoration: "underline" }}>
+                    Enter manually without JobNimbus
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={{ marginBottom: 10 }}>
+                  <input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Homeowner name" style={{ ...inp, fontSize: 15, borderRadius: 12, padding: "14px", marginBottom: 10 }} />
+                  <input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Address" style={{ ...inp, fontSize: 15, borderRadius: 12, padding: "14px" }} />
+                </div>
+                <button onClick={() => { setManualMode(false); setJob(""); setAddr(""); setJnJobId(""); }} style={{ background: "none", border: "none", color: C.ac, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600 }}>
+                  ← Search JobNimbus instead
+                </button>
+              </>
+            )}
           </div>
-          <div style={crd}>
-            <div style={{ ...lbl, marginBottom: 10 }}>Add Items</div>
-            <Rw g={8}>
-              <Cl f={2}><div style={{ position: "relative" }}><Search size={13} style={{ position: "absolute", left: 10, top: 11, color: C.t2 }} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search..." style={{ ...inp, paddingLeft: 30 }} /></div></Cl>
-              <Cl f={1}><select value={cat} onChange={(e) => setCat(e.target.value)} style={{ ...inp, cursor: "pointer" }}>{cats.map((c) => <option key={c}>{c}</option>)}</select></Cl>
-            </Rw>
-            <div style={{ maxHeight: 350, overflow: "auto", marginTop: 10 }}>
-              {filt.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.t2, fontSize: 13 }}>No items found.</div>}
+
+          {/* ── NOTES ── */}
+          <div style={{ background: C.card, borderRadius: 16, border: `1px solid ${C.brd}`, padding: 24, marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.t2, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 12 }}>Notes</div>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery instructions, reminders, special requests..." rows={2} style={{ ...inp, resize: "vertical", borderRadius: 12, fontSize: 14, padding: "12px 14px" }} />
+          </div>
+
+          {/* ── ADD ITEMS ── */}
+          <div style={{ background: C.card, borderRadius: 16, border: `1px solid ${C.brd}`, padding: 24, boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.t2, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 12 }}>Add Materials</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <div style={{ flex: 2, position: "relative" }}>
+                <Search size={14} style={{ position: "absolute", left: 12, top: 13, color: C.t2 }} />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search materials..." style={{ ...inp, paddingLeft: 34, borderRadius: 12, padding: "12px 14px 12px 34px" }} />
+              </div>
+              <select value={cat} onChange={(e) => setCat(e.target.value)} style={{ ...inp, cursor: "pointer", borderRadius: 12, padding: "12px 14px", flex: "0 0 auto", width: "auto", minWidth: 100 }}>{cats.map((c) => <option key={c}>{c}</option>)}</select>
+            </div>
+            <div style={{ maxHeight: 360, overflow: "auto" }}>
+              {filt.length === 0 && <div style={{ padding: 24, textAlign: "center", color: C.t2, fontSize: 13 }}>No items found.</div>}
               {filt.map((it) => {
                 const opts = it.options && it.options.length > 0 ? it.options : [""];
                 const hasOpts = opts.length > 1 || (opts.length === 1 && opts[0] !== "");
                 return (
-                  <div key={it.id} style={{ padding: "8px 4px", borderBottom: `1px solid ${C.brd}` }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <div key={it.id} style={{ padding: "10px 4px", borderBottom: `1px solid ${C.brd}` }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                       <div style={{ flex: "1 1 180px", minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span></div>
-                        <div style={{ fontSize: 10, color: C.t2, marginTop: 1 }}>{it.category} · {totalStock(it)} {it.unit}</div>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 11 }}>({it.unit})</span></div>
+                        <div style={{ fontSize: 11, color: C.t2, marginTop: 2 }}>{it.category} · {totalStock(it)} avail</div>
                       </div>
                       {hasOpts ? (
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <select id={`opt-${it.id}`} defaultValue="" style={{ ...inp, padding: "6px 10px", fontSize: 12, width: "auto", minWidth: 130, cursor: "pointer" }}>
+                          <select id={`opt-${it.id}`} defaultValue="" style={{ ...inp, padding: "8px 10px", fontSize: 13, width: "auto", minWidth: 140, cursor: "pointer", borderRadius: 10 }}>
                             <option value="" disabled>Select option...</option>
                             {opts.map((opt) => {
                               const added = lines.find((l) => l.key === it.id + ":" + opt);
@@ -818,12 +863,12 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                           <button onClick={() => {
                             const sel = document.getElementById(`opt-${it.id}`);
                             if (sel && sel.value) { addLn(it, sel.value); sel.value = ""; }
-                          }} style={{ ...bP, padding: "6px 12px", fontSize: 12, whiteSpace: "nowrap" }}><Plus size={12} /> Add</button>
+                          }} style={{ ...bP, padding: "8px 14px", fontSize: 13, borderRadius: 10, whiteSpace: "nowrap" }}><Plus size={13} /> Add</button>
                         </div>
                       ) : (
                         <button onClick={() => addLn(it, opts[0])} disabled={!!lines.find((l) => l.key === it.id + ":" + opts[0])}
-                          style={{ ...bP, padding: "6px 12px", fontSize: 12, opacity: lines.find((l) => l.key === it.id + ":" + opts[0]) ? 0.3 : 1 }}>
-                          <Plus size={12} /> Add
+                          style={{ ...bP, padding: "8px 14px", fontSize: 13, borderRadius: 10, opacity: lines.find((l) => l.key === it.id + ":" + opts[0]) ? 0.3 : 1 }}>
+                          <Plus size={13} /> Add
                         </button>
                       )}
                     </div>
@@ -833,34 +878,31 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
             </div>
           </div>
         </div>
-        {/* SUMMARY */}
-        <div style={{ flex: "1 1 310px", minWidth: 280 }}>
-          <div style={{ ...crd, position: "sticky", top: 70 }}>
-            <div style={{ ...lbl, marginBottom: 10 }}>Summary · {lines.length} line{lines.length !== 1 ? "s" : ""}</div>
-            {!lines.length && <div style={{ padding: 24, textAlign: "center", color: C.t2, fontSize: 13 }}>Add items from the left</div>}
+
+        {/* ── SUMMARY PANEL ── */}
+        <div style={{ flex: "1 1 320px", minWidth: 290 }}>
+          <div style={{ background: C.card, borderRadius: 16, border: `1px solid ${C.brd}`, padding: 24, position: "sticky", top: 70, boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.t2, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 14 }}>Order Summary · {lines.length} item{lines.length !== 1 ? "s" : ""}</div>
+            {!lines.length && <div style={{ padding: 30, textAlign: "center", color: C.t2, fontSize: 14 }}>Add materials to get started</div>}
             {lines.map((l, i) => {
               const it = iMap[l.itemId] || { name: "?", unit: "" };
               const hasOpts = it.options && it.options.length > 0;
               const needsOpt = hasOpts && (!l.option || l.option === "");
               return (
-                <div key={l.key} style={{ padding: "10px 0", borderBottom: `1px solid ${C.brd}`, background: needsOpt ? C.wrn + "08" : "transparent", marginLeft: needsOpt ? -8 : 0, marginRight: needsOpt ? -8 : 0, paddingLeft: needsOpt ? 8 : 0, paddingRight: needsOpt ? 8 : 0, borderRadius: needsOpt ? 6 : 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span>{l.option && l.option !== "_default" ? <span style={{ fontWeight: 400, color: C.t2 }}> · {l.option}</span> : null}</div>
-                    <button onClick={() => rmLn(i)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
+                <div key={l.key} style={{ padding: "12px 0", borderBottom: `1px solid ${C.brd}`, background: needsOpt ? C.wrn + "08" : "transparent", marginLeft: needsOpt ? -10 : 0, marginRight: needsOpt ? -10 : 0, paddingLeft: needsOpt ? 10 : 0, paddingRight: needsOpt ? 10 : 0, borderRadius: needsOpt ? 10 : 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{it.name}{l.option && l.option !== "_default" ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 12 }}> · {l.option}</span> : null}</div>
+                    <button onClick={() => rmLn(i)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer", padding: 4 }}><Trash2 size={14} /></button>
                   </div>
                   {needsOpt && (
-                    <div style={{ marginBottom: 6 }}>
+                    <div style={{ marginBottom: 8 }}>
                       <select value="" onChange={(e) => {
                         if (!e.target.value) return;
                         const opt = e.target.value;
                         const v = getVariants(it);
                         const vd = v[opt] || { wac: it.wacCost || 0 };
-                        updLn(i, "option", opt);
-                        updLn(i, "unitCost", vd.wac || it.wacCost || 0);
-                        updLn(i, "markupCost", (vd.wac || it.wacCost || 0) * (1 + (it.markup || 0) / 100));
-                        // Update the key so it's unique per option
                         const n = [...lines]; n[i] = { ...n[i], key: it.id + ":" + opt, option: opt, unitCost: vd.wac || it.wacCost || 0, markupCost: (vd.wac || it.wacCost || 0) * (1 + (it.markup || 0) / 100) }; setLines(n);
-                      }} style={{ ...inp, padding: "8px 10px", fontSize: 13, borderColor: C.wrn, cursor: "pointer" }}>
+                      }} style={{ ...inp, padding: "10px 12px", fontSize: 14, borderColor: C.wrn, cursor: "pointer", borderRadius: 10 }}>
                         <option value="">⚠ Select color/style...</option>
                         {(it.options || []).map((opt) => {
                           const vd = (getVariants(it))[opt] || { qty: 0 };
@@ -869,23 +911,21 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                       </select>
                     </div>
                   )}
-                  <Rw g={8}>
-                    <Cl f={1}><div style={{ fontSize: 10, color: C.t2, marginBottom: 2 }}>QTY ({it.unit || "each"})</div><input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} onFocus={(e) => e.target.select()} style={{ ...inp, padding: "6px 8px", fontSize: 13, textAlign: "center" }} /></Cl>
-                  </Rw>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11 }}>
-                    <span style={{ color: C.t2 }}>Cost: {fmt$(l.unitCost)} · Sell: {fmt$(l.markupCost)}</span>
-                    <span style={{ fontFamily: MN, fontWeight: 600, color: C.ac }}>{fmt$(l.qty * l.markupCost)}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ fontSize: 11, color: C.t2, fontWeight: 600 }}>QTY ({it.unit || "each"})</div>
+                    <input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} onFocus={(e) => e.target.select()} style={{ ...inp, padding: "8px 10px", fontSize: 14, textAlign: "center", width: 70, borderRadius: 10 }} />
+                    <div style={{ marginLeft: "auto", fontFamily: MN, fontWeight: 700, fontSize: 15, color: C.ac }}>{fmt$(l.qty * l.markupCost)}</div>
                   </div>
                 </div>
               );
             })}
             {lines.length > 0 && <>
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `2px solid ${C.brdL}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}><span style={{ color: C.t2 }}>Our Cost</span><span style={{ fontFamily: MN }}>{fmt$(tCost)}</span></div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 800 }}><span>Sell Total</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)}</span></div>
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: `2px solid ${C.brd}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.t2, marginBottom: 6 }}><span>Our Cost</span><span style={{ fontFamily: MN }}>{fmt$(tCost)}</span></div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 22, fontWeight: 800 }}><span>Total</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)}</span></div>
               </div>
-              <button onClick={submit} disabled={!lines.length || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, opacity: (!lines.length || !allOptionsSet) ? 0.5 : 1 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
+              <button onClick={submit} disabled={!lines.length || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 16, padding: "16px", fontSize: 16, borderRadius: 14, opacity: (!lines.length || !allOptionsSet) ? 0.5 : 1, fontWeight: 800, letterSpacing: ".01em" }}><Check size={18} /> Submit {type === "return" ? "Return" : "Order"}</button>
             </>}
           </div>
         </div>
