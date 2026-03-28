@@ -54,16 +54,14 @@ export default async function handler(req, res) {
       if (!fileName || !htmlContent || !relatedId) {
         return res.status(400).json({ error: "fileName, htmlContent, and relatedId required", got: { fileName: !!fileName, htmlContent: !!htmlContent, relatedId: !!relatedId } });
       }
-      // Create an activity/note on the job with the order details
+      const plainText = htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 5000);
       const r = await fetch(`${BASE}/activities`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          type: "activity",
           record_type_name: "Note",
-          note: htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').substring(0, 5000),
-          title: fileName.replace('.html', ''),
-          related: [relatedId],
+          note: plainText,
+          primary: relatedId,
           is_active: true,
         }),
       });
