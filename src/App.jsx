@@ -168,7 +168,7 @@ async function uploadToJN(order, items) {
     const r = await fetch("/api/jn?action=upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileName, htmlContent: html, relatedId: order.jnJobId }),
+      body: JSON.stringify({ fileName, htmlContent: html, relatedId: order.jnJobId, jobName: order.jobName || "", jobAddress: order.jobAddress || "" }),
     });
     const data = await r.json();
     return data.fileId || null;
