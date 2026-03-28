@@ -27,6 +27,25 @@ function jnRequest(method, path, bodyObj) {
   });
 }
 
+function readBody(req) {
+  return new Promise(function(resolve) {
+    if (req.body && typeof req.body === "object" && req.body.fileName) {
+      resolve(JSON.parse(JSON.stringify(req.body)));
+      return;
+    }
+    if (req.body && typeof req.body === "string") {
+      try { resolve(JSON.parse(req.body)); } catch(e) { resolve({}); }
+      return;
+    }
+    var chunks = [];
+    req.on("data", function(c) { chunks.push(c); });
+    req.on("end", function() {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
+      catch(e) { resolve({}); }
+    });
+  });
+}
+
 module.exports = async function(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -54,27 +73,26 @@ module.exports = async function(req, res) {
     }
 
     if (action === "upload" && req.method === "POST") {
-      var body = req.body;
-      if (typeof body === "string") try { body = JSON.parse(body); } catch(e) { body = {}; }
-      if (!body || !body.htmlContent || !body.fileName) {
-        return res.status(400).json({ error: "Missing fields" });
+      var body = await readBody(req);
+      if (!body.htmlContent || !body.fileName) {
+        return res.status(400).json({ error: "Missing fields", keys: Object.keys(body) });
       }
       var plain = String(body.htmlContent).replace(/<[^>]*>/g, " ").replace(/&[^;]+;/g, " ").replace(/\s+/g, " ").trim();
       if (plain.length > 2000) plain = plain.substring(0, 2000);
       var fname = String(body.fileName).replace(".html", "");
-      var jobName = body.jobName || "";
-      var jobAddr = body.jobAddress || "";
+      var rid = body.relatedId ? String(body.relatedId) : "";
+      var jobName = body.jobName ? String(body.jobName) : "";
+      var jobAddr = body.jobAddress ? String(body.jobAddress) : "";
 
-      var noteText = "=== MATERIAL ORDER ===\n";
-      noteText += fname + "\n";
+      var noteObj = { record_type_name: "Note" };
+      var noteText = "MATERIAL ORDER: " + fname + "\n";
       if (jobName) noteText += "Job: " + jobName + "\n";
       if (jobAddr) noteText += "Address: " + jobAddr + "\n";
-      noteText += "---\n" + plain;
+      noteText += "\n" + plain;
+      noteObj.note = noteText;
+      if (rid) noteObj.primary = rid;
 
-      var r3 = await jnRequest("POST", "/activities", {
-        record_type_name: "Note",
-        note: noteText
-      });
+      var r3 = await jnRequest("POST", "/activities", noteObj);
 
       if (r3.code >= 200 && r3.code < 300) {
         var d3 = {};
@@ -82,7 +100,19 @@ module.exports = async function(req, res) {
         return res.status(200).json({ success: true, fileId: d3.jnid || "ok" });
       }
 
-      return res.status(400).json({ error: "Failed", code: r3.code, details: r3.body });
+      // If primary caused failure, try without it
+      if (rid) {
+        delete noteObj.primary;
+        var r4 = await jnRequest("POST", "/activities", noteObj);
+        if (r4.code >= 200 && r4.code < 300) {
+          var d4 = {};
+          try { d4 = JSON.parse(r4.body); } catch(e) {}
+          return res.status(200).json({ success: true, fileId: d4.jnid || "ok", linked: false });
+        }
+        return res.status(400).json({ error: "Failed both", e1: r3.body, e2: r4.body });
+      }
+
+      return res.status(400).json({ error: "Failed", detail: r3.body });
     }
 
     if (action === "delete" && req.method === "DELETE") {
@@ -93,7 +123,7 @@ module.exports = async function(req, res) {
     }
 
     if (action === "ping") {
-      return res.status(200).json({ ok: true, v: 7 });
+      return res.status(200).json({ ok: true, v: 8 });
     }
 
     return res.status(400).json({ error: "Unknown action" });
