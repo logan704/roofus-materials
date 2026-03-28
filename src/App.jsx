@@ -30,7 +30,11 @@ select option{background:${C.w};color:${C.txt}}
 @media(max-width:480px){
   .nav-wrap button{padding:4px 6px!important;font-size:9px!important}
   .nav-wrap svg{width:12px!important;height:12px!important}
-}`;
+}
+.pac-container{z-index:10000!important;font-family:'Barlow',sans-serif!important;border-radius:8px!important;border:1px solid ${C.brd}!important;box-shadow:0 8px 24px rgba(0,0,0,0.12)!important;margin-top:4px!important}
+.pac-item{padding:8px 12px!important;font-size:13px!important;cursor:pointer!important}
+.pac-item:hover{background:${C.sf}!important}
+.pac-item-query{font-weight:700!important}`;
 
 const MN = `'IBM Plex Mono',monospace`;
 const BC = `'Barlow Condensed',sans-serif`;
@@ -60,6 +64,41 @@ function compressPhoto(file) {
     reader.readAsDataURL(file);
   });
 }
+
+// ─── Google Places Address Autocomplete ───
+const GMAP_KEY = "AIzaSyBbBi7zzfw4RQhjSrflMnbf2Np_LrOLweY";
+let _gmapLoaded = false;
+function loadGoogleMaps() {
+  if (_gmapLoaded || window.google?.maps?.places) { _gmapLoaded = true; return Promise.resolve(); }
+  return new Promise((resolve) => {
+    const s = document.createElement("script");
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${GMAP_KEY}&libraries=places`;
+    s.async = true;
+    s.onload = () => { _gmapLoaded = true; resolve(); };
+    s.onerror = () => resolve();
+    document.head.appendChild(s);
+  });
+}
+function AddressInput({ value, onChange, style }) {
+  const inputRef = useCallback((node) => {
+    if (!node) return;
+    loadGoogleMaps().then(() => {
+      if (!window.google?.maps?.places || node._acDone) return;
+      node._acDone = true;
+      const ac = new window.google.maps.places.Autocomplete(node, {
+        types: ["address"],
+        componentRestrictions: { country: "us" },
+      });
+      ac.addListener("place_changed", () => {
+        const place = ac.getPlace();
+        if (place?.formatted_address) onChange(place.formatted_address);
+        else if (place?.name) onChange(place.name);
+      });
+    });
+  }, []);
+  return <input ref={inputRef} value={value} onChange={(e) => onChange(e.target.value)} placeholder="Start typing address..." style={style} />;
+}
+
 const fmt$ = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fD = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const hP = (p) => { let h = 0; for (let i = 0; i < p.length; i++) { h = ((h << 5) - h) + p.charCodeAt(i); h |= 0; } return "h" + Math.abs(h).toString(36); };
@@ -702,7 +741,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
           <div style={{ ...crd, marginBottom: 14 }}>
             <Rw><Cl f={1}><Fld label="PO # (required)"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="PO-001" style={{ ...inp, borderColor: po.trim() ? C.brd : C.red + "66" }} /></Fld></Cl>
             <Cl f={2}><Fld label="Homeowner Name (optional)"><input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl></Rw>
-            <Fld label="Address (optional)"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Optional" style={inp} /></Fld>
+            <Fld label="Address (optional)"><AddressInput value={addr} onChange={setAddr} style={inp} /></Fld>
             <Fld label="Notes (for your reference — visible on order)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery instructions, reminders, special requests..." rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
           </div>
           <div style={crd}>
