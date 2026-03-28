@@ -21,17 +21,6 @@ function jnPost(path, data) {
     }); r.on("error", reject); r.write(payload); r.end();
   });
 }
-function jnPut(path, data) {
-  return new Promise(function(resolve, reject) {
-    var payload = JSON.stringify(data);
-    var opts = { hostname: "app.jobnimbus.com", path: "/api1" + path, method: "PUT",
-      headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } };
-    var r = https.request(opts, function(resp) {
-      var buf = []; resp.on("data", function(c) { buf.push(c); });
-      resp.on("end", function() { resolve({ code: resp.statusCode, body: Buffer.concat(buf).toString() }); });
-    }); r.on("error", reject); r.write(payload); r.end();
-  });
-}
 function jnDel(path) {
   return new Promise(function(resolve, reject) {
     var opts = { hostname: "app.jobnimbus.com", path: "/api1" + path, method: "DELETE",
@@ -60,33 +49,31 @@ module.exports = async function(req, res) {
         return { id: c.jnid, name: c.display_name || ((c.first_name || "") + " " + (c.last_name || "")).trim() || "Untitled", address: [c.address_line1, c.city, c.state_text, c.zip].filter(Boolean).join(", "), status: c.status_name || "" };
       })});
     }
-    if (action === "jobinfo") {
-      var jid = req.query.id || "d6d7b2c344ac43b5bd81b60d19e0e1f5";
-      var j = await jnGet("/jobs/" + jid);
-      return res.status(200).json(j);
-    }
-    if (action === "allfiles") {
-      var f = await jnGet("/files?limit=3&sort_field=date_created&sort_direction=desc");
+    if (action === "linkedfile") {
+      var f = await jnGet("/files?limit=5&sort_field=date_created&sort_direction=asc");
       return res.status(200).json(f);
     }
-    if (action === "fileinfo") {
-      var fid = req.query.id;
-      if (!fid) return res.status(400).json({ error: "need id param" });
-      var fi = await jnGet("/files/" + fid);
-      return res.status(200).json(fi);
-    }
     if (action === "testupload") {
-      var testHtml = "<html><body><h1>Roofus Test v22</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var testHtml = "<html><body><h1>Roofus Test v23</h1><p>" + new Date().toISOString() + "</p></body></html>";
       var testB64 = Buffer.from(testHtml).toString("base64");
+      var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
       var contactId = "c151216dcc05460d9bf0d51e3d69ff22";
-      var r1 = await jnPost("/files", {
+      var results = {};
+      var r1 = await jnPost("/jobs/" + jobId + "/files", {
         data: testB64,
-        filename: "test-v22.html",
+        filename: "test-job-path.html",
         type: 10,
-        description: "Test with primary contact object",
-        primary: { id: contactId }
+        description: "Test via job path"
       });
-      return res.status(200).json({ code: r1.code, body: r1.body });
+      results.jobPath = { code: r1.code, body: r1.body };
+      var r2 = await jnPost("/contacts/" + contactId + "/files", {
+        data: testB64,
+        filename: "test-contact-path.html",
+        type: 10,
+        description: "Test via contact path"
+      });
+      results.contactPath = { code: r2.code, body: r2.body };
+      return res.status(200).json(results);
     }
     if (action === "upload" && req.method === "POST") {
       var body = JSON.parse(JSON.stringify(req.body || {}));
@@ -96,8 +83,7 @@ module.exports = async function(req, res) {
         data: b64,
         filename: String(body.fileName),
         type: 10,
-        description: body.description || "Material Order - Roofus Construction",
-        primary: String(body.relatedId)
+        description: body.description || "Material Order - Roofus Construction"
       });
       if (r3.code >= 200 && r3.code < 300) {
         var d3 = {}; try { d3 = JSON.parse(r3.body); } catch(e) {}
@@ -109,7 +95,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 22 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 23 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
