@@ -49,23 +49,22 @@ export default async function handler(req, res) {
 
     // ─── UPLOAD DOCUMENT TO JOB ───
     if (action === "upload" && req.method === "POST") {
-      const { fileName, htmlContent, relatedId } = req.body;
+      const body = req.body || {};
+      const { fileName, htmlContent, relatedId } = body;
       if (!fileName || !htmlContent || !relatedId) {
-        return res.status(400).json({ error: "fileName, htmlContent, and relatedId required" });
+        return res.status(400).json({ error: "fileName, htmlContent, and relatedId required", got: { fileName: !!fileName, htmlContent: !!htmlContent, relatedId: !!relatedId } });
       }
-      // Convert HTML to a blob-like base64
-      const base64 = Buffer.from(htmlContent).toString("base64");
-      // Upload as an attachment
-      const r = await fetch(`${BASE}/files`, {
+      // Create an activity/note on the job with the order details
+      const r = await fetch(`${BASE}/activities`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          type: "file",
-          content_type: "text/html",
-          filename: fileName,
-          data: base64,
+          type: "activity",
+          record_type_name: "Note",
+          note: htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').substring(0, 5000),
+          title: fileName.replace('.html', ''),
           related: [relatedId],
-          description: `Material Order - ${fileName}`,
+          is_active: true,
         }),
       });
       if (!r.ok) {
@@ -73,13 +72,13 @@ export default async function handler(req, res) {
         return res.status(r.status).json({ error: "Upload failed", details: errText });
       }
       const result = await r.json();
-      return res.status(200).json({ success: true, fileId: result.jnid || result.id });
+      return res.status(200).json({ success: true, fileId: result.jnid || result.id || "ok" });
     }
 
     // ─── DELETE DOCUMENT ───
     if (action === "delete" && req.method === "DELETE") {
       if (!id) return res.status(400).json({ error: "id required" });
-      const r = await fetch(`${BASE}/files/${id}`, { method: "DELETE", headers });
+      const r = await fetch(`${BASE}/activities/${id}`, { method: "DELETE", headers });
       if (!r.ok) {
         const errText = await r.text();
         return res.status(r.status).json({ error: "Delete failed", details: errText });
