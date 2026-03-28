@@ -312,19 +312,20 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [shrinkLog, setShrinkLog] = useState([]);
+  const [trackedJobs, setTrackedJobs] = useState([]);
   const [pg, setPg] = useState("home");
   const [vOrd, setVOrd] = useState(null);
   const [startTpl, setStartTpl] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const [u, it, o, t, sh] = await Promise.all([ld("users", []), ld("items", []), ld("orders", []), ld("templates", []), ld("shrinkage", [])]);
+      const [u, it, o, t, sh, tj] = await Promise.all([ld("users", []), ld("items", []), ld("orders", []), ld("templates", []), ld("shrinkage", []), ld("tracked_jobs", [])]);
       if (!u.length) {
         const a = { id: uid(), name: "Logan", email: "logan@usaroof.com", pw: hP("admin"), role: "admin", created: new Date().toISOString() };
         u.push(a);
         await sv("users", u);
       }
-      setUsers(u); setItems(it); setOrders(o); setTemplates(t); setShrinkLog(sh);
+      setUsers(u); setItems(it); setOrders(o); setTemplates(t); setShrinkLog(sh); setTrackedJobs(tj);
       try { const s = await ldL("sess", null); if (s) { const f = u.find((x) => x.id === s.uid); if (f) setUser(f); } } catch {}
       setRdy(true);
     })();
@@ -335,6 +336,7 @@ export default function App() {
   const sO = useCallback((o) => { setOrders(o); sv("orders", o); }, []);
   const sT = useCallback((t) => { setTemplates(t); sv("templates", t); }, []);
   const sSh = useCallback((s) => { setShrinkLog(s); sv("shrinkage", s); }, []);
+  const sTJ = useCallback((j) => { setTrackedJobs(j); sv("tracked_jobs", j); }, []);
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
   const logout = useCallback(async () => { setUser(null); setPg("home"); try { localStorage.removeItem("roofus_sess"); } catch {} }, []);
   const isA = user?.role === "admin";
@@ -386,6 +388,7 @@ export default function App() {
           </div>}
 
           <NavBtn icon={FileText} label="History" active={pg === "history"} onClick={() => setPg("history")} />
+          {(isA || isM) && <NavBtn icon={DollarSign} label="Jobs" active={pg === "jobs"} onClick={() => setPg("jobs")} />}
           {isA && <NavBtn icon={BarChart2} label="Reports" active={pg === "reports"} onClick={() => setPg("reports")} />}
 
           {/* Settings Dropdown */}
@@ -425,6 +428,7 @@ export default function App() {
         {pg === "supplier" && isA && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && isA && <TplMgr templates={templates} sT={sT} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} isA={isA} isM={isM} view={setVOrd} sO={sO} />}
+        {pg === "jobs" && (isA || isM) && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} />}
         {pg === "reports" && isA && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
         {pg === "settings" && isA && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
@@ -2547,6 +2551,227 @@ function SupplierCost({ items, sI }) {
         Positive delta (green) = supplier costs more than us — we're saving money. Negative (red) = we're overpaying compared to supplier.
         All comparisons use our true blended cost (WAC), not markup price. Changes to supplier cost only affect future reporting.
       </div>
+    </div>
+  );
+}
+
+// ═══ JOB PROFIT TRACKER ═══
+function JobTracker({ jobs, sJ, orders, items }) {
+  const [view, setView] = useState("list");
+  const [editJob, setEditJob] = useState(null);
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterType, setFilterType] = useState("all");
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState("date");
+  const [addModal, setAddModal] = useState(false);
+  const [jnAll, setJnAll] = useState([]);
+  const [jnSearch, setJnSearch] = useState("");
+  const [showJnDrop, setShowJnDrop] = useState(false);
+  const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nInsurance, setNInsurance] = useState(false); const [nJnId, setNJnId] = useState("");
+  const [cCat, setCCat] = useState("labor"); const [cDesc, setCDesc] = useState(""); const [cAmt, setCAmt] = useState("");
+
+  useEffect(() => { (async () => { try { const r = await fetch("/api/jn?action=jobs"); const d = await r.json(); setJnAll(d.jobs || []); } catch(e) {} })(); }, []);
+
+  const STATUSES = ["open","in_progress","completed","final_costs","closed"];
+  const SL = { open:"Open", in_progress:"In Progress", completed:"Completed", final_costs:"Final Costs Entered", closed:"Closed" };
+  const SC = { open:{bg:C.blu+"15",c:C.blu}, in_progress:{bg:C.wrn+"15",c:C.wrn}, completed:{bg:NAVY+"15",c:NAVY}, final_costs:{bg:C.grn+"15",c:C.grn}, closed:{bg:C.t2+"20",c:C.t2} };
+
+  const calcJob = (j) => {
+    const contract = j.contractAmount || 0;
+    const costs = (j.costs || []).reduce((s,c) => s + (c.amount||0), 0);
+    const linked = orders.filter((o) => o.jnJobId && o.jnJobId === j.jnJobId && o.status === "approved");
+    const matOrd = linked.reduce((s,o) => s + (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.unitCost||0), 0), 0);
+    const total = costs + matOrd;
+    const projGP$ = contract * ((j.projectedGP||0)/100);
+    const actGP$ = contract - total;
+    const actGP = contract > 0 ? (actGP$/contract)*100 : 0;
+    const variance = actGP$ - projGP$;
+    const labor = (j.costs||[]).filter(c=>c.category==="labor").reduce((s,c)=>s+(c.amount||0),0);
+    const mat = (j.costs||[]).filter(c=>c.category==="material").reduce((s,c)=>s+(c.amount||0),0) + matOrd;
+    const other = (j.costs||[]).filter(c=>c.category==="other").reduce((s,c)=>s+(c.amount||0),0);
+    return { ...j, totalCosts:total, projGP$, actGP$, actGP, variance, labor, mat, other, matOrd };
+  };
+
+  const allCalc = jobs.map(calcJob);
+  const filtered = allCalc.filter((j) => {
+    if (filterStatus !== "all" && j.status !== filterStatus) return false;
+    if (filterType === "insurance" && !j.isInsurance) return false;
+    if (filterType === "retail" && j.isInsurance) return false;
+    if (search) { const s = search.toLowerCase(); if (!(j.name||"").toLowerCase().includes(s) && !(j.address||"").toLowerCase().includes(s)) return false; }
+    return true;
+  }).sort((a,b) => {
+    if (sortBy==="name") return (a.name||"").localeCompare(b.name||"");
+    if (sortBy==="gp") return b.actGP-a.actGP;
+    if (sortBy==="variance") return a.variance-b.variance;
+    if (sortBy==="contract") return b.contractAmount-a.contractAmount;
+    return new Date(b.createdDate||0)-new Date(a.createdDate||0);
+  });
+
+  const jnF = jnAll.filter((j) => { if (!jnSearch.trim()) return false; const s=jnSearch.toLowerCase(); return (j.name||"").toLowerCase().includes(s)||(j.address||"").toLowerCase().includes(s); }).slice(0,6);
+  const openJ = allCalc.filter(j=>j.status!=="closed");
+  const closedJ = allCalc.filter(j=>j.status==="closed"||j.status==="final_costs");
+  const totProjProfit = openJ.reduce((s,j)=>s+j.projGP$,0);
+  const totActProfit = closedJ.reduce((s,j)=>s+j.actGP$,0);
+  const avgProjGP = openJ.length ? openJ.reduce((s,j)=>s+(j.projectedGP||0),0)/openJ.length : 0;
+  const avgActGP = closedJ.length ? closedJ.reduce((s,j)=>s+j.actGP,0)/closedJ.length : 0;
+
+  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:+nGP||0, isInsurance:nInsurance, status:"open", costs:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
+  const addCost = (jid) => { if (!cDesc.trim()||!cAmt) return; sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cCat,description:cDesc.trim(),amount:+cAmt||0,date:new Date().toISOString()}]}:j)); setCDesc(""); setCAmt(""); setCCat("labor"); };
+  const deleteCost = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
+  const updateJob = (jid,upd) => { sJ(jobs.map(j=>j.id===jid?{...j,...upd}:j)); };
+
+  // ── REPORTS ──
+  if (view === "reports") {
+    const fade = allCalc.filter(j=>(j.status==="closed"||j.status==="final_costs")&&j.variance<-500).sort((a,b)=>a.variance-b.variance);
+    const wins = allCalc.filter(j=>(j.status==="closed"||j.status==="final_costs")&&j.variance>500).sort((a,b)=>b.variance-a.variance);
+    const tL=closedJ.reduce((s,j)=>s+j.labor,0), tM=closedJ.reduce((s,j)=>s+j.mat,0), tO=closedJ.reduce((s,j)=>s+j.other,0), tAll=tL+tM+tO;
+    return (
+      <div className="fu">
+        <button onClick={()=>setView("list")} style={{...bS,marginBottom:16,borderRadius:10,padding:"8px 14px",fontSize:13}}><ArrowLeft size={14}/> Back to Jobs</button>
+        <h1 style={{fontSize:26,fontWeight:900,marginBottom:20,fontFamily:BC}}>JOB PROFITABILITY REPORTS</h1>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
+          {[{l:"Avg Proj GP%",v:avgProjGP.toFixed(1)+"%",c:C.blu},{l:"Avg Actual GP%",v:avgActGP.toFixed(1)+"%",c:avgActGP>=avgProjGP?C.grn:C.red},{l:"Proj Profit (Open)",v:fmt$(totProjProfit),c:C.blu},{l:"Actual Profit (Closed)",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
+            <div key={i} style={{flex:"1 1 200px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:20,textAlign:"center"}}>
+              <div style={{fontSize:11,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>{s.l}</div>
+              <div style={{fontSize:28,fontWeight:900,color:s.c,fontFamily:MN}}>{s.v}</div>
+            </div>
+          ))}
+        </div>
+        {tAll>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:24,marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:16}}>Cost Breakdown (Completed)</div>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+            {[{l:"Labor",v:tL,c:C.blu},{l:"Materials",v:tM,c:RED},{l:"Other",v:tO,c:C.wrn}].map(c=>(
+              <div key={c.l} style={{flex:"1 1 150px",textAlign:"center"}}>
+                <div style={{fontSize:22,fontWeight:800,color:c.c,fontFamily:MN}}>{fmt$(c.v)}</div>
+                <div style={{fontSize:12,color:C.t2,marginTop:4}}>{c.l} · {tAll>0?((c.v/tAll)*100).toFixed(0):0}%</div>
+                <div style={{height:6,background:C.sf,borderRadius:3,marginTop:6}}><div style={{height:6,background:c.c,borderRadius:3,width:(tAll>0?(c.v/tAll)*100:0)+"%"}}/></div>
+              </div>
+            ))}
+          </div>
+        </div>}
+        {fade.length>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:24,marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Profit Fade — Underperforming</div>
+          {fade.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.red,fontFamily:MN}}>{fmt$(j.variance)}</div><div style={{fontSize:10,color:C.t2}}>Proj {j.projectedGP}% → Actual {j.actGP.toFixed(1)}%</div></div></div>))}
+        </div>}
+        {wins.length>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:24}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.grn,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Profit Wins — Overperforming</div>
+          {wins.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.grn,fontFamily:MN}}>+{fmt$(j.variance)}</div><div style={{fontSize:10,color:C.t2}}>Proj {j.projectedGP}% → Actual {j.actGP.toFixed(1)}%</div></div></div>))}
+        </div>}
+      </div>
+    );
+  }
+
+  // ── JOB DETAIL ──
+  if (editJob) {
+    const j = calcJob(editJob);
+    const sc = SC[j.status]||SC.open;
+    return (
+      <div className="fu">
+        <button onClick={()=>setEditJob(null)} style={{...bS,marginBottom:16,borderRadius:10,padding:"8px 14px",fontSize:13}}><ArrowLeft size={14}/> Back</button>
+        <div style={{background:C.card,borderRadius:16,border:`1px solid ${C.brd}`,padding:28,marginBottom:16,boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:16}}>
+            <div><h1 style={{fontSize:24,fontWeight:900,fontFamily:BC}}>{j.name}</h1>{j.address&&<div style={{fontSize:14,color:C.t2,marginTop:4}}>{j.address}</div>}</div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              {j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"4px 10px",borderRadius:6,background:C.blu+"15",color:C.blu}}>INSURANCE</span>}
+              <select value={j.status} onChange={(e)=>{updateJob(j.id,{status:e.target.value,completedDate:["completed","final_costs","closed"].includes(e.target.value)?new Date().toISOString():j.completedDate}); setEditJob({...editJob,status:e.target.value});}} style={{...inp,padding:"8px 12px",fontSize:12,width:"auto",borderRadius:10,fontWeight:700,background:sc.bg,color:sc.c,cursor:"pointer"}}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+            {[{l:"Contract",v:fmt$(j.contractAmount),bg:C.sf,c:C.txt},{l:"Total Costs",v:fmt$(j.totalCosts),bg:C.sf,c:C.red},{l:"Actual GP",v:fmt$(j.actGP$)+" ("+j.actGP.toFixed(1)+"%)",bg:j.actGP>=(j.projectedGP||0)?C.grn+"10":C.red+"10",c:j.actGP>=0?C.grn:C.red},{l:"Variance",v:(j.variance>=0?"+":"")+fmt$(j.variance),bg:j.variance>=0?C.grn+"10":C.red+"10",c:j.variance>=0?C.grn:C.red}].map((m,i)=>(
+              <div key={i} style={{flex:"1 1 120px",textAlign:"center",padding:14,background:m.bg,borderRadius:12}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>{m.l}</div><div style={{fontSize:20,fontWeight:900,fontFamily:MN,color:m.c}}>{m.v}</div></div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:12,marginTop:16,flexWrap:"wrap"}}>
+            <div style={{flex:"1 1 150px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Contract $</div><input type="number" value={j.contractAmount||""} onChange={(e)=>{updateJob(j.id,{contractAmount:+e.target.value||0}); setEditJob({...editJob,contractAmount:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN}}/></div>
+            <div style={{flex:"1 1 100px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Proj GP %</div><input type="number" value={j.projectedGP||""} onChange={(e)=>{updateJob(j.id,{projectedGP:+e.target.value||0}); setEditJob({...editJob,projectedGP:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN}}/></div>
+            <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={j.isInsurance||false} onChange={(e)=>{updateJob(j.id,{isInsurance:e.target.checked}); setEditJob({...editJob,isInsurance:e.target.checked});}} style={{width:18,height:18}}/> Insurance</label></div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+          <div style={{flex:"1 1 400px"}}>
+            <div style={{background:C.card,borderRadius:16,border:`1px solid ${C.brd}`,padding:24,boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Job Costs</div>
+              <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+                <select value={cCat} onChange={(e)=>setCCat(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"10px 12px",fontSize:13}}><option value="labor">Labor</option><option value="material">Material</option><option value="other">Other</option></select>
+                <input value={cDesc} onChange={(e)=>setCDesc(e.target.value)} placeholder="Description" style={{...inp,flex:2,borderRadius:10,padding:"10px 12px",fontSize:13}}/>
+                <input type="number" value={cAmt} onChange={(e)=>setCAmt(e.target.value)} placeholder="$" onFocus={(e)=>e.target.select()} style={{...inp,width:100,borderRadius:10,padding:"10px 12px",fontSize:13,fontFamily:MN}}/>
+                <button onClick={()=>addCost(j.id)} style={{...bP,borderRadius:10,padding:"10px 16px",fontSize:13}}><Plus size={14}/></button>
+              </div>
+              {!(j.costs||[]).length&&!j.matOrd&&<div style={{padding:20,textAlign:"center",color:C.t2,fontSize:13}}>No costs yet.</div>}
+              {(j.costs||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:c.category==="labor"?C.blu+"15":c.category==="material"?RED+"15":C.wrn+"15",color:c.category==="labor"?C.blu:c.category==="material"?RED:C.wrn}}>{c.category}</span><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(c.amount)}</span><button onClick={()=>{deleteCost(j.id,c.id); setEditJob({...editJob,costs:(editJob.costs||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
+              {j.matOrd>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:RED+"15",color:RED}}>material</span><span style={{fontSize:13,fontWeight:600,color:C.t2}}>Linked Orders (auto)</span></div><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(j.matOrd)}</span></div>}
+              {j.totalCosts>0&&<div style={{marginTop:12,paddingTop:12,borderTop:`2px solid ${C.brd}`}}>
+                {j.labor>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:C.blu,fontWeight:600}}>Labor</span><span style={{fontFamily:MN}}>{fmt$(j.labor)}</span></div>}
+                {j.mat>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:RED,fontWeight:600}}>Materials</span><span style={{fontFamily:MN}}>{fmt$(j.mat)}</span></div>}
+                {j.other>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:C.wrn,fontWeight:600}}>Other</span><span style={{fontFamily:MN}}>{fmt$(j.other)}</span></div>}
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,marginTop:8,paddingTop:8,borderTop:`1px solid ${C.brd}`}}><span>Total</span><span style={{fontFamily:MN,color:C.red}}>{fmt$(j.totalCosts)}</span></div>
+              </div>}
+            </div>
+          </div>
+          <div style={{flex:"0 0 280px"}}>
+            <div style={{background:C.card,borderRadius:16,border:`1px solid ${C.brd}`,padding:24,boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:16}}>Profit Summary</div>
+              <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Projected</div><div style={{fontSize:20,fontWeight:800,fontFamily:MN}}>{fmt$(j.projGP$)} <span style={{fontSize:13,color:C.t2,fontWeight:600}}>({j.projectedGP}%)</span></div></div>
+              <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Actual</div><div style={{fontSize:20,fontWeight:800,fontFamily:MN,color:j.actGP$>=0?C.grn:C.red}}>{fmt$(j.actGP$)} <span style={{fontSize:13,fontWeight:600}}>({j.actGP.toFixed(1)}%)</span></div></div>
+              <div style={{paddingTop:12,borderTop:`2px solid ${C.brd}`}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Variance</div><div style={{fontSize:24,fontWeight:900,fontFamily:MN,color:j.variance>=0?C.grn:C.red}}>{j.variance>=0?"+":""}{fmt$(j.variance)}</div></div>
+            </div>
+            <button onClick={()=>{if(confirm("Delete this job?")) {sJ(jobs.filter(x=>x.id!==j.id)); setEditJob(null);}}} style={{...bS,width:"100%",marginTop:12,borderRadius:10,color:C.red,borderColor:C.red+"44",justifyContent:"center"}}><Trash2 size={14}/> Delete Job</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── LIST ──
+  return (
+    <div className="fu">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
+        <div><h1 style={{fontSize:26,fontWeight:900,fontFamily:BC}}>JOBS</h1><p style={{color:C.t2,fontSize:14,marginTop:4}}>{jobs.length} total · {openJ.length} open</p></div>
+        <div style={{display:"flex",gap:8}}><button onClick={()=>setView("reports")} style={{...bS,borderRadius:10,padding:"10px 16px",fontSize:13}}><BarChart2 size={14}/> Reports</button><button onClick={()=>setAddModal(true)} style={{...bP,borderRadius:10,padding:"10px 16px",fontSize:13}}><Plus size={14}/> Add Job</button></div>
+      </div>
+      <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
+        {[{l:"Open",v:openJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Closed",v:closedJ.length,c:C.grn},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
+          <div key={i} style={{flex:"1 1 160px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"16px 20px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>{s.l}</div><div style={{fontSize:22,fontWeight:900,color:s.c,fontFamily:MN,marginTop:4}}>{s.v}</div></div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+        <div style={{flex:"2 1 200px",position:"relative"}}><Search size={14} style={{position:"absolute",left:12,top:13,color:C.t2}}/><input value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Search jobs..." style={{...inp,paddingLeft:34,borderRadius:10,padding:"12px 14px 12px 34px"}}/></div>
+        <select value={filterStatus} onChange={(e)=>setFilterStatus(e.target.value)} style={{...inp,width:"auto",minWidth:120,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Status</option>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
+        <select value={filterType} onChange={(e)=>setFilterType(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Types</option><option value="insurance">Insurance</option><option value="retail">Retail</option></select>
+        <select value={sortBy} onChange={(e)=>setSortBy(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="date">Newest</option><option value="name">Name</option><option value="gp">Best GP%</option><option value="variance">Worst Variance</option><option value="contract">Largest</option></select>
+      </div>
+      {!filtered.length&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:40,textAlign:"center",color:C.t2}}>No jobs found. Click "Add Job" to start.</div>}
+      {filtered.map(j=>{const sc=SC[j.status]||SC.open; return (
+        <div key={j.id} onClick={()=>setEditJob(jobs.find(x=>x.id===j.id))} style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"18px 22px",marginBottom:10,cursor:"pointer",transition:"border-color .2s,box-shadow .2s",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}} onMouseEnter={(e)=>{e.currentTarget.style.borderColor=C.ac;e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.08)";}} onMouseLeave={(e)=>{e.currentTarget.style.borderColor=C.brd;e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,0.04)";}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+            <div style={{flex:"1 1 200px"}}><div style={{fontWeight:700,fontSize:16}}>{j.name}</div>{j.address&&<div style={{fontSize:12,color:C.t2,marginTop:2}}>{j.address}</div>}<div style={{display:"flex",gap:6,marginTop:8}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:sc.bg,color:sc.c}}>{SL[j.status]}</span>{j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:C.blu+"15",color:C.blu}}>Insurance</span>}</div></div>
+            <div style={{display:"flex",gap:20,alignItems:"center",flexWrap:"wrap"}}>
+              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Contract</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN}}>{fmt$(j.contractAmount)}</div></div>
+              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>GP%</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.actGP>=(j.projectedGP||0)?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?j.actGP.toFixed(1)+"%":j.projectedGP+"% proj"}</div></div>
+              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Variance</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.variance>=0?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?(j.variance>=0?"+":"")+fmt$(j.variance):"—"}</div></div>
+            </div>
+          </div>
+        </div>
+      );})}
+      {addModal&&<Modal open onClose={()=>setAddModal(false)} title="Add New Job" wide>
+        <div style={{position:"relative",marginBottom:12}}><Search size={14} style={{position:"absolute",left:12,top:13,color:C.t2}}/><input value={jnSearch} onChange={(e)=>{setJnSearch(e.target.value);setShowJnDrop(true);}} onFocus={()=>setShowJnDrop(true)} onBlur={()=>setTimeout(()=>setShowJnDrop(false),200)} placeholder="Search JobNimbus..." style={{...inp,paddingLeft:34,borderRadius:12,padding:"14px 14px 14px 34px",fontSize:15}} autoComplete="off"/>
+          {showJnDrop&&jnSearch.trim()&&<div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:200,background:"#fff",border:`1px solid ${C.brd}`,borderRadius:12,boxShadow:"0 12px 40px rgba(0,0,0,0.15)",maxHeight:250,overflow:"auto",marginTop:4}}>
+            {jnF.map(j2=>(<div key={j2.id} onMouseDown={(e)=>{e.preventDefault();setNName(j2.name||"");setNAddr(j2.address||"");setNJnId(j2.id||"");setJnSearch(j2.name||"");setShowJnDrop(false);}} style={{padding:"12px 14px",cursor:"pointer",borderBottom:`1px solid ${C.brd}`}} onMouseEnter={(e)=>{e.currentTarget.style.background=C.sf;}} onMouseLeave={(e)=>{e.currentTarget.style.background="#fff";}}><div style={{fontWeight:600,fontSize:14}}>{j2.name}</div>{j2.address&&<div style={{fontSize:12,color:C.t2,marginTop:2}}>{j2.address}</div>}</div>))}
+            {!jnF.length&&<div style={{padding:14,textAlign:"center",color:C.t2,fontSize:13}}>No matches</div>}
+          </div>}
+        </div>
+        {nJnId&&<div style={{background:C.grn+"10",borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:8}}><CheckCircle size={14} color={C.grn}/><span style={{fontSize:13,fontWeight:600}}>Linked to JN</span><button onClick={()=>{setNJnId("");setJnSearch("");}} style={{marginLeft:"auto",background:"none",border:"none",color:C.t2,cursor:"pointer"}}><X size={12}/></button></div>}
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+          <div style={{flex:"1 1 200px"}}><Fld label="Name"><input value={nName} onChange={(e)=>setNName(e.target.value)} placeholder="Homeowner / Job" style={{...inp,borderRadius:10}}/></Fld></div>
+          <div style={{flex:"1 1 200px"}}><Fld label="Address"><input value={nAddr} onChange={(e)=>setNAddr(e.target.value)} placeholder="Address" style={{...inp,borderRadius:10}}/></Fld></div>
+        </div>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+          <div style={{flex:"1 1 150px"}}><Fld label="Contract ($)"><input type="number" value={nContract} onChange={(e)=>setNContract(e.target.value)} placeholder="0" onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,fontFamily:MN}}/></Fld></div>
+          <div style={{flex:"1 1 100px"}}><Fld label="Proj GP %"><input type="number" value={nGP} onChange={(e)=>setNGP(e.target.value)} placeholder="35" onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,fontFamily:MN}}/></Fld></div>
+          <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:8}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={nInsurance} onChange={(e)=>setNInsurance(e.target.checked)} style={{width:18,height:18}}/> Insurance</label></div>
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setAddModal(false)} style={{...bS,borderRadius:10}}>Cancel</button><button onClick={addJob} disabled={!nName.trim()} style={{...bP,borderRadius:10,opacity:nName.trim()?1:0.5}}><Check size={14}/> Add Job</button></div>
+      </Modal>}
     </div>
   );
 }
