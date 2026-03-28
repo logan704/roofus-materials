@@ -615,33 +615,33 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
   const [step, setStep] = useState("choose"); // choose, build
   const [jnJobId, setJnJobId] = useState("");
-  const [jnModal, setJnModal] = useState(false);
   const [jnJobs, setJnJobs] = useState([]);
-  const [jnSearch, setJnSearch] = useState("");
   const [jnLoading, setJnLoading] = useState(false);
-  const [jnTab, setJnTab] = useState("jobs"); // jobs or contacts
+  const [jnAll, setJnAll] = useState([]);
+  const [showJnDrop, setShowJnDrop] = useState(false);
 
-  const [jnAll, setJnAll] = useState({ jobs: [], contacts: [] });
+  // Auto-load JN jobs on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/jn?action=jobs");
+        const data = await r.json();
+        const jobs = data.jobs || [];
+        setJnAll(jobs);
+        // Also load contacts and merge
+        const r2 = await fetch("/api/jn?action=contacts");
+        const d2 = await r2.json();
+        const contacts = (d2.contacts || []).map((c) => ({ ...c, isContact: true }));
+        setJnAll([...jobs, ...contacts]);
+      } catch (e) { console.error(e); }
+    })();
+  }, []);
 
-  const fetchJN = async (tab) => {
-    const t = tab || jnTab;
-    if (jnAll[t]?.length) { setJnJobs(jnAll[t]); return; }
-    setJnLoading(true);
-    try {
-      const r = await fetch(`/api/jn?action=${t}`);
-      const data = await r.json();
-      const results = data.jobs || data.contacts || [];
-      setJnAll((prev) => ({ ...prev, [t]: results }));
-      setJnJobs(results);
-    } catch (e) { console.error(e); setJnJobs([]); }
-    setJnLoading(false);
-  };
-
-  const jnFiltered = jnJobs.filter((j) => {
-    if (!jnSearch) return true;
-    const s = jnSearch.toLowerCase();
+  const jnFiltered = jnAll.filter((j) => {
+    if (!job.trim()) return false;
+    const s = job.toLowerCase();
     return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s) || (j.jobName || "").toLowerCase().includes(s);
-  });
+  }).slice(0, 8);
 
   const active = items.filter((i) => i.active !== false);
   const cats = ["All", ...new Set(active.map((i) => i.category))];
@@ -701,7 +701,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   });
 
   const submit = () => {
-    if (!lines.length || !po.trim() || !allOptionsSet) return;
+    if (!lines.length || !allOptionsSet) return;
     const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: po.trim(), jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     if (type === "order") {
       sI(items.map((it) => {
@@ -762,11 +762,29 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 420px", minWidth: 300 }}>
           <div style={{ ...crd, marginBottom: 14 }}>
-            <Rw><Cl f={1}><Fld label="PO # (required)"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="PO-001" style={{ ...inp, borderColor: po.trim() ? C.brd : C.red + "66" }} /></Fld></Cl>
-            <Cl f={2}><Fld label="Homeowner Name (optional)"><input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl></Rw>
-            <Fld label="Address (optional)"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Optional" style={inp} /></Fld>
-            <button onClick={() => { setJnModal(true); fetchJN("jobs"); }} style={{ ...bS, padding: "8px 14px", fontSize: 12, marginBottom: 10, color: C.blu, borderColor: C.blu + "55" }}><Download size={13} /> Import from JobNimbus</button>
-            {jnJobId && <div style={{ fontSize: 11, color: C.grn, marginBottom: 10, fontWeight: 600 }}>✓ Linked to JobNimbus job — PDF will upload to this job on approval</div>}
+            <Rw><Cl f={1}><Fld label="PO #"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl>
+            <Cl f={2}><Fld label="Homeowner / Job Name">
+              <div style={{ position: "relative" }}>
+                <input value={job} onChange={(e) => { setJob(e.target.value); setShowJnDrop(true); if (e.target.value.trim() === "") { setJnJobId(""); setAddr(""); } }}
+                  onFocus={() => setShowJnDrop(true)} onBlur={() => setTimeout(() => setShowJnDrop(false), 200)}
+                  placeholder="Start typing to search JobNimbus..." style={inp} autoComplete="off" />
+                {showJnDrop && jnFiltered.length > 0 && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 200, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", maxHeight: 280, overflow: "auto", marginTop: 4 }}>
+                    {jnFiltered.map((j) => (
+                      <div key={j.id} onMouseDown={(e) => { e.preventDefault(); setJob(j.name || ""); setAddr(j.address || ""); setJnJobId(j.id || ""); setShowJnDrop(false); }}
+                        style={{ padding: "10px 12px", cursor: "pointer", borderBottom: `1px solid ${C.brd}`, transition: "background .1s" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = C.sf; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{j.name}{j.jobName && j.jobName !== j.name ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 11 }}> · {j.jobName}</span> : null}</div>
+                        {j.address && <div style={{ fontSize: 11, color: C.t2, marginTop: 1 }}>{j.address}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Fld></Cl></Rw>
+            <Fld label="Address"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Auto-filled from JobNimbus or type manually" style={inp} /></Fld>
+            {jnJobId && <div style={{ fontSize: 11, color: C.grn, marginBottom: 10, fontWeight: 600 }}>✓ Linked to JobNimbus — PDF will upload to this job on approval</div>}
             <Fld label="Notes (for your reference — visible on order)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery instructions, reminders, special requests..." rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
           </div>
           <div style={crd}>
@@ -867,52 +885,16 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 800 }}><span>Sell Total</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)}</span></div>
               </div>
-              <button onClick={submit} disabled={!lines.length || !po.trim() || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, opacity: (!lines.length || !po.trim() || !allOptionsSet) ? 0.5 : 1 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
+              <button onClick={submit} disabled={!lines.length || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, opacity: (!lines.length || !allOptionsSet) ? 0.5 : 1 }}><Check size={16} /> Submit {type === "return" ? "Return" : "Order"}</button>
             </>}
           </div>
         </div>
       </div>
-      {/* JobNimbus Import Modal */}
-      {jnModal && (
-        <Modal open onClose={() => setJnModal(false)} title="Import from JobNimbus" wide>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <button onClick={() => { setJnTab("jobs"); fetchJN("jobs"); }} style={{ ...jnTab === "jobs" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Jobs</button>
-            <button onClick={() => { setJnTab("contacts"); fetchJN("contacts"); }} style={{ ...jnTab === "contacts" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Contacts</button>
-          </div>
-          <div style={{ position: "relative", marginBottom: 12 }}>
-            <Search size={13} style={{ position: "absolute", left: 10, top: 13, color: C.t2 }} />
-            <input value={jnSearch} onChange={(e) => setJnSearch(e.target.value)} placeholder="Search by name or address..." style={{ ...inp, paddingLeft: 30 }} autoFocus />
-          </div>
-          {jnLoading && <div style={{ padding: 30, textAlign: "center", color: C.t2 }}>Loading from JobNimbus...</div>}
-          {!jnLoading && (
-            <div style={{ maxHeight: 400, overflow: "auto" }}>
-              {jnFiltered.slice(0, 50).map((j) => (
-                <div key={j.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 8px", borderBottom: `1px solid ${C.brd}`, cursor: "pointer", gap: 10 }}
-                  onClick={() => {
-                    setJob(j.name || ""); setAddr(j.address || ""); setJnJobId(j.id || "");
-                    setJnModal(false);
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = C.sf; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{j.name}{j.jobName && j.jobName !== j.name ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 12 }}> · {j.jobName}</span> : null}{j.number && !j.jobName?.includes(j.number) ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 11 }}> #{j.number}</span> : null}</div>
-                    {j.address && <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{j.address}</div>}
-                    {j.status && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 3, background: C.sf, color: C.t2, marginTop: 4, display: "inline-block" }}>{j.status}</span>}
-                  </div>
-                  <ChevronRight size={16} color={C.t2} />
-                </div>
-              ))}
-              {!jnFiltered.length && !jnLoading && <div style={{ padding: 30, textAlign: "center", color: C.t2 }}>{jnSearch ? "No matches found." : "No results."}</div>}
-            </div>
-          )}
-        </Modal>
-      )}
     </div>
   );
 }
 function Approvals({ orders, sO, items, sI, view }) {
   const pend = orders.filter((o) => o.status === "pending").sort((a, b) => new Date(b.date) - new Date(a.date));
-  const [jnConfirm, setJnConfirm] = useState(null);
   const [deleteWarn, setDeleteWarn] = useState(null);
 
   const approve = async (id) => {
@@ -926,7 +908,6 @@ function Approvals({ orders, sO, items, sI, view }) {
       jnFileId = await uploadToJN(approvedOrder, items);
     }
     sO(orders.map((o) => o.id === id ? { ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "" } : o));
-    setJnConfirm(approvedOrder);
   };
   const reject = (id) => { if (confirm("Reject this order?")) sO(orders.map((o) => o.id === id ? { ...o, status: "rejected", approvedDate: new Date().toISOString() } : o)); };
   const deleteOrder = (id) => {
@@ -994,23 +975,6 @@ function Approvals({ orders, sO, items, sI, view }) {
         )}
       </Modal>
 
-      {/* JOBNIMBUS CONFIRMATION MODAL */}
-      <Modal open={!!jnConfirm} onClose={() => {}} title="">
-        {jnConfirm && (
-          <div style={{ textAlign: "center", padding: "20px 0" }}>
-            <img src={LOGO} alt="Roofus" style={{ height: 50, marginBottom: 16 }} />
-            <h2 style={{ fontSize: 20, fontWeight: 900, marginBottom: 8, fontFamily: BC }}>ORDER APPROVED & PDF SAVED</h2>
-            <p style={{ color: C.t2, fontSize: 14, marginBottom: 24 }}>PO: <strong>{jnConfirm.poNumber || "N/A"}</strong> has been approved and the PDF is downloading.</p>
-            <p style={{ fontSize: 16, fontWeight: 700, marginBottom: 20, color: NAVY }}>Have you uploaded this PDF to JobNimbus?</p>
-            <button onClick={() => setJnConfirm(null)}
-              style={{ background: C.grn, color: C.w, border: "none", borderRadius: 12, padding: "20px 50px", fontSize: 18, fontWeight: 800, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 12, transition: "all .2s", boxShadow: "0 4px 12px rgba(30,132,73,0.3)" }}
-              onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}>
-              <CheckCircle size={32} /> Yes, Uploaded to JobNimbus
-            </button>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }
