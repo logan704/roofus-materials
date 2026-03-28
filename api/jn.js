@@ -50,64 +50,39 @@ module.exports = async function(req, res) {
       })});
     }
     if (action === "testupload") {
-      var testB64 = Buffer.from("<html><body><h1>Test v26</h1><p>" + new Date().toISOString() + "</p></body></html>").toString("base64");
-      var danId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
-      var results = {};
+      var testB64 = Buffer.from("<html><body><h1>Test v27</h1><p>" + new Date().toISOString() + "</p></body></html>").toString("base64");
+      var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
       var r1 = await jnPost("/files", {
         data: testB64,
-        filename: "test-related-id.html",
+        filename: "test-v27-flat-related.html",
         type: 10,
-        description: "Test related_id flat",
-        related_id: danId
+        description: "Test with flat string array related",
+        related: [jobId]
       });
-      results.related_id = { code: r1.code, body: r1.body };
-      var r2 = await jnPost("/files", {
-        data: testB64,
-        filename: "test-customer-id.html",
-        type: 10,
-        description: "Test customer_id flat",
-        customer_id: danId
-      });
-      results.customer_id = { code: r2.code, body: r2.body };
-      var r3 = await jnPost("/files", {
-        data: testB64,
-        filename: "test-record-id.html",
-        type: 10,
-        description: "Test record_id flat",
-        record_id: danId
-      });
-      results.record_id = { code: r3.code, body: r3.body };
-      var r4 = await jnPost("/files", {
-        data: testB64,
-        filename: "test-parent-id.html",
-        type: 10,
-        description: "Test parent_id flat",
-        parent_id: danId
-      });
-      results.parent_id = { code: r4.code, body: r4.body };
-      return res.status(200).json(results);
+      return res.status(200).json({ code: r1.code, body: r1.body });
     }
     if (action === "upload" && req.method === "POST") {
       var body = JSON.parse(JSON.stringify(req.body || {}));
       if (!body.htmlContent || !body.fileName || !body.relatedId) return res.status(400).json({ error: "Missing fields" });
       var b64 = Buffer.from(String(body.htmlContent)).toString("base64");
-      var r5 = await jnPost("/files", {
+      var r3 = await jnPost("/files", {
         data: b64,
         filename: String(body.fileName),
         type: 10,
-        description: body.description || "Material Order - Roofus Construction"
+        description: body.description || "Material Order - Roofus Construction",
+        related: [String(body.relatedId)]
       });
-      if (r5.code >= 200 && r5.code < 300) {
-        var d3 = {}; try { d3 = JSON.parse(r5.body); } catch(e) {}
+      if (r3.code >= 200 && r3.code < 300) {
+        var d3 = {}; try { d3 = JSON.parse(r3.body); } catch(e) {}
         return res.status(200).json({ success: true, fileId: d3.jnid || d3.id || "ok" });
       }
-      return res.status(400).json({ error: "Upload failed", code: r5.code, details: r5.body });
+      return res.status(400).json({ error: "Upload failed", code: r3.code, details: r3.body });
     }
     if (action === "delete" && req.method === "DELETE") {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 26 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 27 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
