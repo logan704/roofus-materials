@@ -65,27 +65,25 @@ module.exports = async function(req, res) {
       var j = await jnGet("/jobs/" + jid);
       return res.status(200).json(j);
     }
-    if (action === "jobfiles") {
-      var jid2 = req.query.id || "d6d7b2c344ac43b5bd81b60d19e0e1f5";
-      var f = await jnGet("/files?filter=related.id=\"" + jid2 + "\"&limit=5");
-      var results = { filterByRelated: f };
-      var f2 = await jnGet("/files?filter=primary.id=\"" + jid2 + "\"&limit=5");
-      results.filterByPrimary = f2;
-      var contactId = "c151216dcc05460d9bf0d51e3d69ff22";
-      var f3 = await jnGet("/files?filter=related.id=\"" + contactId + "\"&limit=3");
-      results.filterByContact = f3;
-      return res.status(200).json(results);
+    if (action === "allfiles") {
+      var f = await jnGet("/files?limit=3&sort_field=date_created&sort_direction=desc");
+      return res.status(200).json(f);
+    }
+    if (action === "fileinfo") {
+      var fid = req.query.id;
+      if (!fid) return res.status(400).json({ error: "need id param" });
+      var fi = await jnGet("/files/" + fid);
+      return res.status(200).json(fi);
     }
     if (action === "testupload") {
-      var testHtml = "<html><body><h1>Roofus Test v21</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var testHtml = "<html><body><h1>Roofus Test v22</h1><p>" + new Date().toISOString() + "</p></body></html>";
       var testB64 = Buffer.from(testHtml).toString("base64");
-      var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
       var contactId = "c151216dcc05460d9bf0d51e3d69ff22";
       var r1 = await jnPost("/files", {
         data: testB64,
-        filename: "test-v21.html",
+        filename: "test-v22.html",
         type: 10,
-        description: "Test with primary object at upload",
+        description: "Test with primary contact object",
         primary: { id: contactId }
       });
       return res.status(200).json({ code: r1.code, body: r1.body });
@@ -111,7 +109,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 21 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 22 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
