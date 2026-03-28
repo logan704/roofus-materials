@@ -21,6 +21,17 @@ function jnPost(path, data) {
     }); r.on("error", reject); r.write(payload); r.end();
   });
 }
+function jnPut(path, data) {
+  return new Promise(function(resolve, reject) {
+    var payload = JSON.stringify(data);
+    var opts = { hostname: "app.jobnimbus.com", path: "/api1" + path, method: "PUT",
+      headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } };
+    var r = https.request(opts, function(resp) {
+      var buf = []; resp.on("data", function(c) { buf.push(c); });
+      resp.on("end", function() { resolve({ code: resp.statusCode, body: Buffer.concat(buf).toString() }); });
+    }); r.on("error", reject); r.write(payload); r.end();
+  });
+}
 function jnDel(path) {
   return new Promise(function(resolve, reject) {
     var opts = { hostname: "app.jobnimbus.com", path: "/api1" + path, method: "DELETE",
@@ -55,17 +66,28 @@ module.exports = async function(req, res) {
       return res.status(200).json(j);
     }
     if (action === "testupload") {
-      var testHtml = "<html><body><h1>Roofus Test v18</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var testHtml = "<html><body><h1>Roofus Test v19</h1><p>" + new Date().toISOString() + "</p></body></html>";
       var testB64 = Buffer.from(testHtml).toString("base64");
       var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
-      var r = await jnPost("/files", {
+      var contactId = "c151216dcc05460d9bf0d51e3d69ff22";
+      var results = {};
+      var r1 = await jnPost("/files", {
         data: testB64,
-        filename: "roofus-test-" + Date.now() + ".html",
+        filename: "test-contact-link.html",
         type: 10,
-        description: "Roofus test upload",
-        primary: jobId
+        description: "Test with contact ID",
+        customer: contactId
       });
-      return res.status(200).json({ code: r.code, response: r.body });
+      results.contactLink = { code: r1.code, body: r1.body };
+      var r2 = await jnPost("/files", {
+        data: testB64,
+        filename: "test-related-array.html",
+        type: 10,
+        description: "Test with related array",
+        related: [{ id: jobId }]
+      });
+      results.relatedArray = { code: r2.code, body: r2.body };
+      return res.status(200).json(results);
     }
     if (action === "upload" && req.method === "POST") {
       var body = JSON.parse(JSON.stringify(req.body || {}));
@@ -88,7 +110,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 18 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 19 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
