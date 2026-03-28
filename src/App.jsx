@@ -30,11 +30,7 @@ select option{background:${C.w};color:${C.txt}}
 @media(max-width:480px){
   .nav-wrap button{padding:4px 6px!important;font-size:9px!important}
   .nav-wrap svg{width:12px!important;height:12px!important}
-}
-.pac-container{z-index:10000!important;font-family:'Barlow',sans-serif!important;border-radius:8px!important;border:1px solid ${C.brd}!important;box-shadow:0 8px 24px rgba(0,0,0,0.12)!important;margin-top:4px!important}
-.pac-item{padding:8px 12px!important;font-size:13px!important;cursor:pointer!important}
-.pac-item:hover{background:${C.sf}!important}
-.pac-item-query{font-weight:700!important}`;
+}`;
 
 const MN = `'IBM Plex Mono',monospace`;
 const BC = `'Barlow Condensed',sans-serif`;
@@ -63,40 +59,6 @@ function compressPhoto(file) {
     };
     reader.readAsDataURL(file);
   });
-}
-
-// ─── Google Places Address Autocomplete ───
-const GMAP_KEY = "AIzaSyBbBi7zzfw4RQhjSrflMnbf2Np_LrOLweY";
-let _gmapLoaded = false;
-function loadGoogleMaps() {
-  if (_gmapLoaded || window.google?.maps?.places) { _gmapLoaded = true; return Promise.resolve(); }
-  return new Promise((resolve) => {
-    const s = document.createElement("script");
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${GMAP_KEY}&libraries=places`;
-    s.async = true;
-    s.onload = () => { _gmapLoaded = true; resolve(); };
-    s.onerror = () => resolve();
-    document.head.appendChild(s);
-  });
-}
-function AddressInput({ value, onChange, style }) {
-  const inputRef = useCallback((node) => {
-    if (!node) return;
-    loadGoogleMaps().then(() => {
-      if (!window.google?.maps?.places || node._acDone) return;
-      node._acDone = true;
-      const ac = new window.google.maps.places.Autocomplete(node, {
-        types: ["address"],
-        componentRestrictions: { country: "us" },
-      });
-      ac.addListener("place_changed", () => {
-        const place = ac.getPlace();
-        if (place?.formatted_address) onChange(place.formatted_address);
-        else if (place?.name) onChange(place.name);
-      });
-    });
-  }, []);
-  return <input ref={inputRef} value={value} onChange={(e) => onChange(e.target.value)} placeholder="Start typing address..." style={style} />;
 }
 
 const fmt$ = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -153,8 +115,8 @@ function NavBtn({ icon: Ic, label, active, onClick, badge }) {
   );
 }
 
-// ─── PDF: HTML blob download ───
-function downloadPDF(order, items) {
+// ─── PDF: HTML generation & download ───
+function generateOrderHTML(order, items) {
   const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
   const ls = order.lines || [];
   const tCost = ls.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
@@ -168,7 +130,7 @@ function downloadPDF(order, items) {
     const opt = l.option && l.option !== "_default" ? l.option : "—";
     return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r" style="background:#FFFF00;font-weight:700">${fmt$(l.markupCost)}</td><td class="r">${fmt$(l.supplierCost||0)}</td><td class="r">${fmt$(l.qty*l.unitCost)}</td><td class="r" style="font-weight:700;background:#FFFF00">${fmt$(l.qty*l.markupCost)}</td></tr>`;
   }).join("");
-  const html = `<!DOCTYPE html><html><head><title>${(order.poNumber||"Order")} Material Order</title>
+  return `<!DOCTYPE html><html><head><title>${(order.poNumber||"Order")} Material Order</title>
 <style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#666}td{padding:6px;border-bottom:1px solid #ddd;font-size:11px}.r{text-align:right}.hd{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234}.tot{margin-top:14px;padding:12px;background:#f0f2f5;border-radius:5px;border-left:4px solid #B22234}.tr{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}.trb{font-size:14px;font-weight:800;border-top:2px solid #1B2A4A;padding-top:7px;margin-top:5px}.sav{margin-top:10px;padding:10px;background:#d4edda;border-radius:4px;font-size:11px}@media print{body{padding:20px}@page{margin:0.5in}}</style></head><body>
 <div class="hd"><div><div style="font-size:24px;font-weight:900;letter-spacing:-0.02em">ROOFUS<span style="color:#B22234">.</span></div><div style="font-size:10px;color:#666;margin-top:2px">Construction, LLC · Columbia, MO</div></div>
 <div style="text-align:right;font-size:11px;color:#666"><div style="font-weight:800;font-size:13px;color:#1B2A4A">${order.type==="return"?"RETURN":"MATERIAL ORDER"}</div><div style="margin-top:3px">PO: <strong style="color:#1a1a1a">${order.poNumber||"—"}</strong></div><div>Date: ${fD(order.date)}</div><div>By: ${order.userName||"—"}</div>
@@ -183,7 +145,10 @@ ${tSupplier > 0 ? `<div class="tr" style="border-top:1px solid #ccc;padding-top:
 </div>
 ${order.notes?`<div style="margin-top:14px;padding:8px;background:#f5f5f5;border-radius:4px;font-size:11px"><strong>Notes:</strong> ${order.notes}</div>`:""}
 <div style="margin-top:30px;text-align:center;font-size:8px;color:#bbb">Roofus Construction, LLC · Columbia, MO</div></body></html>`;
+}
 
+function downloadPDF(order, items) {
+  const html = generateOrderHTML(order, items);
   const blob = new Blob([html], { type: "text/html" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -192,6 +157,28 @@ ${order.notes?`<div style="margin-top:14px;padding:8px;background:#f5f5f5;border
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 200);
+}
+
+// Upload order PDF to JobNimbus
+async function uploadToJN(order, items) {
+  if (!order.jnJobId) return null;
+  try {
+    const html = generateOrderHTML(order, items);
+    const fileName = `${(order.poNumber || "Order").replace(/[^a-zA-Z0-9-_ ]/g, "")} Material Order.html`;
+    const r = await fetch("/api/jn?action=upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName, htmlContent: html, relatedId: order.jnJobId }),
+    });
+    const data = await r.json();
+    return data.fileId || null;
+  } catch (e) { console.error("JN upload error:", e); return null; }
+}
+
+// Delete order PDF from JobNimbus
+async function deleteFromJN(jnFileId) {
+  if (!jnFileId) return;
+  try { await fetch(`/api/jn?action=delete&id=${jnFileId}`, { method: "DELETE" }); } catch (e) { console.error("JN delete error:", e); }
 }
 
 // ─── PDF VIEWER MODAL ───
@@ -495,8 +482,16 @@ export default function App() {
             return { ...it, variants: v, qtyOnHand: totalQ };
           });
           sI(updatedItems);
-          sO(orders.map((o) => o.id === id ? { ...o, lines: newLines } : o));
-          setVOrd({ ...ord, lines: newLines });
+          const updatedOrd = { ...ord, lines: newLines };
+          sO(orders.map((o) => o.id === id ? updatedOrd : o));
+          setVOrd(updatedOrd);
+          // Re-upload to JN if linked
+          if (updatedOrd.jnJobId) {
+            if (updatedOrd.jnFileId) deleteFromJN(updatedOrd.jnFileId);
+            uploadToJN(updatedOrd, items).then((newFileId) => {
+              if (newFileId) sO((prev) => prev.map((o) => o.id === id ? { ...o, jnFileId: newFileId } : o));
+            });
+          }
         } : null}
       />}
     </div>
@@ -619,6 +614,22 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   const [po, setPo] = useState(""); const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
   const [step, setStep] = useState("choose"); // choose, build
+  const [jnJobId, setJnJobId] = useState("");
+  const [jnModal, setJnModal] = useState(false);
+  const [jnJobs, setJnJobs] = useState([]);
+  const [jnSearch, setJnSearch] = useState("");
+  const [jnLoading, setJnLoading] = useState(false);
+  const [jnTab, setJnTab] = useState("jobs"); // jobs or contacts
+
+  const fetchJN = async (tab) => {
+    setJnLoading(true);
+    try {
+      const r = await fetch(`/api/jn?action=${tab || jnTab}`);
+      const data = await r.json();
+      setJnJobs(data.jobs || data.contacts || []);
+    } catch (e) { console.error(e); setJnJobs([]); }
+    setJnLoading(false);
+  };
 
   const active = items.filter((i) => i.active !== false);
   const cats = ["All", ...new Set(active.map((i) => i.category))];
@@ -679,7 +690,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
 
   const submit = () => {
     if (!lines.length || !po.trim() || !allOptionsSet) return;
-    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: po.trim(), jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
+    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: po.trim(), jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     if (type === "order") {
       sI(items.map((it) => {
         const ls2 = lines.filter((l) => l.itemId === it.id);
@@ -741,7 +752,9 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
           <div style={{ ...crd, marginBottom: 14 }}>
             <Rw><Cl f={1}><Fld label="PO # (required)"><input value={po} onChange={(e) => setPo(e.target.value)} placeholder="PO-001" style={{ ...inp, borderColor: po.trim() ? C.brd : C.red + "66" }} /></Fld></Cl>
             <Cl f={2}><Fld label="Homeowner Name (optional)"><input value={job} onChange={(e) => setJob(e.target.value)} placeholder="Optional" style={inp} /></Fld></Cl></Rw>
-            <Fld label="Address (optional)"><AddressInput value={addr} onChange={setAddr} style={inp} /></Fld>
+            <Fld label="Address (optional)"><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Optional" style={inp} /></Fld>
+            <button onClick={() => { setJnModal(true); fetchJN("jobs"); }} style={{ ...bS, padding: "8px 14px", fontSize: 12, marginBottom: 10, color: C.blu, borderColor: C.blu + "55" }}><Download size={13} /> Import from JobNimbus</button>
+            {jnJobId && <div style={{ fontSize: 11, color: C.grn, marginBottom: 10, fontWeight: 600 }}>✓ Linked to JobNimbus job — PDF will upload to this job on approval</div>}
             <Fld label="Notes (for your reference — visible on order)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery instructions, reminders, special requests..." rows={2} style={{ ...inp, resize: "vertical" }} /></Fld>
           </div>
           <div style={crd}>
@@ -847,26 +860,70 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
           </div>
         </div>
       </div>
+      {/* JobNimbus Import Modal */}
+      {jnModal && (
+        <Modal open onClose={() => setJnModal(false)} title="Import from JobNimbus" wide>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <button onClick={() => { setJnTab("jobs"); fetchJN("jobs"); }} style={{ ...jnTab === "jobs" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Jobs</button>
+            <button onClick={() => { setJnTab("contacts"); fetchJN("contacts"); }} style={{ ...jnTab === "contacts" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Contacts</button>
+          </div>
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <Search size={13} style={{ position: "absolute", left: 10, top: 13, color: C.t2 }} />
+            <input value={jnSearch} onChange={(e) => setJnSearch(e.target.value)} placeholder="Search by name or address..." style={{ ...inp, paddingLeft: 30 }} />
+          </div>
+          {jnLoading && <div style={{ padding: 30, textAlign: "center", color: C.t2 }}>Loading from JobNimbus...</div>}
+          {!jnLoading && (
+            <div style={{ maxHeight: 400, overflow: "auto" }}>
+              {jnJobs.filter((j) => {
+                if (!jnSearch) return true;
+                const s = jnSearch.toLowerCase();
+                return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s);
+              }).map((j) => (
+                <div key={j.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 8px", borderBottom: `1px solid ${C.brd}`, cursor: "pointer", gap: 10 }}
+                  onClick={() => {
+                    setJob(j.name || ""); setAddr(j.address || ""); setJnJobId(j.id || "");
+                    setJnModal(false);
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = C.sf; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{j.name}{j.number ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 12 }}> #{j.number}</span> : null}</div>
+                    {j.address && <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{j.address}</div>}
+                    {j.status && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 3, background: C.sf, color: C.t2, marginTop: 4, display: "inline-block" }}>{j.status}</span>}
+                  </div>
+                  <ChevronRight size={16} color={C.t2} />
+                </div>
+              ))}
+              {!jnJobs.length && !jnLoading && <div style={{ padding: 30, textAlign: "center", color: C.t2 }}>No results found.</div>}
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
-
-// ═══ APPROVALS ═══
 function Approvals({ orders, sO, items, sI, view }) {
   const pend = orders.filter((o) => o.status === "pending").sort((a, b) => new Date(b.date) - new Date(a.date));
   const [jnConfirm, setJnConfirm] = useState(null);
   const [deleteWarn, setDeleteWarn] = useState(null);
 
-  const approve = (id) => {
+  const approve = async (id) => {
     const order = orders.find((o) => o.id === id);
-    sO(orders.map((o) => o.id === id ? { ...o, status: "approved", approvedDate: new Date().toISOString() } : o));
-    // Download the file, then show JN confirmation
-    if (order) downloadPDF({ ...order, status: "approved" }, items);
-    setJnConfirm(order);
+    const approvedOrder = { ...order, status: "approved", approvedDate: new Date().toISOString() };
+    // Download the file
+    if (order) downloadPDF(approvedOrder, items);
+    // Upload to JobNimbus if linked
+    let jnFileId = null;
+    if (approvedOrder.jnJobId) {
+      jnFileId = await uploadToJN(approvedOrder, items);
+    }
+    sO(orders.map((o) => o.id === id ? { ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "" } : o));
+    setJnConfirm(approvedOrder);
   };
   const reject = (id) => { if (confirm("Reject this order?")) sO(orders.map((o) => o.id === id ? { ...o, status: "rejected", approvedDate: new Date().toISOString() } : o)); };
   const deleteOrder = (id) => {
     const ord = orders.find((o) => o.id === id);
+    if (ord?.jnFileId) deleteFromJN(ord.jnFileId);
     if (ord && sI) {
       sI(items.map((it) => {
         const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
