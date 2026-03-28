@@ -1,6 +1,29 @@
 var https = require("https");
-
 var KEY = "mn9nk0ezvo8k986n";
+
+function jnPost(path, bodyObj) {
+  return new Promise(function(resolve, reject) {
+    var data = JSON.stringify(bodyObj);
+    var opts = {
+      hostname: "app.jobnimbus.com",
+      path: "/api1" + path,
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + KEY,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(data)
+      }
+    };
+    var r = https.request(opts, function(resp) {
+      var buf = [];
+      resp.on("data", function(c) { buf.push(c); });
+      resp.on("end", function() { resolve({ code: resp.statusCode, body: Buffer.concat(buf).toString() }); });
+    });
+    r.on("error", reject);
+    r.write(data);
+    r.end();
+  });
+}
 
 function jnGet(path) {
   return new Promise(function(resolve, reject) {
@@ -14,8 +37,8 @@ function jnGet(path) {
       var buf = [];
       resp.on("data", function(c) { buf.push(c); });
       resp.on("end", function() {
-        var txt = Buffer.concat(buf).toString();
-        try { resolve(JSON.parse(txt)); } catch(e) { resolve({ raw: txt }); }
+        try { resolve(JSON.parse(Buffer.concat(buf).toString())); }
+        catch(e) { resolve({}); }
       });
     });
     r.on("error", reject);
@@ -23,71 +46,16 @@ function jnGet(path) {
   });
 }
 
-function jnUploadFile(fileBuffer, fileName, contentType, relatedId, description) {
-  return new Promise(function(resolve, reject) {
-    var boundary = "----RoofusUpload" + Date.now();
-    var parts = [];
-
-    // File part
-    parts.push("--" + boundary);
-    parts.push("Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"");
-    parts.push("Content-Type: " + contentType);
-    parts.push("");
-
-    var headerBuf = Buffer.from(parts.join("\r\n") + "\r\n");
-    var footerStr = "\r\n--" + boundary;
-
-    // type part
-    footerStr += "\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\njob";
-    // related part  
-    footerStr += "\r\n--" + boundary;
-    footerStr += "\r\nContent-Disposition: form-data; name=\"related\"\r\n\r\n" + relatedId;
-    // description part
-    if (description) {
-      footerStr += "\r\n--" + boundary;
-      footerStr += "\r\nContent-Disposition: form-data; name=\"description\"\r\n\r\n" + description;
-    }
-    footerStr += "\r\n--" + boundary + "--\r\n";
-
-    var footerBuf = Buffer.from(footerStr);
-    var body = Buffer.concat([headerBuf, fileBuffer, footerBuf]);
-
-    var opts = {
-      hostname: "app.jobnimbus.com",
-      path: "/api1/files",
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + KEY,
-        "Content-Type": "multipart/form-data; boundary=" + boundary,
-        "Content-Length": body.length
-      }
-    };
-
-    var r = https.request(opts, function(resp) {
-      var buf = [];
-      resp.on("data", function(c) { buf.push(c); });
-      resp.on("end", function() {
-        var txt = Buffer.concat(buf).toString();
-        resolve({ code: resp.statusCode, body: txt });
-      });
-    });
-    r.on("error", reject);
-    r.write(body);
-    r.end();
-  });
-}
-
-function jnDelete(path) {
+function jnDel(path) {
   return new Promise(function(resolve, reject) {
     var opts = {
       hostname: "app.jobnimbus.com",
       path: "/api1" + path,
       method: "DELETE",
-      headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" }
+      headers: { "Authorization": "Bearer " + KEY }
     };
     var r = https.request(opts, function(resp) {
-      var buf = [];
-      resp.on("data", function(c) { buf.push(c); });
+      resp.on("data", function() {});
       resp.on("end", function() { resolve({ code: resp.statusCode }); });
     });
     r.on("error", reject);
@@ -120,39 +88,60 @@ module.exports = async function(req, res) {
     }
 
     if (action === "upload" && req.method === "POST") {
-      var body = req.body;
-      if (typeof body === "string") try { body = JSON.parse(body); } catch(e) { body = {}; }
-      body = JSON.parse(JSON.stringify(body || {}));
-      
+      var body = JSON.parse(JSON.stringify(req.body || {}));
       if (!body.htmlContent || !body.fileName || !body.relatedId) {
-        return res.status(400).json({ error: "Missing fields", keys: Object.keys(body) });
+        return res.status(400).json({ error: "Missing fields" });
       }
 
-      var htmlBuffer = Buffer.from(body.htmlContent, "utf-8");
-      var fname = String(body.fileName);
+      var plain = String(body.htmlContent).replace(/<[^>]*>/g, " ").replace(/&[^;]+;/g, " ").replace(/\s+/g, " ").trim();
+      if (plain.length > 2000) plain = plain.substring(0, 2000);
+      var fname = String(body.fileName).replace(".html", "");
       var rid = String(body.relatedId);
-      var desc = "Material Order - " + fname.replace(".html", "");
 
-      var r3 = await jnUploadFile(htmlBuffer, fname, "text/html", rid, desc);
-
-      if (r3.code >= 200 && r3.code < 300) {
-        var d3 = {};
-        try { d3 = JSON.parse(r3.body); } catch(e) {}
-        return res.status(200).json({ success: true, fileId: d3.jnid || d3.id || "ok" });
+      // Attempt 1: activity with related array
+      var r1 = await jnPost("/activities", {
+        record_type_name: "Note",
+        note: "MATERIAL ORDER: " + fname + "\n\n" + plain,
+        related: [rid]
+      });
+      if (r1.code >= 200 && r1.code < 300) {
+        var d1r = {}; try { d1r = JSON.parse(r1.body); } catch(e) {}
+        return res.status(200).json({ success: true, fileId: d1r.jnid || "ok", method: "related_array" });
       }
 
-      return res.status(400).json({ error: "Upload failed", code: r3.code, details: r3.body });
+      // Attempt 2: activity with primary string
+      var r2 = await jnPost("/activities", {
+        record_type_name: "Note",
+        note: "MATERIAL ORDER: " + fname + "\n\n" + plain,
+        primary: rid
+      });
+      if (r2.code >= 200 && r2.code < 300) {
+        var d2r = {}; try { d2r = JSON.parse(r2.body); } catch(e) {}
+        return res.status(200).json({ success: true, fileId: d2r.jnid || "ok", method: "primary" });
+      }
+
+      // Attempt 3: unlinked note (fallback)
+      var r3 = await jnPost("/activities", {
+        record_type_name: "Note",
+        note: "MATERIAL ORDER: " + fname + "\nJob ID: " + rid + "\n\n" + plain
+      });
+      if (r3.code >= 200 && r3.code < 300) {
+        var d3r = {}; try { d3r = JSON.parse(r3.body); } catch(e) {}
+        return res.status(200).json({ success: true, fileId: d3r.jnid || "ok", method: "unlinked" });
+      }
+
+      return res.status(400).json({ error: "All failed", a1: r1.body, a2: r2.body, a3: r3.body });
     }
 
     if (action === "delete" && req.method === "DELETE") {
       var did = req.query.id;
       if (!did || did === "ok") return res.status(200).json({ success: true });
-      await jnDelete("/files/" + did);
+      await jnDel("/activities/" + did);
       return res.status(200).json({ success: true });
     }
 
     if (action === "ping") {
-      return res.status(200).json({ ok: true, v: 9 });
+      return res.status(200).json({ ok: true, v: 10 });
     }
 
     return res.status(400).json({ error: "Unknown action" });
