@@ -14,9 +14,15 @@ function jnUpload(fileContent, fileName, relatedId, desc) {
   return new Promise(function(resolve, reject) {
     var CR = "\r\n"; var B = "----Roofus" + Date.now();
     var fb = Buffer.from(fileContent, "utf-8");
-    var head = "--" + B + CR + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"" + CR + "Content-Type: text/html" + CR + CR;
-    var tail = CR + "--" + B + CR + "Content-Disposition: form-data; name=\"description\"" + CR + CR + desc + CR + "--" + B + CR + "Content-Disposition: form-data; name=\"type\"" + CR + CR + "job" + CR + "--" + B + CR + "Content-Disposition: form-data; name=\"related\"" + CR + CR + relatedId + CR + "--" + B + "--" + CR;
-    var body = Buffer.concat([Buffer.from(head), fb, Buffer.from(tail)]);
+    var parts = "";
+    parts += "--" + B + CR;
+    parts += "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"" + CR;
+    parts += "Content-Type: text/html" + CR + CR;
+    var afterFile = CR;
+    afterFile += "--" + B + CR + "Content-Disposition: form-data; name=\"description\"" + CR + CR + desc + CR;
+    afterFile += "--" + B + CR + "Content-Disposition: form-data; name=\"related_to\"" + CR + CR + relatedId + CR;
+    afterFile += "--" + B + "--" + CR;
+    var body = Buffer.concat([Buffer.from(parts), fb, Buffer.from(afterFile)]);
     var opts = { hostname: "app.jobnimbus.com", path: "/api1/files", method: "POST",
       headers: { "Authorization": "Bearer " + KEY, "Content-Type": "multipart/form-data; boundary=" + B, "Content-Length": body.length } };
     var r = https.request(opts, function(resp) {
@@ -75,7 +81,7 @@ module.exports = async function(req, res) {
       await jnDel("/files/" + did);
       return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 12 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 13 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
