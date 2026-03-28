@@ -15,17 +15,21 @@ export default async function handler(req, res) {
   try {
     // ─── FETCH JOBS ───
     if (action === "jobs") {
-      const r = await fetch(`${BASE}/jobs?select=display_name,number,address_line1,address_line2,city,state_text,zip,status_name,record_type_name&limit=1000&sort_field=date_updated&sort_direction=desc`, { headers });
+      const r = await fetch(`${BASE}/jobs?select=display_name,number,first_name,last_name,name,address_line1,address_line2,city,state_text,zip,status_name,record_type_name&limit=1000&sort_field=date_updated&sort_direction=desc`, { headers });
       if (!r.ok) return res.status(r.status).json({ error: "JobNimbus API error", status: r.status });
       const data = await r.json();
-      const jobs = (data.results || []).map((j) => ({
-        id: j.jnid,
-        name: j.display_name || j.number || "Untitled",
-        number: j.number || "",
-        address: [j.address_line1, j.city, j.state_text, j.zip].filter(Boolean).join(", "),
-        status: j.status_name || "",
-        type: j.record_type_name || "",
-      }));
+      const jobs = (data.results || []).map((j) => {
+        const ownerName = [j.first_name, j.last_name].filter(Boolean).join(" ").trim();
+        return {
+          id: j.jnid,
+          name: ownerName || j.name || j.display_name || "Untitled",
+          jobName: j.display_name || j.number || "",
+          number: j.number || "",
+          address: [j.address_line1, j.city, j.state_text, j.zip].filter(Boolean).join(", "),
+          status: j.status_name || "",
+          type: j.record_type_name || "",
+        };
+      });
       return res.status(200).json({ jobs });
     }
 

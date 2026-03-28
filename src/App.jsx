@@ -640,7 +640,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   const jnFiltered = jnJobs.filter((j) => {
     if (!jnSearch) return true;
     const s = jnSearch.toLowerCase();
-    return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s);
+    return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s) || (j.jobName || "").toLowerCase().includes(s);
   });
 
   const active = items.filter((i) => i.active !== false);
@@ -895,7 +895,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                   onMouseEnter={(e) => { e.currentTarget.style.background = C.sf; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{j.name}{j.number ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 12 }}> #{j.number}</span> : null}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{j.name}{j.jobName && j.jobName !== j.name ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 12 }}> · {j.jobName}</span> : null}{j.number && !j.jobName?.includes(j.number) ? <span style={{ fontWeight: 400, color: C.t2, fontSize: 11 }}> #{j.number}</span> : null}</div>
                     {j.address && <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{j.address}</div>}
                     {j.status && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 3, background: C.sf, color: C.t2, marginTop: 4, display: "inline-block" }}>{j.status}</span>}
                   </div>
