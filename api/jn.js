@@ -49,18 +49,6 @@ module.exports = async function(req, res) {
         return { id: c.jnid, name: c.display_name || ((c.first_name || "") + " " + (c.last_name || "")).trim() || "Untitled", address: [c.address_line1, c.city, c.state_text, c.zip].filter(Boolean).join(", "), status: c.status_name || "" };
       })});
     }
-    if (action === "testupload") {
-      var testB64 = Buffer.from("<html><body><h1>Test v27</h1><p>" + new Date().toISOString() + "</p></body></html>").toString("base64");
-      var jobId = "d6d7b2c344ac43b5bd81b60d19e0e1f5";
-      var r1 = await jnPost("/files", {
-        data: testB64,
-        filename: "test-v27-flat-related.html",
-        type: 10,
-        description: "Test with flat string array related",
-        related: [jobId]
-      });
-      return res.status(200).json({ code: r1.code, body: r1.body });
-    }
     if (action === "upload" && req.method === "POST") {
       var body = JSON.parse(JSON.stringify(req.body || {}));
       if (!body.htmlContent || !body.fileName || !body.relatedId) return res.status(400).json({ error: "Missing fields" });
@@ -82,7 +70,7 @@ module.exports = async function(req, res) {
       var did = req.query.id; if (!did || did === "ok") return res.status(200).json({ success: true });
       await jnDel("/files/" + did); return res.status(200).json({ success: true });
     }
-    if (action === "ping") return res.status(200).json({ ok: true, v: 27 });
+    if (action === "ping") return res.status(200).json({ ok: true, v: 28 });
     return res.status(400).json({ error: "Unknown action" });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 };
