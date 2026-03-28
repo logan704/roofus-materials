@@ -621,10 +621,12 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   const [jnLoading, setJnLoading] = useState(false);
   const [jnTab, setJnTab] = useState("jobs"); // jobs or contacts
 
-  const fetchJN = async (tab) => {
+  const fetchJN = async (tab, searchTerm) => {
     setJnLoading(true);
     try {
-      const r = await fetch(`/api/jn?action=${tab || jnTab}`);
+      const t = tab || jnTab;
+      const q = searchTerm !== undefined ? searchTerm : jnSearch;
+      const r = await fetch(`/api/jn?action=${t}${q ? `&search=${encodeURIComponent(q)}` : ""}`);
       const data = await r.json();
       setJnJobs(data.jobs || data.contacts || []);
     } catch (e) { console.error(e); setJnJobs([]); }
@@ -864,21 +866,21 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
       {jnModal && (
         <Modal open onClose={() => setJnModal(false)} title="Import from JobNimbus" wide>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <button onClick={() => { setJnTab("jobs"); fetchJN("jobs"); }} style={{ ...jnTab === "jobs" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Jobs</button>
-            <button onClick={() => { setJnTab("contacts"); fetchJN("contacts"); }} style={{ ...jnTab === "contacts" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Contacts</button>
+            <button onClick={() => { setJnTab("jobs"); setJnSearch(""); fetchJN("jobs", ""); }} style={{ ...jnTab === "jobs" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Jobs</button>
+            <button onClick={() => { setJnTab("contacts"); setJnSearch(""); fetchJN("contacts", ""); }} style={{ ...jnTab === "contacts" ? bP : bS, padding: "8px 16px", fontSize: 13 }}>Contacts</button>
           </div>
           <div style={{ position: "relative", marginBottom: 12 }}>
             <Search size={13} style={{ position: "absolute", left: 10, top: 13, color: C.t2 }} />
-            <input value={jnSearch} onChange={(e) => setJnSearch(e.target.value)} placeholder="Search by name or address..." style={{ ...inp, paddingLeft: 30 }} />
+            <input value={jnSearch} onChange={(e) => {
+              const v = e.target.value; setJnSearch(v);
+              clearTimeout(window._jnDebounce);
+              window._jnDebounce = setTimeout(() => fetchJN(jnTab, v), 400);
+            }} placeholder="Search by name or address..." style={{ ...inp, paddingLeft: 30 }} />
           </div>
           {jnLoading && <div style={{ padding: 30, textAlign: "center", color: C.t2 }}>Loading from JobNimbus...</div>}
           {!jnLoading && (
             <div style={{ maxHeight: 400, overflow: "auto" }}>
-              {jnJobs.filter((j) => {
-                if (!jnSearch) return true;
-                const s = jnSearch.toLowerCase();
-                return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s);
-              }).map((j) => (
+              {jnJobs.map((j) => (
                 <div key={j.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 8px", borderBottom: `1px solid ${C.brd}`, cursor: "pointer", gap: 10 }}
                   onClick={() => {
                     setJob(j.name || ""); setAddr(j.address || ""); setJnJobId(j.id || "");

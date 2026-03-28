@@ -15,10 +15,13 @@ export default async function handler(req, res) {
   try {
     // ─── FETCH JOBS ───
     if (action === "jobs") {
-      const r = await fetch(`${BASE}/jobs?select=display_name,number,address_line1,address_line2,city,state_text,zip,status_name,record_type_name&limit=200&sort_field=date_updated&sort_direction=desc`, { headers });
+      const search = req.query.search || "";
+      let url = `${BASE}/jobs?select=display_name,number,address_line1,address_line2,city,state_text,zip,status_name,record_type_name&limit=500&sort_field=date_updated&sort_direction=desc`;
+      if (search) url += `&filter={"must":[{"terms":{"display_name":["${search}"]}}]}`;
+      const r = await fetch(url, { headers });
       if (!r.ok) return res.status(r.status).json({ error: "JobNimbus API error", status: r.status });
       const data = await r.json();
-      const jobs = (data.results || []).map((j) => ({
+      let jobs = (data.results || []).map((j) => ({
         id: j.jnid,
         name: j.display_name || j.number || "Untitled",
         number: j.number || "",
@@ -30,15 +33,23 @@ export default async function handler(req, res) {
         status: j.status_name || "",
         type: j.record_type_name || "",
       }));
+      // Client-side fallback filter if API filter didn't work
+      if (search) {
+        const s = search.toLowerCase();
+        jobs = jobs.filter((j) => (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s) || (j.number || "").toLowerCase().includes(s));
+      }
       return res.status(200).json({ jobs });
     }
 
     // ─── FETCH CONTACTS ───
     if (action === "contacts") {
-      const r = await fetch(`${BASE}/contacts?select=display_name,first_name,last_name,address_line1,city,state_text,zip,status_name&limit=200&sort_field=date_updated&sort_direction=desc`, { headers });
+      const search = req.query.search || "";
+      let url = `${BASE}/contacts?select=display_name,first_name,last_name,address_line1,city,state_text,zip,status_name&limit=500&sort_field=date_updated&sort_direction=desc`;
+      if (search) url += `&filter={"must":[{"terms":{"display_name":["${search}"]}}]}`;
+      const r = await fetch(url, { headers });
       if (!r.ok) return res.status(r.status).json({ error: "JobNimbus API error", status: r.status });
       const data = await r.json();
-      const contacts = (data.results || []).map((c) => ({
+      let contacts = (data.results || []).map((c) => ({
         id: c.jnid,
         name: c.display_name || `${c.first_name || ""} ${c.last_name || ""}`.trim() || "Untitled",
         address: [c.address_line1, c.city, c.state_text, c.zip].filter(Boolean).join(", "),
@@ -48,6 +59,10 @@ export default async function handler(req, res) {
         zip: c.zip || "",
         status: c.status_name || "",
       }));
+      if (search) {
+        const s = search.toLowerCase();
+        contacts = contacts.filter((c) => (c.name || "").toLowerCase().includes(s) || (c.address || "").toLowerCase().includes(s));
+      }
       return res.status(200).json({ contacts });
     }
 
