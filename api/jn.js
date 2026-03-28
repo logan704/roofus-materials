@@ -1,18 +1,28 @@
 var https = require("https");
 var KEY = "mn9nk0ezvo8k986n";
 
+function jnGet(path) {
+  return new Promise(function(resolve, reject) {
+    var opts = {
+      hostname: "app.jobnimbus.com", path: "/api1" + path, method: "GET",
+      headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" }
+    };
+    var r = https.request(opts, function(resp) {
+      var buf = [];
+      resp.on("data", function(c) { buf.push(c); });
+      resp.on("end", function() { try { resolve(JSON.parse(Buffer.concat(buf).toString())); } catch(e) { resolve({}); } });
+    });
+    r.on("error", reject);
+    r.end();
+  });
+}
+
 function jnPost(path, bodyObj) {
   return new Promise(function(resolve, reject) {
     var data = JSON.stringify(bodyObj);
     var opts = {
-      hostname: "app.jobnimbus.com",
-      path: "/api1" + path,
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + KEY,
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(data)
-      }
+      hostname: "app.jobnimbus.com", path: "/api1" + path, method: "POST",
+      headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }
     };
     var r = https.request(opts, function(resp) {
       var buf = [];
@@ -25,33 +35,10 @@ function jnPost(path, bodyObj) {
   });
 }
 
-function jnGet(path) {
-  return new Promise(function(resolve, reject) {
-    var opts = {
-      hostname: "app.jobnimbus.com",
-      path: "/api1" + path,
-      method: "GET",
-      headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" }
-    };
-    var r = https.request(opts, function(resp) {
-      var buf = [];
-      resp.on("data", function(c) { buf.push(c); });
-      resp.on("end", function() {
-        try { resolve(JSON.parse(Buffer.concat(buf).toString())); }
-        catch(e) { resolve({}); }
-      });
-    });
-    r.on("error", reject);
-    r.end();
-  });
-}
-
 function jnDel(path) {
   return new Promise(function(resolve, reject) {
     var opts = {
-      hostname: "app.jobnimbus.com",
-      path: "/api1" + path,
-      method: "DELETE",
+      hostname: "app.jobnimbus.com", path: "/api1" + path, method: "DELETE",
       headers: { "Authorization": "Bearer " + KEY }
     };
     var r = https.request(opts, function(resp) {
@@ -59,6 +46,58 @@ function jnDel(path) {
       resp.on("end", function() { resolve({ code: resp.statusCode }); });
     });
     r.on("error", reject);
+    r.end();
+  });
+}
+
+function uploadMultipart(fileContent, fileName, relatedId) {
+  return new Promise(function(resolve, reject) {
+    var boundary = "----Roofus" + Date.now();
+    var crlf = "\r\n";
+    var parts = [];
+
+    // file field
+    parts.push("--" + boundary + crlf);
+    parts.push("Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"" + crlf);
+    parts.push("Content-Type: text/html" + crlf + crlf);
+    parts.push(fileContent);
+    parts.push(crlf);
+
+    // related field
+    parts.push("--" + boundary + crlf);
+    parts.push("Content-Disposition: form-data; name=\"related\"" + crlf + crlf);
+    parts.push(relatedId);
+    parts.push(crlf);
+
+    // description field
+    parts.push("--" + boundary + crlf);
+    parts.push("Content-Disposition: form-data; name=\"description\"" + crlf + crlf);
+    parts.push("Material Order - " + fileName);
+    parts.push(crlf);
+
+    parts.push("--" + boundary + "--" + crlf);
+
+    var bodyStr = parts.join("");
+    var bodyBuf = Buffer.from(bodyStr, "utf-8");
+
+    var opts = {
+      hostname: "app.jobnimbus.com",
+      path: "/api1/files",
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + KEY,
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
+        "Content-Length": bodyBuf.length
+      }
+    };
+
+    var r = https.request(opts, function(resp) {
+      var buf = [];
+      resp.on("data", function(c) { buf.push(c); });
+      resp.on("end", function() { resolve({ code: resp.statusCode, body: Buffer.concat(buf).toString() }); });
+    });
+    r.on("error", reject);
+    r.write(bodyBuf);
     r.end();
   });
 }
@@ -93,55 +132,52 @@ module.exports = async function(req, res) {
         return res.status(400).json({ error: "Missing fields" });
       }
 
-      var plain = String(body.htmlContent).replace(/<[^>]*>/g, " ").replace(/&[^;]+;/g, " ").replace(/\s+/g, " ").trim();
-      if (plain.length > 2000) plain = plain.substring(0, 2000);
-      var fname = String(body.fileName).replace(".html", "");
+      // Keep HTML short - strip to essentials
+      var html = String(body.htmlContent);
+      if (html.length > 50000) html = html.substring(0, 50000);
+      var fname = String(body.fileName);
       var rid = String(body.relatedId);
 
-      // Attempt 1: activity with related array
-      var r1 = await jnPost("/activities", {
-        record_type_name: "Note",
-        note: "MATERIAL ORDER: " + fname + "\n\n" + plain,
-        related: [rid]
-      });
+      var r1 = await uploadMultipart(html, fname, rid);
+
       if (r1.code >= 200 && r1.code < 300) {
         var d1r = {}; try { d1r = JSON.parse(r1.body); } catch(e) {}
-        return res.status(200).json({ success: true, fileId: d1r.jnid || "ok", method: "related_array" });
+        return res.status(200).json({ success: true, fileId: d1r.jnid || d1r.id || "ok", method: "file_upload" });
       }
 
-      // Attempt 2: activity with primary string
+      // Fallback: unlinked activity note
+      var plain = html.replace(/<[^>]*>/g, " ").replace(/&[^;]+;/g, " ").replace(/\s+/g, " ").trim();
+      if (plain.length > 2000) plain = plain.substring(0, 2000);
       var r2 = await jnPost("/activities", {
         record_type_name: "Note",
-        note: "MATERIAL ORDER: " + fname + "\n\n" + plain,
-        primary: rid
+        note: "MATERIAL ORDER: " + fname.replace(".html", "") + "\nJob ID: " + rid + "\n\n" + plain
       });
       if (r2.code >= 200 && r2.code < 300) {
         var d2r = {}; try { d2r = JSON.parse(r2.body); } catch(e) {}
-        return res.status(200).json({ success: true, fileId: d2r.jnid || "ok", method: "primary" });
+        return res.status(200).json({ success: true, fileId: d2r.jnid || "ok", method: "note_fallback" });
       }
 
-      // Attempt 3: unlinked note (fallback)
-      var r3 = await jnPost("/activities", {
-        record_type_name: "Note",
-        note: "MATERIAL ORDER: " + fname + "\nJob ID: " + rid + "\n\n" + plain
-      });
-      if (r3.code >= 200 && r3.code < 300) {
-        var d3r = {}; try { d3r = JSON.parse(r3.body); } catch(e) {}
-        return res.status(200).json({ success: true, fileId: d3r.jnid || "ok", method: "unlinked" });
-      }
-
-      return res.status(400).json({ error: "All failed", a1: r1.body, a2: r2.body, a3: r3.body });
+      return res.status(400).json({ error: "All failed", file_upload: { code: r1.code, body: r1.body }, note: { code: r2.code, body: r2.body } });
     }
 
     if (action === "delete" && req.method === "DELETE") {
       var did = req.query.id;
       if (!did || did === "ok") return res.status(200).json({ success: true });
-      await jnDel("/activities/" + did);
+      await jnDel("/files/" + did).catch(function(){});
+      await jnDel("/activities/" + did).catch(function(){});
       return res.status(200).json({ success: true });
     }
 
+    // Test file upload with tiny content
+    if (action === "testfile") {
+      var testId = req.query.jobid || "d6d7b2c344ac43b5bd81b60d19e0e1f5";
+      var testHtml = "<html><body><h1>Test from Roofus Portal</h1><p>" + new Date().toISOString() + "</p></body></html>";
+      var r = await uploadMultipart(testHtml, "test-order.html", testId);
+      return res.status(200).json({ code: r.code, body: r.body });
+    }
+
     if (action === "ping") {
-      return res.status(200).json({ ok: true, v: 10 });
+      return res.status(200).json({ ok: true, v: 11 });
     }
 
     return res.status(400).json({ error: "Unknown action" });
