@@ -341,7 +341,7 @@ export default function App() {
   const logout = useCallback(async () => { setUser(null); setPg("home"); try { localStorage.removeItem("roofus_sess"); } catch {} }, []);
   const isA = user?.role === "admin";
   const isM = user?.role === "manager";
-  const canApprove = isA || isM;
+  const canApprove = isA;
   const canEditOrders = true; // everyone can edit
   const canDeleteOrders = isA || isM;
   const [matDrop, setMatDrop] = useState(false);
@@ -944,8 +944,6 @@ function Approvals({ orders, sO, items, sI, view }) {
   const approve = async (id) => {
     const order = orders.find((o) => o.id === id);
     const approvedOrder = { ...order, status: "approved", approvedDate: new Date().toISOString() };
-    // Download the file
-    if (order) downloadPDF(approvedOrder, items);
     // Upload to JobNimbus if linked
     let jnFileId = null;
     if (approvedOrder.jnJobId) {
@@ -2557,7 +2555,7 @@ function SupplierCost({ items, sI }) {
 
 // ═══ JOB PROFIT TRACKER ═══
 function JobTracker({ jobs, sJ, orders, items }) {
-  const [view, setView] = useState("list");
+  const [view, setView] = useState("list"); // list, detail, reports, history
   const [editJob, setEditJob] = useState(null);
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterType, setFilterType] = useState("all");
@@ -2570,17 +2568,40 @@ function JobTracker({ jobs, sJ, orders, items }) {
   const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nInsurance, setNInsurance] = useState(false); const [nJnId, setNJnId] = useState("");
   const [cCat, setCCat] = useState("labor"); const [cDesc, setCDesc] = useState(""); const [cAmt, setCAmt] = useState("");
 
-  useEffect(() => { (async () => { try { const r = await fetch("/api/jn?action=jobs"); const d = await r.json(); setJnAll(d.jobs || []); } catch(e) {} })(); }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/jn?action=jobs");
+        const d = await r.json();
+        const jnJobs = d.jobs || [];
+        setJnAll(jnJobs);
+        // Auto-sync: if a tracked job's JN status is "Job Completed" and our status is open/in_progress, move to waiting_invoices
+        // Also migrate any old "open" status to "in_progress"
+        let changed = false;
+        const updated = jobs.map((tj) => {
+          if (tj.status === "open") { changed = true; tj = { ...tj, status: "in_progress" }; }
+          if (!tj.jnJobId || tj.status === "waiting_invoices" || tj.status === "closed") return tj;
+          const jnJob = jnJobs.find((j) => j.id === tj.jnJobId);
+          if (jnJob && (jnJob.status || "").toLowerCase().replace(/[^a-z]/g, "") === "jobcompleted") {
+            changed = true;
+            return { ...tj, status: "waiting_invoices", completedDate: tj.completedDate || new Date().toISOString() };
+          }
+          return tj;
+        });
+        if (changed) sJ(updated);
+      } catch(e) {}
+    })();
+  }, []);
 
-  const STATUSES = ["open","in_progress","completed","final_costs","closed"];
-  const SL = { open:"Open", in_progress:"In Progress", completed:"Completed", final_costs:"Final Costs Entered", closed:"Closed" };
-  const SC = { open:{bg:C.blu+"15",c:C.blu}, in_progress:{bg:C.wrn+"15",c:C.wrn}, completed:{bg:NAVY+"15",c:NAVY}, final_costs:{bg:C.grn+"15",c:C.grn}, closed:{bg:C.t2+"20",c:C.t2} };
+  const STATUSES = ["in_progress","waiting_invoices","closed"];
+  const SL = { in_progress:"Job In Progress", waiting_invoices:"Waiting on Invoices", closed:"Closed" };
+  const SC = { in_progress:{bg:C.wrn+"15",c:C.wrn}, waiting_invoices:{bg:NAVY+"15",c:NAVY}, closed:{bg:C.grn+"15",c:C.grn} };
 
   const calcJob = (j) => {
     const contract = j.contractAmount || 0;
     const costs = (j.costs || []).reduce((s,c) => s + (c.amount||0), 0);
     const linked = orders.filter((o) => o.jnJobId && o.jnJobId === j.jnJobId && o.status === "approved");
-    const matOrd = linked.reduce((s,o) => s + (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.unitCost||0), 0), 0);
+    const matOrd = linked.reduce((s,o) => s + (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.markupCost||l.unitCost||0), 0), 0);
     const total = costs + matOrd;
     const projGP$ = contract * ((j.projectedGP||0)/100);
     const actGP$ = contract - total;
@@ -2608,22 +2629,22 @@ function JobTracker({ jobs, sJ, orders, items }) {
   });
 
   const jnF = jnAll.filter((j) => { if (!jnSearch.trim()) return false; const s=jnSearch.toLowerCase(); return (j.name||"").toLowerCase().includes(s)||(j.address||"").toLowerCase().includes(s); }).slice(0,6);
-  const openJ = allCalc.filter(j=>j.status!=="closed");
-  const closedJ = allCalc.filter(j=>j.status==="closed"||j.status==="final_costs");
-  const totProjProfit = openJ.reduce((s,j)=>s+j.projGP$,0);
+  const activeJ = allCalc.filter(j=>j.status!=="closed");
+  const closedJ = allCalc.filter(j=>j.status==="closed");
+  const totProjProfit = activeJ.reduce((s,j)=>s+j.projGP$,0);
   const totActProfit = closedJ.reduce((s,j)=>s+j.actGP$,0);
-  const avgProjGP = openJ.length ? openJ.reduce((s,j)=>s+(j.projectedGP||0),0)/openJ.length : 0;
+  const avgProjGP = activeJ.length ? activeJ.reduce((s,j)=>s+(j.projectedGP||0),0)/activeJ.length : 0;
   const avgActGP = closedJ.length ? closedJ.reduce((s,j)=>s+j.actGP,0)/closedJ.length : 0;
 
-  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:+nGP||0, isInsurance:nInsurance, status:"open", costs:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
+  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:+nGP||0, isInsurance:nInsurance, status:"in_progress", costs:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
   const addCost = (jid) => { if (!cDesc.trim()||!cAmt) return; sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cCat,description:cDesc.trim(),amount:+cAmt||0,date:new Date().toISOString()}]}:j)); setCDesc(""); setCAmt(""); setCCat("labor"); };
   const deleteCost = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
   const updateJob = (jid,upd) => { sJ(jobs.map(j=>j.id===jid?{...j,...upd}:j)); };
 
   // ── REPORTS ──
   if (view === "reports") {
-    const fade = allCalc.filter(j=>(j.status==="closed"||j.status==="final_costs")&&j.variance<-500).sort((a,b)=>a.variance-b.variance);
-    const wins = allCalc.filter(j=>(j.status==="closed"||j.status==="final_costs")&&j.variance>500).sort((a,b)=>b.variance-a.variance);
+    const fade = allCalc.filter(j=>j.status==="closed"&&j.variance<-500).sort((a,b)=>a.variance-b.variance);
+    const wins = allCalc.filter(j=>j.status==="closed"&&j.variance>500).sort((a,b)=>b.variance-a.variance);
     const tL=closedJ.reduce((s,j)=>s+j.labor,0), tM=closedJ.reduce((s,j)=>s+j.mat,0), tO=closedJ.reduce((s,j)=>s+j.other,0), tAll=tL+tM+tO;
     return (
       <div className="fu">
@@ -2664,7 +2685,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
   // ── JOB DETAIL ──
   if (editJob) {
     const j = calcJob(editJob);
-    const sc = SC[j.status]||SC.open;
+    const sc = SC[j.status]||SC.in_progress;
     return (
       <div className="fu">
         <button onClick={()=>setEditJob(null)} style={{...bS,marginBottom:16,borderRadius:10,padding:"8px 14px",fontSize:13}}><ArrowLeft size={14}/> Back</button>
@@ -2673,7 +2694,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
             <div><h1 style={{fontSize:24,fontWeight:900,fontFamily:BC}}>{j.name}</h1>{j.address&&<div style={{fontSize:14,color:C.t2,marginTop:4}}>{j.address}</div>}</div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               {j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"4px 10px",borderRadius:6,background:C.blu+"15",color:C.blu}}>INSURANCE</span>}
-              <select value={j.status} onChange={(e)=>{updateJob(j.id,{status:e.target.value,completedDate:["completed","final_costs","closed"].includes(e.target.value)?new Date().toISOString():j.completedDate}); setEditJob({...editJob,status:e.target.value});}} style={{...inp,padding:"8px 12px",fontSize:12,width:"auto",borderRadius:10,fontWeight:700,background:sc.bg,color:sc.c,cursor:"pointer"}}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
+              <select value={j.status} onChange={(e)=>{updateJob(j.id,{status:e.target.value,completedDate:e.target.value==="closed"?new Date().toISOString():j.completedDate}); if(e.target.value==="closed"){setEditJob(null);}else{setEditJob({...editJob,status:e.target.value});}}} style={{...inp,padding:"8px 12px",fontSize:12,width:"auto",borderRadius:10,fontWeight:700,background:sc.bg,color:sc.c,cursor:"pointer"}}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
             </div>
           </div>
           <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
@@ -2723,25 +2744,36 @@ function JobTracker({ jobs, sJ, orders, items }) {
   }
 
   // ── LIST ──
+  const isHistory = view === "history";
+  const listJobs = isHistory ? filtered.filter(j=>j.status==="closed") : filtered.filter(j=>j.status!=="closed");
+  const activeStatuses = STATUSES.filter(s=>s!=="closed");
+
   return (
     <div className="fu">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
-        <div><h1 style={{fontSize:26,fontWeight:900,fontFamily:BC}}>JOBS</h1><p style={{color:C.t2,fontSize:14,marginTop:4}}>{jobs.length} total · {openJ.length} open</p></div>
+        <div><h1 style={{fontSize:26,fontWeight:900,fontFamily:BC}}>JOBS</h1><p style={{color:C.t2,fontSize:14,marginTop:4}}>{jobs.length} total · {activeJ.length} active · {closedJ.length} closed</p></div>
         <div style={{display:"flex",gap:8}}><button onClick={()=>setView("reports")} style={{...bS,borderRadius:10,padding:"10px 16px",fontSize:13}}><BarChart2 size={14}/> Reports</button><button onClick={()=>setAddModal(true)} style={{...bP,borderRadius:10,padding:"10px 16px",fontSize:13}}><Plus size={14}/> Add Job</button></div>
       </div>
+
+      {/* ACTIVE / HISTORY TABS */}
+      <div style={{display:"flex",gap:4,marginBottom:16}}>
+        <button onClick={()=>setView("list")} style={{...(!isHistory?bP:bS),borderRadius:10,padding:"10px 20px",fontSize:14,fontWeight:700}}>Active Jobs ({activeJ.length})</button>
+        <button onClick={()=>setView("history")} style={{...(isHistory?bP:bS),borderRadius:10,padding:"10px 20px",fontSize:14,fontWeight:700}}>History ({closedJ.length})</button>
+      </div>
+
       <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
-        {[{l:"Open",v:openJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Closed",v:closedJ.length,c:C.grn},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
+        {[{l:"Active",v:activeJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Closed",v:closedJ.length,c:C.grn},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
           <div key={i} style={{flex:"1 1 160px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"16px 20px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>{s.l}</div><div style={{fontSize:22,fontWeight:900,color:s.c,fontFamily:MN,marginTop:4}}>{s.v}</div></div>
         ))}
       </div>
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
         <div style={{flex:"2 1 200px",position:"relative"}}><Search size={14} style={{position:"absolute",left:12,top:13,color:C.t2}}/><input value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Search jobs..." style={{...inp,paddingLeft:34,borderRadius:10,padding:"12px 14px 12px 34px"}}/></div>
-        <select value={filterStatus} onChange={(e)=>setFilterStatus(e.target.value)} style={{...inp,width:"auto",minWidth:120,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Status</option>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
+        {!isHistory && <select value={filterStatus} onChange={(e)=>setFilterStatus(e.target.value)} style={{...inp,width:"auto",minWidth:140,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Status</option>{activeStatuses.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>}
         <select value={filterType} onChange={(e)=>setFilterType(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Types</option><option value="insurance">Insurance</option><option value="retail">Retail</option></select>
         <select value={sortBy} onChange={(e)=>setSortBy(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="date">Newest</option><option value="name">Name</option><option value="gp">Best GP%</option><option value="variance">Worst Variance</option><option value="contract">Largest</option></select>
       </div>
-      {!filtered.length&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:40,textAlign:"center",color:C.t2}}>No jobs found. Click "Add Job" to start.</div>}
-      {filtered.map(j=>{const sc=SC[j.status]||SC.open; return (
+      {!listJobs.length&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:40,textAlign:"center",color:C.t2}}>{isHistory ? "No closed jobs yet." : "No active jobs found. Click \"Add Job\" to start."}</div>}
+      {listJobs.map(j=>{const sc=SC[j.status]||SC.in_progress; return (
         <div key={j.id} onClick={()=>setEditJob(jobs.find(x=>x.id===j.id))} style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"18px 22px",marginBottom:10,cursor:"pointer",transition:"border-color .2s,box-shadow .2s",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}} onMouseEnter={(e)=>{e.currentTarget.style.borderColor=C.ac;e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.08)";}} onMouseLeave={(e)=>{e.currentTarget.style.borderColor=C.brd;e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,0.04)";}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
             <div style={{flex:"1 1 200px"}}><div style={{fontWeight:700,fontSize:16}}>{j.name}</div>{j.address&&<div style={{fontSize:12,color:C.t2,marginTop:2}}>{j.address}</div>}<div style={{display:"flex",gap:6,marginTop:8}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:sc.bg,color:sc.c}}>{SL[j.status]}</span>{j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:C.blu+"15",color:C.blu}}>Insurance</span>}</div></div>
