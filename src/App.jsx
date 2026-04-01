@@ -73,7 +73,7 @@ const SB_URL = import.meta.env.VITE_SUPABASE_URL;
 const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const sbH = { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json", "Prefer": "return=representation" };
 async function sbGet(table, query = "") { try { const r = await fetch(`${SB_URL}/rest/v1/${table}?${query}`, { headers: sbH }); return r.ok ? await r.json() : []; } catch { return []; } }
-async function sbPost(table, data) { try { const r = await fetch(`${SB_URL}/rest/v1/${table}`, { method: "POST", headers: sbH, body: JSON.stringify(data) }); return r.ok ? await r.json() : null; } catch { return null; } }
+async function sbPost(table, data) { try { const d = Array.isArray(data) ? data.map(x => ({ id: crypto.randomUUID(), ...x })) : { id: crypto.randomUUID(), ...data }; const r = await fetch(`${SB_URL}/rest/v1/${table}`, { method: "POST", headers: sbH, body: JSON.stringify(d) }); if (!r.ok) { console.error("sbPost error:", table, await r.text()); return null; } return await r.json(); } catch(e) { console.error("sbPost catch:", e); return null; } }
 async function sbPatch(table, id, data) { try { const r = await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${id}`, { method: "PATCH", headers: sbH, body: JSON.stringify(data) }); return r.ok ? await r.json() : null; } catch { return null; } }
 async function sbDel(table, id) { try { await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${id}`, { method: "DELETE", headers: sbH }); return true; } catch { return false; } }
 async function sbDelWhere(table, query) { try { await fetch(`${SB_URL}/rest/v1/${table}?${query}`, { method: "DELETE", headers: sbH }); return true; } catch { return false; } }
@@ -2948,7 +2948,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
     // Save line items — delete all and re-insert
     await sbDelWhere("quote_line_items", `quote_id=eq.${q.id}`);
     if (lineItems.length > 0) {
-      const toInsert = lineItems.map(li => ({ ...li, id: undefined, quote_id: q.id }));
+      const toInsert = lineItems.map(li => { const { id, ...rest } = li; return { ...rest, quote_id: q.id }; });
       await sbPost("quote_line_items", toInsert);
     }
     setSaving(false);
