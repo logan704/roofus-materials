@@ -36,8 +36,8 @@ const BC = `'Barlow Condensed',sans-serif`;
 
 async function ld(k, d) { try { const r = await window.storage.get(PFX+k, true); return r ? JSON.parse(r.value) : d; } catch { return d; } }
 async function sv(k, v) { try { await window.storage.set(PFX+k, JSON.stringify(v), true); } catch(e) { console.error(e); } }
-async function ldL(k, d) { try { const r = await window.storage.get(PFX+k, false); return r ? JSON.parse(r.value) : d; } catch { return d; } }
-async function svL(k, v) { try { await window.storage.set(PFX+k, JSON.stringify(v), false); } catch {} }
+async function ldL(k, d) { try { const v = localStorage.getItem(PFX+k); if (v) return JSON.parse(v); } catch {} try { const r = await window.storage.get(PFX+k, false); return r ? JSON.parse(r.value) : d; } catch { return d; } }
+async function svL(k, v) { try { localStorage.setItem(PFX+k, JSON.stringify(v)); } catch {} try { await window.storage.set(PFX+k, JSON.stringify(v), false); } catch {} }
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 // Compress and resize photo from file input → base64 string
@@ -356,7 +356,7 @@ export default function App() {
   const sSh = useCallback((s) => { setShrinkLog(s); sv("shrinkage", s); }, []);
   const sTJ = useCallback((j) => { setTrackedJobs(j); sv("tracked_jobs", j); }, []);
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
-  const logout = useCallback(async () => { setUser(null); setPg("home"); try { await window.storage.delete(PFX + "sess", false); } catch {} }, []);
+  const logout = useCallback(async () => { setUser(null); setPg("home"); try { localStorage.removeItem(PFX + "sess"); } catch {} try { await window.storage.delete(PFX + "sess", false); } catch {} }, []);
   const isA = user?.role === "admin";
   const isM = user?.role === "manager";
   const canApprove = isA;
@@ -2942,6 +2942,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
       customer_phone: q.customer_phone || "",
       address: q.customer_address || "",
       settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "" },
+      total_price: tierTotal("best"),
       updated_at: new Date().toISOString(),
     });
     // Save slides
@@ -2977,6 +2978,84 @@ function QuoteBuilder({ user, isA, isM, items }) {
     await sbDelWhere("quote_line_items", `quote_id=eq.${id}`);
     await sbDel("quotes", id);
     await loadQuotes();
+  }
+
+  // Send quote via SMS + Email
+  const [sending, setSending] = useState(false);
+  const [showSend, setShowSend] = useState(false);
+  const [sendResult, setSendResult] = useState(null);
+  async function sendQuote() {
+    if (!q) return;
+    setSending(true);
+    setSendResult(null);
+    await saveAll(); // save first
+    const link = quoteLink;
+    const custName = q.customer_name || "Customer";
+    const errors = [];
+    // Send SMS if phone exists
+    if (q.customer_phone) {
+      try {
+        const r = await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: q.customer_phone, message: `Hi ${custName}, your roofing proposal from Roof USA is ready! View it here: ${link}` }) });
+        if (!r.ok) errors.push("SMS failed");
+      } catch { errors.push("SMS failed"); }
+    }
+    // Send email if email exists
+    if (q.customer_email) {
+      try {
+        const r = await fetch("/api/notify?action=email", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: q.customer_email, toName: custName, subject: `Your Roofing Proposal from Roof USA`,
+            html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px"><h2 style="color:#1B2A4A">Your Roofing Proposal</h2><p>Hi ${custName},</p><p>Thank you for choosing Roof USA! Your personalized roofing proposal is ready for review.</p><a href="${link}" style="display:inline-block;background:#B22234;color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;margin:16px 0">View Your Proposal</a><p style="color:#666;font-size:13px">This link will expire in 30 days. If you have any questions, reply to this email or call us.</p><hr style="border:none;border-top:1px solid #eee;margin:24px 0"><p style="font-size:12px;color:#999">Roof USA · Roofus Construction, LLC · Columbia, MO</p></div>` }) });
+        if (!r.ok) errors.push("Email failed");
+      } catch { errors.push("Email failed"); }
+    }
+    // Notify Logan via SMS
+    try {
+      await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: "+15738649965", message: `Quote sent to ${custName}${q.customer_phone ? " (" + q.customer_phone + ")" : ""}. ${link}` }) });
+    } catch {}
+    // Update status to sent
+    await sbPatch("quotes", q.id, { status: "sent", updated_at: new Date().toISOString() });
+    setQ({ ...q, status: "sent" });
+    await sbPost("quote_tracking", { quote_id: q.id, event_type: "sent", timestamp: new Date().toISOString(), metadata: { phone: !!q.customer_phone, email: !!q.customer_email } });
+    setSending(false);
+    if (errors.length > 0) setSendResult("Sent with issues: " + errors.join(", "));
+    else setSendResult("Sent successfully!");
+    setTimeout(() => { setSendResult(null); setShowSend(false); }, 3000);
+    await loadQuotes();
+  }
+
+  // Duplicate quote
+  async function duplicateQuote(srcQuote) {
+    const newQ = {
+      customer_name: srcQuote.customer_name + " (Copy)",
+      customer_email: srcQuote.customer_email || "",
+      customer_phone: srcQuote.customer_phone || "",
+      address: srcQuote.address || "",
+      jn_job_id: srcQuote.jn_job_id || "",
+      status: "draft",
+      created_by: user?.name || "Unknown",
+      settings: { ...(srcQuote.settings || {}), jn_job_name: (srcQuote.settings || {}).jn_job_name || "" },
+      expiration_date: new Date(Date.now() + 30 * 86400000).toISOString(),
+    };
+    const result = await sbPost("quotes", newQ);
+    if (result?.[0]) {
+      const newId = result[0].id;
+      // Copy slides
+      const srcSlides = await sbGet("quote_slides", `quote_id=eq.${srcQuote.id}&order=sort_order.asc`);
+      for (const s of (srcSlides || [])) {
+        await sbPost("quote_slides", { quote_id: newId, slide_type: s.slide_type, sort_order: s.sort_order, title: s.title, content: s.content, visible: s.visible });
+      }
+      // Copy line items
+      const srcItems = await sbGet("quote_line_items", `quote_id=eq.${srcQuote.id}`);
+      if (srcItems?.length > 0) {
+        await sbPost("quote_line_items", srcItems.map(li => {
+          const { id, ...rest } = li;
+          return { ...rest, quote_id: newId };
+        }));
+      }
+      await loadQuotes();
+    }
   }
 
   const jnF = jnAll.filter((j) => { if (!jnSearch.trim()) return false; const s = jnSearch.toLowerCase(); return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s); }).slice(0, 6);
@@ -3085,10 +3164,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
                 <div key={qt.id} style={{ ...crd, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", borderRadius: 14, gap: 12, flexWrap: "wrap" }} onClick={() => openQuote(qt)}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 800, fontSize: 15 }}>{qt.customer_name || "Untitled"}</div>
-                    <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{qt.jn_job_name || qt.customer_address || "No job linked"} · {fD(qt.created_at)}</div>
+                    <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{(qt.settings || {}).jn_job_name || qt.address || "No job linked"} · {fD(qt.created_at)}</div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {qt.total_price > 0 && <div style={{ fontFamily: MN, fontWeight: 800, fontSize: 16, color: C.grn, marginRight: 12 }}>{fmt$(qt.total_price)}</div>}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4, textTransform: "uppercase", background: sc.bg, color: sc.c }}>{qt.status}</span>
+                    <button onClick={e => { e.stopPropagation(); duplicateQuote(qt); }} title="Duplicate" style={{ ...bS, padding: "6px 10px", borderRadius: 8 }}><Copy size={14} /></button>
                     <button onClick={e => { e.stopPropagation(); if (confirm("Delete this quote?")) deleteQuote(qt.id); }} style={{ ...bS, padding: "6px 10px", borderRadius: 8 }}><Trash2 size={14} /></button>
                   </div>
                 </div>
@@ -3143,12 +3224,30 @@ function QuoteBuilder({ user, isA, isM, items }) {
               <div style={{ fontSize: 11, color: C.t2 }}>{q.jn_job_name || q.customer_address || "No job linked"}</div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => navigator.clipboard.writeText(quoteLink).then(() => alert("Quote link copied!"))} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}><Copy size={14} /> Copy Link</button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {q.status && <span style={{ fontSize: 10, fontWeight: 800, padding: "5px 12px", borderRadius: 6, textTransform: "uppercase", background: q.status === "signed" ? "#27AE6022" : q.status === "sent" ? "#2563EB22" : "#E6A81722", color: q.status === "signed" ? C.grn : q.status === "sent" ? "#2563EB" : C.wrn, alignSelf: "center" }}>{q.status}</span>}
+            <button onClick={() => navigator.clipboard.writeText(quoteLink).then(() => alert("Quote link copied!\n\n" + quoteLink))} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}><Copy size={14} /> Copy Link</button>
             <button onClick={() => setView("preview")} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}><Eye size={14} /> Preview</button>
+            <button onClick={() => setShowSend(true)} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12, background: "#2563EB" }}><Send size={14} /> Send</button>
             <button onClick={saveAll} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12 }} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
           </div>
         </div>
+
+        {/* Send Quote Modal */}
+        <Modal open={showSend} onClose={() => setShowSend(false)} title="Send Quote">
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Send proposal to {q.customer_name}:</div>
+            {q.customer_phone && <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: C.sf, borderRadius: 10, marginBottom: 8 }}><span style={{ fontSize: 18 }}>📱</span><div><div style={{ fontSize: 12, fontWeight: 700 }}>SMS</div><div style={{ fontSize: 13 }}>{q.customer_phone}</div></div></div>}
+            {q.customer_email && <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: C.sf, borderRadius: 10, marginBottom: 8 }}><span style={{ fontSize: 18 }}>📧</span><div><div style={{ fontSize: 12, fontWeight: 700 }}>Email</div><div style={{ fontSize: 13 }}>{q.customer_email}</div></div></div>}
+            {!q.customer_phone && !q.customer_email && <div style={{ padding: 16, textAlign: "center", color: C.wrn, background: "#FEF3C7", borderRadius: 10, fontSize: 13 }}>No phone or email on file. Add contact info in the Cover slide first.</div>}
+            <div style={{ padding: "10px 14px", background: "#EEF6FF", borderRadius: 10, marginTop: 8 }}><div style={{ fontSize: 11, fontWeight: 700, color: "#2563EB" }}>CUSTOMER LINK</div><div style={{ fontSize: 12, fontFamily: MN, wordBreak: "break-all", marginTop: 4 }}>{quoteLink}</div></div>
+          </div>
+          {sendResult && <div style={{ padding: 12, borderRadius: 10, background: sendResult.includes("issue") ? "#FEF3C7" : "#D1FAE5", color: sendResult.includes("issue") ? C.wrn : C.grn, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>{sendResult}</div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={() => setShowSend(false)} style={bS}>Cancel</button>
+            <button onClick={sendQuote} disabled={sending || (!q.customer_phone && !q.customer_email)} style={{ ...bP, borderRadius: 10, background: "#2563EB", opacity: (!q.customer_phone && !q.customer_email) ? 0.5 : 1 }}>{sending ? "Sending..." : "Send Quote"}</button>
+          </div>
+        </Modal>
 
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
           {/* Left: Slide List */}
@@ -3512,6 +3611,11 @@ function QuotePublicView({ quoteId, isPreview }) {
     }
     if (!isPreview) {
       await sbPost("quote_tracking", { quote_id: qt.id, event_type: "opened", timestamp: new Date().toISOString(), user_agent: navigator.userAgent, metadata: {} });
+      // Notify Logan via SMS that customer opened the quote
+      try {
+        await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: "+15738649965", message: `👀 ${qt.customer_name} just opened their quote! ${window.location.origin}/quote/${qt.id}` }) });
+      } catch {}
     }
     setLoading(false);
   }
@@ -3541,9 +3645,17 @@ function QuotePublicView({ quoteId, isPreview }) {
     };
     await sbPatch("quotes", quote.id, {
       status: "signed",
+      signature_data: sigData,
+      selected_tier: selectedTier,
+      total_price: grandTotal,
       settings: { ...(quote.settings || {}), signature: sigData, selected_tier: selectedTier, selected_upgrades: selectedUpgrades },
     });
     await sbPost("quote_tracking", { quote_id: quote.id, event_type: "signed", timestamp: new Date().toISOString(), user_agent: navigator.userAgent, metadata: sigData });
+    // Notify Logan via SMS
+    try {
+      await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: "+15738649965", message: `🎉 QUOTE SIGNED! ${quote.customer_name} just signed for ${fmt$(grandTotal)} (${TIER_LABELS[selectedTier]} tier). ${window.location.origin}/quote/${quote.id}` }) });
+    } catch {}
     setSigned(true);
   }
 
