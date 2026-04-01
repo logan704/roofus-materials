@@ -2884,9 +2884,14 @@ function QuoteBuilder({ user, isA, isM, items }) {
     setLoading(false);
   }
   async function openQuote(quote) {
-    const sl = await sbGet("quote_slides", `quote_id=eq.${quote.id}&order=slide_order.asc`);
-    const li = await sbGet("quote_line_items", `quote_id=eq.${quote.id}`);
-    setQ(quote);
+    const sl = await sbGet("quote_slides", `quote_id=eq.${quote.id}&order=sort_order.asc`);
+    const liRaw = await sbGet("quote_line_items", `quote_id=eq.${quote.id}&order=sort_order.asc`);
+    const li = (liRaw || []).map(r => ({
+      ...r, cost: r.unit_cost || 0, unit_price: r.line_total ? r.line_total / (r.qty || 1) : (r.unit_cost || 0) * (1 + (r.margin_pct || 0) / 100),
+      markup: r.margin_pct || 0, category: r.section_name || "Other", item_id: r.portal_item_id || null,
+    }));
+    const uiQuote = { ...quote, customer_address: quote.address || "", jn_job_name: (quote.settings || {}).jn_job_name || "" };
+    setQ(uiQuote);
     setSlides(sl || []);
     setLineItems(li || []);
     setAsi(0);
@@ -2902,23 +2907,22 @@ function QuoteBuilder({ user, isA, isM, items }) {
       customer_name: nf.customer_name,
       customer_email: nf.customer_email,
       customer_phone: nf.customer_phone,
-      customer_address: nf.customer_address,
+      address: nf.customer_address,
       jn_job_id: nf.jn_job_id,
-      jn_job_name: nf.jn_job_name,
       status: "draft",
       created_by: user?.name || "Unknown",
-      settings: { margin: 35, tiers_enabled: { good: true, better: true, best: true }, price_view: "total" },
-      expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
+      settings: { margin: 35, tiers_enabled: { good: true, better: true, best: true }, price_view: "total", jn_job_name: nf.jn_job_name || "" },
+      expiration_date: new Date(Date.now() + 30 * 86400000).toISOString(),
     };
     const result = await sbPost("quotes", newQ);
     if (result && result.length > 0) {
       const created = result[0];
       // Create default slides
       const defaultSlides = [
-        { quote_id: created.id, slide_type: "cover", slide_order: 0, title: "Your Roofing Proposal", content: {}, visible: true },
-        { quote_id: created.id, slide_type: "scope", slide_order: 1, title: "Scope of Work", content: { sections: [{ name: "Roofing", items: [] }] }, visible: true },
-        { quote_id: created.id, slide_type: "pricing", slide_order: 2, title: "Investment Options", content: { terms: "" }, visible: true },
-        { quote_id: created.id, slide_type: "signature", slide_order: 3, title: "Authorization", content: { terms: DEFAULT_TERMS }, visible: true },
+        { quote_id: created.id, slide_type: "cover", sort_order: 0, title: "Your Roofing Proposal", content: {}, visible: true },
+        { quote_id: created.id, slide_type: "scope", sort_order: 1, title: "Scope of Work", content: { sections: [{ name: "Roofing", items: [] }] }, visible: true },
+        { quote_id: created.id, slide_type: "pricing", sort_order: 2, title: "Investment Options", content: { terms: "" }, visible: true },
+        { quote_id: created.id, slide_type: "signature", sort_order: 3, title: "Authorization", content: { terms: DEFAULT_TERMS }, visible: true },
       ];
       for (const s of defaultSlides) await sbPost("quote_slides", s);
       setShowNew(false);
@@ -2934,21 +2938,36 @@ function QuoteBuilder({ user, isA, isM, items }) {
     // Save quote settings
     await sbPatch("quotes", q.id, {
       customer_name: q.customer_name,
-      customer_email: q.customer_email,
-      customer_phone: q.customer_phone,
-      customer_address: q.customer_address,
-      settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView },
+      customer_email: q.customer_email || "",
+      customer_phone: q.customer_phone || "",
+      address: q.customer_address || "",
+      settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "" },
       updated_at: new Date().toISOString(),
     });
     // Save slides
     for (const s of slides) {
-      if (s.id) await sbPatch("quote_slides", s.id, { title: s.title, content: s.content, visible: s.visible, slide_order: s.slide_order });
+      if (s.id) await sbPatch("quote_slides", s.id, { title: s.title, content: s.content, visible: s.visible, sort_order: s.sort_order });
       else { const r = await sbPost("quote_slides", { ...s, quote_id: q.id }); if (r?.[0]) s.id = r[0].id; }
     }
     // Save line items — delete all and re-insert
     await sbDelWhere("quote_line_items", `quote_id=eq.${q.id}`);
     if (lineItems.length > 0) {
-      const toInsert = lineItems.map(li => { const { id, ...rest } = li; return { ...rest, quote_id: q.id }; });
+      const toInsert = lineItems.map(li => ({
+        quote_id: q.id,
+        description: li.description || "",
+        qty: li.qty || 1,
+        unit: li.unit || "each",
+        unit_cost: li.cost || 0,
+        labor_cost: li.labor_cost || 0,
+        margin_pct: li.markup || 0,
+        line_total: (li.qty || 1) * (li.unit_price || 0),
+        tier: li.tier || "all",
+        section_name: li.category || "Other",
+        is_upgrade: li.is_upgrade || false,
+        upgrade_price: li.is_upgrade ? (li.unit_price || 0) : null,
+        portal_item_id: li.item_id || null,
+        sort_order: li.sort_idx || 0,
+      }));
       await sbPost("quote_line_items", toInsert);
     }
     setSaving(false);
@@ -2966,7 +2985,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const addSlide = (type) => {
     const st = SLIDE_TYPES.find(s => s.type === type);
     const newSlide = {
-      quote_id: q?.id, slide_type: type, slide_order: slides.length,
+      quote_id: q?.id, slide_type: type, sort_order: slides.length,
       title: st?.label || type, visible: true,
       content: type === "scope" ? { sections: [{ name: "Roofing", items: [] }] } : type === "signature" ? { terms: DEFAULT_TERMS } : {},
     };
@@ -2974,7 +2993,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
     setAsi(slides.length);
   };
   const removeSlide = (idx) => {
-    const ns = slides.filter((_, i) => i !== idx).map((s, i) => ({ ...s, slide_order: i }));
+    const ns = slides.filter((_, i) => i !== idx).map((s, i) => ({ ...s, sort_order: i }));
     setSlides(ns);
     if (asi >= ns.length) setAsi(Math.max(0, ns.length - 1));
   };
@@ -2982,7 +3001,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
     const ni = idx + dir;
     if (ni < 0 || ni >= slides.length) return;
     const ns = [...slides]; [ns[idx], ns[ni]] = [ns[ni], ns[idx]];
-    ns.forEach((s, i) => s.slide_order = i);
+    ns.forEach((s, i) => s.sort_order = i);
     setSlides(ns);
     setAsi(ni);
   };
@@ -3477,10 +3496,14 @@ function QuotePublicView({ quoteId, isPreview }) {
     const qt = qData[0];
     if (qt.status === "signed") { setSigned(true); }
     // Check expiration
-    if (qt.expires_at && new Date(qt.expires_at) < new Date()) { setError("This quote has expired"); setLoading(false); return; }
+    if (qt.expiration_date && new Date(qt.expiration_date) < new Date()) { setError("This quote has expired"); setLoading(false); return; }
     setQuote(qt);
-    const sl = await sbGet("quote_slides", `quote_id=eq.${quoteId}&visible=eq.true&order=slide_order.asc`);
-    const li = await sbGet("quote_line_items", `quote_id=eq.${quoteId}`);
+    const sl = await sbGet("quote_slides", `quote_id=eq.${quoteId}&visible=eq.true&order=sort_order.asc`);
+    const liRaw2 = await sbGet("quote_line_items", `quote_id=eq.${quoteId}&order=sort_order.asc`);
+    const li = (liRaw2 || []).map(r => ({
+      ...r, cost: r.unit_cost || 0, unit_price: r.line_total ? r.line_total / (r.qty || 1) : (r.unit_cost || 0) * (1 + (r.margin_pct || 0) / 100),
+      markup: r.margin_pct || 0, category: r.section_name || "Other",
+    }));
     setSlides(sl || []);
     setLineItems(li || []);
     // Track view
@@ -3488,7 +3511,7 @@ function QuotePublicView({ quoteId, isPreview }) {
       await sbPatch("quotes", qt.id, { status: "viewed" });
     }
     if (!isPreview) {
-      await sbPost("quote_tracking", { quote_id: qt.id, event_type: "opened", event_data: { timestamp: new Date().toISOString(), userAgent: navigator.userAgent } });
+      await sbPost("quote_tracking", { quote_id: qt.id, event_type: "opened", timestamp: new Date().toISOString(), user_agent: navigator.userAgent, metadata: {} });
     }
     setLoading(false);
   }
@@ -3520,7 +3543,7 @@ function QuotePublicView({ quoteId, isPreview }) {
       status: "signed",
       settings: { ...(quote.settings || {}), signature: sigData, selected_tier: selectedTier, selected_upgrades: selectedUpgrades },
     });
-    await sbPost("quote_tracking", { quote_id: quote.id, event_type: "signed", event_data: sigData });
+    await sbPost("quote_tracking", { quote_id: quote.id, event_type: "signed", timestamp: new Date().toISOString(), user_agent: navigator.userAgent, metadata: sigData });
     setSigned(true);
   }
 
@@ -3553,7 +3576,7 @@ function QuotePublicView({ quoteId, isPreview }) {
             <h1 style={{ fontSize: 32, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 8 }}>{cs.title || "Your Roofing Proposal"}</h1>
             <div style={{ width: 60, height: 3, background: RED, margin: "16px auto" }} />
             <div style={{ fontSize: 18, fontWeight: 600, marginTop: 20 }}>{quote.customer_name}</div>
-            <div style={{ fontSize: 14, color: "#666", marginTop: 6 }}>{quote.customer_address}</div>
+            <div style={{ fontSize: 14, color: "#666", marginTop: 6 }}>{(quote.address || "")}</div>
             <div style={{ fontSize: 13, color: "#999", marginTop: 20 }}>{fD(quote.created_at)}</div>
             <div style={{ marginTop: 30, padding: 16, background: "#f8f9fa", borderRadius: 12, display: "inline-block" }}>
               <div style={{ fontSize: 11, color: "#999", textTransform: "uppercase", letterSpacing: ".1em" }}>Prepared by</div>
