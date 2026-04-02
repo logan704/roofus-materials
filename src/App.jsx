@@ -2887,8 +2887,32 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [showSaveTpl, setShowSaveTpl] = useState(false);
   const [tplName, setTplName] = useState("");
   const [showSidePanel, setShowSidePanel] = useState(false);
+  const [activity, setActivity] = useState([]);
+  const [showActivity, setShowActivity] = useState(false);
+  const [questions, setQuestions] = useState([]);
+  const [showQuestions, setShowQuestions] = useState(false);
+  const [listView, setListView] = useState("quotes"); // quotes, analytics
 
   useEffect(() => { loadQuotes(); loadJnJobs(); loadTemplates(); }, []);
+
+  async function loadActivity(quoteId) {
+    const data = await sbGet("quote_tracking", `quote_id=eq.${quoteId}&order=timestamp.desc`);
+    setActivity(data || []);
+  }
+  async function loadQuestionsForQuote(quoteId) {
+    const data = await sbGet("quote_questions", `quote_id=eq.${quoteId}&order=created_at.desc`);
+    setQuestions(data || []);
+  }
+  async function markQuestionAnswered(qId) {
+    await sbPatch("quote_questions", qId, { answered: true });
+    if (q) await loadQuestionsForQuote(q.id);
+  }
+  async function extendExpiration(days = 30) {
+    if (!q) return;
+    const newDate = new Date(Date.now() + days * 86400000).toISOString();
+    await sbPatch("quotes", q.id, { expiration_date: newDate });
+    setQ({ ...q, expiration_date: newDate });
+  }
 
   async function loadTemplates() {
     const data = await sbGet("quote_templates", "select=*&order=created_at.desc");
@@ -2952,6 +2976,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
     setSlides(sl || []);
     setLineItems(li || []);
     setAsi(0);
+    // Load activity log
+    const actData = await sbGet("quote_tracking", `quote_id=eq.${quote.id}&order=timestamp.desc&limit=50`);
+    setActivity(actData || []);
+    // Load questions
+    const quesData = await sbGet("quote_questions", `quote_id=eq.${quote.id}&order=created_at.desc`);
+    setQuestions(quesData || []);
     const settings = quote.settings || {};
     setMargin(settings.margin || 35);
     setTiersEnabled(settings.tiers_enabled || { good: true, better: true, best: true });
@@ -3170,7 +3200,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
   };
 
   // ─── LINE ITEM HELPERS ───
-  const addLineItem = (item, option, tier = "all", isUpgrade = false) => {
+  const addLineItem = (item, option, tier = "all", isUpgrade = false, section = "Roofing") => {
     const v = getVariants(item);
     const vData = v[option || "_default"] || { wac: item.wacCost || 0 };
     const cost = vData.wac || item.wacCost || 0;
@@ -3179,20 +3209,20 @@ function QuoteBuilder({ user, isA, isM, items }) {
       quote_id: q?.id,
       description: item.name + (option && option !== "_default" ? ` — ${option}` : ""),
       qty: 1, unit_price: Math.round(sellPrice * 100) / 100, cost: cost,
-      markup: margin, category: item.category || "Other",
+      markup: margin, category: section || item.category || "Other",
       tier, is_upgrade: isUpgrade, item_id: item.id, option: option || "_default",
       unit: item.unit || "each",
     };
     setLineItems([...lineItems, newLI]);
   };
-  const addManualItem = (desc, qty, price, cost, tier = "all", isUpgrade = false) => {
+  const addManualItem = (desc, qty, price, cost, tier = "all", isUpgrade = false, section = "Other") => {
     setLineItems([...lineItems, {
       quote_id: q?.id, description: desc, qty, unit_price: price, cost: cost || 0,
       markup: price > 0 && cost > 0 ? Math.round(((price - cost) / cost) * 100) : 0,
-      category: "Other", tier, is_upgrade: isUpgrade, unit: "each",
+      category: section || "Other", tier, is_upgrade: isUpgrade, unit: "each",
     }]);
   };
-  const updateLI = (idx, field, val) => { const n = [...lineItems]; n[idx] = { ...n[idx], [field]: val }; setLineItems(n); };
+  const updateLI = (idx, field, val) => { if (field === "_reorder") { setLineItems(val); return; } const n = [...lineItems]; n[idx] = { ...n[idx], [field]: val }; setLineItems(n); };
   const removeLI = (idx) => setLineItems(lineItems.filter((_, i) => i !== idx));
 
   // Calculate tier totals
@@ -3229,12 +3259,63 @@ function QuoteBuilder({ user, isA, isM, items }) {
     const viewedCt = quotes.filter(q => q.status === "viewed").length;
     const signedCt = quotes.filter(q => q.status === "signed").length;
     const signedTotal = quotes.filter(q => q.status === "signed").reduce((s, q) => s + (q.total_price || 0), 0);
+    const closeRate = (sentCt + signedCt) > 0 ? Math.round(signedCt / (sentCt + signedCt + viewedCt) * 100) : 0;
+    const avgQuoteValue = signedCt > 0 ? signedTotal / signedCt : 0;
+
+    // Analytics: revenue by month
+    const revenueByMonth = {};
+    quotes.filter(q => q.status === "signed" && q.created_at).forEach(q => {
+      const m = new Date(q.created_at).toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+      revenueByMonth[m] = (revenueByMonth[m] || 0) + (q.total_price || 0);
+    });
+    const revenueData = Object.entries(revenueByMonth).map(([m, v]) => ({ month: m, revenue: v })).slice(-12);
+
     return (
       <div className="fu">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-          <h2 style={{ fontSize: 22, fontWeight: 900, fontFamily: BC }}>Quotes</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <h2 style={{ fontSize: 22, fontWeight: 900, fontFamily: BC }}>Quotes</h2>
+            <div style={{ display: "flex", gap: 4, background: C.sf, borderRadius: 8, padding: 3 }}>
+              <button onClick={() => setListView("quotes")} style={{ border: "none", padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: listView === "quotes" ? C.card : "transparent", color: listView === "quotes" ? C.txt : C.t2, boxShadow: listView === "quotes" ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}>Quotes</button>
+              <button onClick={() => setListView("analytics")} style={{ border: "none", padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: listView === "analytics" ? C.card : "transparent", color: listView === "analytics" ? C.txt : C.t2, boxShadow: listView === "analytics" ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}>Analytics</button>
+            </div>
+          </div>
           <button onClick={() => setShowNew(true)} style={{ ...bP, borderRadius: 12, padding: "12px 20px" }}><Plus size={16} /> New Quote</button>
         </div>
+
+        {/* Analytics View */}
+        {listView === "analytics" && quotes.length > 0 && (
+          <div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+              <Stat label="Close Rate" value={`${closeRate}%`} sub={`${signedCt} signed of ${sentCt + signedCt + viewedCt} sent`} color={closeRate >= 50 ? C.grn : C.wrn} />
+              <Stat label="Avg Quote Value" value={fmt$(avgQuoteValue)} sub={`${signedCt} signed quotes`} color={C.grn} />
+              <Stat label="Total Revenue" value={fmt$(signedTotal)} sub="From signed quotes" color={C.grn} />
+              <Stat label="Active Quotes" value={sentCt + viewedCt} sub={`${sentCt} sent · ${viewedCt} viewed`} color="#2563EB" />
+            </div>
+            {revenueData.length > 1 && <div style={{ ...crd, borderRadius: 14, padding: 20, marginBottom: 16 }}>
+              <div style={{ ...lbl, marginBottom: 12 }}>Revenue by Month</div>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={revenueData}><CartesianGrid strokeDasharray="3 3" stroke={C.brd} /><XAxis dataKey="month" tick={{ fontSize: 11, fill: C.t2 }} /><YAxis tick={{ fontSize: 11, fill: C.t2 }} tickFormatter={v => "$" + (v / 1000).toFixed(0) + "k"} /><Tooltip formatter={v => fmt$(v)} /><Bar dataKey="revenue" fill={C.grn} radius={[4, 4, 0, 0]} /></BarChart>
+              </ResponsiveContainer>
+            </div>}
+            {/* Recent Activity */}
+            <div style={{ ...crd, borderRadius: 14, padding: 20 }}>
+              <div style={{ ...lbl, marginBottom: 12 }}>Recent Quote Activity</div>
+              {quotes.slice(0, 15).map(qt => {
+                const sc = { draft: C.wrn, sent: "#2563EB", viewed: "#7C3AED", signed: C.grn }[qt.status] || C.t2;
+                return <div key={qt.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.brd}`, cursor: "pointer" }} onClick={() => openQuote(qt)}>
+                  <div><span style={{ fontWeight: 700, fontSize: 13 }}>{qt.customer_name}</span><span style={{ fontSize: 11, color: C.t2, marginLeft: 8 }}>{fD(qt.created_at)}</span></div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {qt.total_price > 0 && <span style={{ fontFamily: MN, fontSize: 12, fontWeight: 700 }}>{fmt$(qt.total_price)}</span>}
+                    <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4, textTransform: "uppercase", background: sc + "18", color: sc }}>{qt.status}</span>
+                  </div>
+                </div>;
+              })}
+            </div>
+          </div>
+        )}
+
+        {listView === "quotes" && <>
         {/* Stats */}
         {quotes.length > 0 && <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
           <div style={{ ...crd, flex: "1 1 120px", minWidth: 100, padding: 14, borderRadius: 12, cursor: "pointer", background: statusFilter === "draft" ? C.sf : C.card }} onClick={() => setStatusFilter(statusFilter === "draft" ? "all" : "draft")}>
@@ -3289,6 +3370,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
             })}
           </div>
         }
+        </>}
         {/* New Quote Modal */}
         <Modal open={showNew} onClose={() => setShowNew(false)} title="New Quote" wide>
           <Fld label="Customer Name *"><input value={nf.customer_name} onChange={e => setNf({ ...nf, customer_name: e.target.value })} style={{ ...inp, borderRadius: 10 }} placeholder="Customer name..." /></Fld>
@@ -3615,6 +3697,29 @@ function QuoteBuilder({ user, isA, isM, items }) {
               <div style={{ ...lbl, color: C.wrn, fontSize: 10 }}>Internal Notes (not visible to customer)</div>
               <textarea value={q.notes || ""} onChange={e => setQ({ ...q, notes: e.target.value })} placeholder="Add internal notes, reminders, follow-up items..." rows={3} style={{ ...inp, borderRadius: 8, fontSize: 12, background: "#fff", resize: "vertical", border: `1px solid #F59E0B30` }} />
             </div>}
+
+            {/* Activity Log */}
+            {q && activity.length > 0 && <div style={{ marginTop: 16 }}>
+              <button onClick={() => setShowActivity(!showActivity)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, width: "100%" }}>
+                <Clock size={14} /> Activity Log ({activity.length}) {showActivity ? "▲" : "▼"}
+              </button>
+              {showActivity && <div style={{ ...crd, borderRadius: 12, padding: 12, marginTop: 8, maxHeight: 300, overflow: "auto" }}>
+                {activity.map((a, i) => {
+                  const icons = { opened: "👀", signed: "✍️", sent: "📤", viewed: "👁️" };
+                  const labels = { opened: "Customer opened quote", signed: "Quote signed", sent: "Quote sent", viewed: "Quote viewed" };
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", borderBottom: i < activity.length - 1 ? `1px solid ${C.brd}` : "none" }}>
+                      <span style={{ fontSize: 16, flexShrink: 0 }}>{icons[a.event_type] || "📌"}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>{labels[a.event_type] || a.event_type}</div>
+                        <div style={{ fontSize: 10, color: C.t2 }}>{a.timestamp ? new Date(a.timestamp).toLocaleString() : a.created_at ? new Date(a.created_at).toLocaleString() : "—"}</div>
+                        {a.event_type === "signed" && a.metadata?.total && <div style={{ fontSize: 11, color: C.grn, fontWeight: 700, marginTop: 2 }}>{fmt$(a.metadata.total)} · {TIER_LABELS[a.metadata?.tier] || ""} tier</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>}
+            </div>}
           </div>
         </div>
 
@@ -3668,7 +3773,7 @@ function ScopeEditor({ slide, slides, setSlides, asi, items, lineItems, addLineI
   const [manualCost, setManualCost] = useState("");
   const [addTier, setAddTier] = useState("all");
   const [addUpgrade, setAddUpgrade] = useState(false);
-  const [selOpt, setSelOpt] = useState({});
+  const [addSection, setAddSection] = useState("Roofing");
 
   const active = items.filter(i => i.active !== false);
   const filtered = active.filter(i => {
@@ -3676,56 +3781,67 @@ function ScopeEditor({ slide, slides, setSlides, asi, items, lineItems, addLineI
     return i.name.toLowerCase().includes(iSearch.toLowerCase()) || (i.category || "").toLowerCase().includes(iSearch.toLowerCase());
   }).slice(0, 10);
 
-  // Group line items by tier
   const scopeItems = lineItems.filter(li => !li.is_upgrade);
   const upgradeItems = lineItems.filter(li => li.is_upgrade);
 
+  // Group by section
+  const sections = {};
+  scopeItems.forEach((li, i) => {
+    const sec = li.category || "Other";
+    if (!sections[sec]) sections[sec] = [];
+    sections[sec].push({ li, realIdx: lineItems.indexOf(li) });
+  });
+  const sectionNames = Object.keys(sections);
+  const allSections = [...new Set([...sectionNames, "Roofing", "Gutters", "Interior", "Other"])];
+
+  // Reorder within lineItems
+  const moveLI = (realIdx, dir) => {
+    const newItems = [...lineItems];
+    const ni = realIdx + dir;
+    if (ni < 0 || ni >= newItems.length) return;
+    [newItems[realIdx], newItems[ni]] = [newItems[ni], newItems[realIdx]];
+    // Replace the entire lineItems array via parent
+    // We need a setLineItems function - pass through updateLI hack
+    // Actually we need to swap - let's use updateLI to set a temp then fix
+  };
+
   return (
     <div>
-      {/* Current Line Items */}
-      {scopeItems.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={lbl}>Line Items</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr>
-              <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: `2px solid ${C.brd}`, fontSize: 10, color: C.t2, textTransform: "uppercase" }}>Item</th>
-              <th style={{ textAlign: "center", padding: "6px 8px", borderBottom: `2px solid ${C.brd}`, fontSize: 10, color: C.t2, width: 60 }}>Qty</th>
-              <th style={{ textAlign: "right", padding: "6px 8px", borderBottom: `2px solid ${C.brd}`, fontSize: 10, color: C.t2, width: 90 }}>Price</th>
-              <th style={{ textAlign: "center", padding: "6px 8px", borderBottom: `2px solid ${C.brd}`, fontSize: 10, color: C.t2, width: 70 }}>Tier</th>
-              <th style={{ width: 30 }}></th>
-            </tr></thead>
-            <tbody>
-              {scopeItems.map((li, i) => {
-                const realIdx = lineItems.indexOf(li);
-                return (
-                  <tr key={i}>
-                    <td style={{ padding: "6px 8px", borderBottom: `1px solid ${C.brd}` }}>
-                      <input value={li.description} onChange={e => updateLI(realIdx, "description", e.target.value)} style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, width: "100%", outline: "none" }} />
-                    </td>
-                    <td style={{ padding: "6px 4px", borderBottom: `1px solid ${C.brd}`, textAlign: "center" }}>
-                      <input type="number" value={li.qty} onChange={e => updateLI(realIdx, "qty", Number(e.target.value))} style={{ border: `1px solid ${C.brd}`, borderRadius: 4, width: 50, textAlign: "center", fontSize: 12, padding: "2px 4px" }} min={1} />
-                    </td>
-                    <td style={{ padding: "6px 4px", borderBottom: `1px solid ${C.brd}`, textAlign: "right" }}>
-                      <input type="number" value={li.unit_price} onChange={e => updateLI(realIdx, "unit_price", Number(e.target.value))} style={{ border: `1px solid ${C.brd}`, borderRadius: 4, width: 80, textAlign: "right", fontSize: 12, padding: "2px 4px", fontFamily: MN }} step="0.01" />
-                    </td>
-                    <td style={{ padding: "6px 4px", borderBottom: `1px solid ${C.brd}`, textAlign: "center" }}>
-                      <select value={li.tier || "all"} onChange={e => updateLI(realIdx, "tier", e.target.value)} style={{ border: `1px solid ${C.brd}`, borderRadius: 4, fontSize: 10, padding: "2px 4px", background: TIER_COLORS[li.tier] ? TIER_COLORS[li.tier] + "15" : "transparent" }}>
-                        <option value="all">All</option>
-                        <option value="good">Good</option>
-                        <option value="better">Better</option>
-                        <option value="best">Best</option>
-                      </select>
-                    </td>
-                    <td style={{ padding: "6px 4px", borderBottom: `1px solid ${C.brd}` }}>
-                      <button onClick={() => removeLI(realIdx)} style={{ background: "none", border: "none", cursor: "pointer", color: C.red }}><X size={12} /></button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/* Section-grouped Line Items */}
+      {sectionNames.length > 0 ? sectionNames.map(sec => {
+        const secItems = sections[sec];
+        const secTotal = secItems.reduce((s, { li }) => s + (li.qty || 1) * (li.unit_price || 0), 0);
+        return (
+          <div key={sec} style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 8px", background: NAVY + "10", borderRadius: 6, marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: NAVY, textTransform: "uppercase", letterSpacing: ".05em" }}>{sec}</span>
+              <span style={{ fontSize: 11, fontWeight: 700, fontFamily: MN, color: C.t2 }}>{fmt$(secTotal)}</span>
+            </div>
+            {secItems.map(({ li, realIdx }, i) => (
+              <div key={realIdx} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 4px", borderBottom: `1px solid ${C.brd}`, fontSize: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  <button onClick={() => { if (realIdx > 0) { const n = [...lineItems]; [n[realIdx], n[realIdx-1]] = [n[realIdx-1], n[realIdx]]; updateLI(0, "_reorder", n); }}} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: C.t2, opacity: realIdx === 0 ? 0.2 : 1 }}><ArrowUp size={9} /></button>
+                  <button onClick={() => { if (realIdx < lineItems.length-1) { const n = [...lineItems]; [n[realIdx], n[realIdx+1]] = [n[realIdx+1], n[realIdx]]; updateLI(0, "_reorder", n); }}} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: C.t2, opacity: realIdx === lineItems.length-1 ? 0.2 : 1 }}><ArrowDown size={9} /></button>
+                </div>
+                <input value={li.description} onChange={e => updateLI(realIdx, "description", e.target.value)} style={{ flex: 2, border: "none", background: "transparent", fontSize: 12, fontWeight: 600, outline: "none", minWidth: 100 }} />
+                <input type="number" value={li.qty} onChange={e => updateLI(realIdx, "qty", Number(e.target.value))} style={{ width: 45, border: `1px solid ${C.brd}`, borderRadius: 4, textAlign: "center", fontSize: 11, padding: "2px" }} min={1} />
+                <input type="number" value={li.unit_price} onChange={e => updateLI(realIdx, "unit_price", Number(e.target.value))} style={{ width: 75, border: `1px solid ${C.brd}`, borderRadius: 4, textAlign: "right", fontSize: 11, padding: "2px 4px", fontFamily: MN }} step="0.01" />
+                <select value={li.tier || "all"} onChange={e => updateLI(realIdx, "tier", e.target.value)} style={{ width: 55, border: `1px solid ${C.brd}`, borderRadius: 4, fontSize: 9, padding: "2px", background: TIER_COLORS[li.tier] ? TIER_COLORS[li.tier] + "15" : "transparent" }}>
+                  <option value="all">All</option><option value="good">Good</option><option value="better">Better</option><option value="best">Best</option>
+                </select>
+                <span style={{ fontSize: 10, fontFamily: MN, color: C.t2, width: 60, textAlign: "right" }}>{fmt$(li.qty * li.unit_price)}</span>
+                <button onClick={() => removeLI(realIdx)} style={{ background: "none", border: "none", cursor: "pointer", color: C.red, padding: 2 }}><X size={11} /></button>
+              </div>
+            ))}
+          </div>
+        );
+      }) : <div style={{ padding: 20, textAlign: "center", color: C.t2, fontSize: 13, background: C.sf, borderRadius: 10, marginBottom: 16 }}>No line items yet. Search your inventory or add manual items below.</div>}
+
+      {/* Scope Total */}
+      {scopeItems.length > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 12px", background: NAVY, borderRadius: 8, marginBottom: 16 }}>
+        <span style={{ color: "#fff", fontSize: 13, fontWeight: 700 }}>Scope Total ({scopeItems.length} items)</span>
+        <span style={{ color: "#fff", fontSize: 14, fontWeight: 900, fontFamily: MN }}>{fmt$(scopeItems.reduce((s, li) => s + (li.qty || 1) * (li.unit_price || 0), 0))}</span>
+      </div>}
 
       {/* Optional Upgrades */}
       {upgradeItems.length > 0 && (
@@ -3747,14 +3863,17 @@ function ScopeEditor({ slide, slides, setSlides, asi, items, lineItems, addLineI
 
       {/* Add Items */}
       <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 16 }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={addSection} onChange={e => setAddSection(e.target.value)} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6, appearance: "auto" }}>
+            {allSections.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <div style={{ display: "flex", gap: 3 }}>
             {TIERS.map(t => (
-              <button key={t} onClick={() => setAddTier(t)} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6, background: addTier === t ? TIER_COLORS[t] + "15" : "transparent", color: addTier === t ? TIER_COLORS[t] : C.t2 }}>{TIER_LABELS[t]}</button>
+              <button key={t} onClick={() => setAddTier(t)} style={{ ...bS, padding: "4px 8px", fontSize: 9, borderRadius: 5, background: addTier === t ? TIER_COLORS[t] + "15" : "transparent", color: addTier === t ? TIER_COLORS[t] : C.t2, borderColor: addTier === t ? TIER_COLORS[t] + "40" : C.brd }}>{TIER_LABELS[t]}</button>
             ))}
-            <button onClick={() => setAddTier("all")} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6, background: addTier === "all" ? C.ac + "15" : "transparent", color: addTier === "all" ? C.ac : C.t2 }}>All Tiers</button>
+            <button onClick={() => setAddTier("all")} style={{ ...bS, padding: "4px 8px", fontSize: 9, borderRadius: 5, background: addTier === "all" ? C.ac + "15" : "transparent", color: addTier === "all" ? C.ac : C.t2 }}>All</button>
           </div>
-          <button onClick={() => setAddUpgrade(!addUpgrade)} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6, background: addUpgrade ? "#F59E0B15" : "transparent", color: addUpgrade ? "#F59E0B" : C.t2 }}>{addUpgrade ? "✓ Upgrade" : "Upgrade"}</button>
+          <button onClick={() => setAddUpgrade(!addUpgrade)} style={{ ...bS, padding: "4px 8px", fontSize: 9, borderRadius: 5, background: addUpgrade ? "#F59E0B15" : "transparent", color: addUpgrade ? "#F59E0B" : C.t2 }}>{addUpgrade ? "✓ Upgrade" : "Upgrade"}</button>
         </div>
 
         {/* Search inventory */}
@@ -3773,13 +3892,13 @@ function ScopeEditor({ slide, slides, setSlides, asi, items, lineItems, addLineI
                         <span style={{ fontSize: 10, color: C.t2, marginLeft: 8 }}>{it.category}</span>
                       </div>
                       {!hasOpts && (
-                        <button onClick={() => { addLineItem(it, "_default", addTier, addUpgrade); setISearch(""); }} style={{ ...bP, padding: "4px 10px", fontSize: 10, borderRadius: 6 }}><Plus size={10} /> Add</button>
+                        <button onClick={() => { addLineItem(it, "_default", addTier, addUpgrade, addSection); }} style={{ ...bP, padding: "4px 10px", fontSize: 10, borderRadius: 6 }}><Plus size={10} /> Add</button>
                       )}
                     </div>
                     {hasOpts && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
                         {it.options.map(opt => (
-                          <button key={opt} onClick={() => { addLineItem(it, opt, addTier, addUpgrade); setISearch(""); }} style={{ ...bS, padding: "3px 8px", fontSize: 10, borderRadius: 4 }}>{opt}</button>
+                          <button key={opt} onClick={() => { addLineItem(it, opt, addTier, addUpgrade, addSection); }} style={{ ...bS, padding: "3px 8px", fontSize: 10, borderRadius: 4 }}>{opt}</button>
                         ))}
                       </div>
                     )}
@@ -3799,7 +3918,7 @@ function ScopeEditor({ slide, slides, setSlides, asi, items, lineItems, addLineI
               <Cl f={0.5}><input type="number" value={manualQty} onChange={e => setManualQty(Number(e.target.value))} placeholder="Qty" style={{ ...inp, fontSize: 12, borderRadius: 8, textAlign: "center" }} min={1} /></Cl>
               <Cl f={1}><input type="number" value={manualPrice} onChange={e => setManualPrice(e.target.value)} placeholder="Price" style={{ ...inp, fontSize: 12, borderRadius: 8 }} step="0.01" /></Cl>
               <Cl f={1}><input type="number" value={manualCost} onChange={e => setManualCost(e.target.value)} placeholder="Cost" style={{ ...inp, fontSize: 12, borderRadius: 8 }} step="0.01" /></Cl>
-              <Cl f={0.5}><button onClick={() => { if (manualDesc.trim()) { addManualItem(manualDesc, manualQty, Number(manualPrice) || 0, Number(manualCost) || 0, addTier, addUpgrade); setManualDesc(""); setManualQty(1); setManualPrice(""); setManualCost(""); } }} style={{ ...bP, padding: "8px 14px", borderRadius: 8, fontSize: 11, width: "100%" }}>Add</button></Cl>
+              <Cl f={0.5}><button onClick={() => { if (manualDesc.trim()) { addManualItem(manualDesc, manualQty, Number(manualPrice) || 0, Number(manualCost) || 0, addTier, addUpgrade, addSection); setManualDesc(""); setManualQty(1); setManualPrice(""); setManualCost(""); } }} style={{ ...bP, padding: "8px 14px", borderRadius: 8, fontSize: 11, width: "100%" }}>Add</button></Cl>
             </Rw>
           </div>
         )}
@@ -3970,42 +4089,57 @@ function QuotePublicView({ quoteId, isPreview }) {
         )}
 
         {/* SCOPE */}
-        {cs.slide_type === "scope" && (
+        {cs.slide_type === "scope" && (() => {
+          const tierItems = lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(selectedTier)));
+          const grouped = {};
+          tierItems.forEach(li => { const sec = li.category || "Other"; if (!grouped[sec]) grouped[sec] = []; grouped[sec].push(li); });
+          return (
           <div>
             <h2 style={{ fontSize: 24, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 20 }}>{cs.title}</h2>
-            {lineItems.filter(li => !li.is_upgrade).length > 0 ? (
+            {tierItems.length > 0 ? (
               <div>
                 {priceView === "items" ? (
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr>
-                      <th style={{ textAlign: "left", padding: "10px 12px", borderBottom: `2px solid ${NAVY}`, fontSize: 11, color: "#666", textTransform: "uppercase" }}>Description</th>
-                      <th style={{ textAlign: "center", padding: "10px 8px", borderBottom: `2px solid ${NAVY}`, fontSize: 11, color: "#666", width: 60 }}>Qty</th>
-                      <th style={{ textAlign: "right", padding: "10px 12px", borderBottom: `2px solid ${NAVY}`, fontSize: 11, color: "#666", width: 100 }}>Amount</th>
-                    </tr></thead>
-                    <tbody>
-                      {lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(selectedTier))).map((li, i) => (
-                        <tr key={i}><td style={{ padding: "10px 12px", borderBottom: "1px solid #eee", fontSize: 14 }}>{li.description}</td>
-                          <td style={{ padding: "10px 8px", borderBottom: "1px solid #eee", fontSize: 14, textAlign: "center" }}>{li.qty}</td>
-                          <td style={{ padding: "10px 12px", borderBottom: "1px solid #eee", fontSize: 14, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{fmt$(li.qty * li.unit_price)}</td></tr>
+                  Object.entries(grouped).map(([sec, secItems]) => (
+                    <div key={sec} style={{ marginBottom: 20 }}>
+                      {Object.keys(grouped).length > 1 && <div style={{ fontSize: 13, fontWeight: 800, color: NAVY, textTransform: "uppercase", letterSpacing: ".05em", padding: "8px 0", borderBottom: `2px solid ${NAVY}20`, marginBottom: 4 }}>{sec}</div>}
+                      {secItems.map((li, i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 14 }}>{li.description}</div>
+                            {li.qty > 1 && <div style={{ fontSize: 11, color: "#999" }}>{li.qty} × {fmt$(li.unit_price)}</div>}
+                          </div>
+                          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 14 }}>{fmt$(li.qty * li.unit_price)}</div>
+                        </div>
                       ))}
-                    </tbody>
-                  </table>
-                ) : priceView === "grouped" ? (
-                  Object.entries(lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(selectedTier))).reduce((g, li) => { const cat = li.category || "Other"; g[cat] = (g[cat] || 0) + li.qty * li.unit_price; return g; }, {})).map(([cat, total]) => (
-                    <div key={cat} style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid #eee", fontSize: 15 }}>
-                      <span>{cat}</span><span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700 }}>{fmt$(total)}</span>
                     </div>
                   ))
+                ) : priceView === "grouped" ? (
+                  Object.entries(grouped).map(([cat, secItems]) => {
+                    const total = secItems.reduce((s, li) => s + li.qty * li.unit_price, 0);
+                    return (
+                      <div key={cat} style={{ display: "flex", justifyContent: "space-between", padding: "14px 0", borderBottom: "1px solid #eee", fontSize: 15 }}>
+                        <div><div style={{ fontWeight: 600 }}>{cat}</div><div style={{ fontSize: 11, color: "#999" }}>{secItems.length} items</div></div>
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700 }}>{fmt$(total)}</span>
+                      </div>
+                    );
+                  })
                 ) : (
-                  <div style={{ padding: 20, background: "#f8f9fa", borderRadius: 12, textAlign: "center" }}>
-                    <div style={{ fontSize: 14, color: "#666", marginBottom: 8 }}>Work includes all items listed in the selected tier package.</div>
-                    <div style={{ fontSize: 12, color: "#999" }}>See the Pricing slide for tier details and pricing.</div>
+                  <div style={{ padding: 24, background: "#f8f9fa", borderRadius: 12 }}>
+                    <div style={{ fontSize: 15, color: "#444", marginBottom: 12 }}>Your {TIER_LABELS[selectedTier]} package includes:</div>
+                    {Object.entries(grouped).map(([sec, secItems]) => (
+                      <div key={sec} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
+                        <span style={{ color: "#059669", fontWeight: 800 }}>✓</span>
+                        <span style={{ fontSize: 14 }}>{sec} ({secItems.length} items)</span>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 12, color: "#999", marginTop: 12 }}>See the Pricing slide for full details and pricing.</div>
                   </div>
                 )}
               </div>
             ) : <div style={{ padding: 40, textAlign: "center", color: "#999" }}>No items configured</div>}
           </div>
-        )}
+          );
+        })()}
 
         {/* PRICING */}
         {cs.slide_type === "pricing" && (
