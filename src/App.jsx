@@ -21,6 +21,8 @@ button:active{transform:scale(.97)}
 select option{background:${C.w};color:${C.txt}}
 @media(max-width:768px){
   .hide-mobile{display:none!important}
+  .hide-desktop{display:flex!important}
+  .quote-sidebar{position:fixed;top:60px;left:-280px;bottom:0;z-index:300;background:#fff;padding:16px;overflow:auto;width:260px;box-shadow:4px 0 20px rgba(0,0,0,0.15);transition:left .2s}
   .nav-wrap{gap:2px!important}
   .nav-wrap button{padding:5px 8px!important;font-size:10px!important}
   table{font-size:11px!important}
@@ -2884,6 +2886,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [templates, setTemplates] = useState([]);
   const [showSaveTpl, setShowSaveTpl] = useState(false);
   const [tplName, setTplName] = useState("");
+  const [showSidePanel, setShowSidePanel] = useState(false);
 
   useEffect(() => { loadQuotes(); loadJnJobs(); loadTemplates(); }, []);
 
@@ -3016,6 +3019,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
       customer_email: q.customer_email || "",
       customer_phone: q.customer_phone || "",
       address: q.customer_address || "",
+      notes: q.notes || "",
       settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "" },
       total_price: tierTotal("best"),
       updated_at: new Date().toISOString(),
@@ -3328,6 +3332,26 @@ function QuoteBuilder({ user, isA, isM, items }) {
   // ═══ EDIT VIEW ═══
   if (view === "edit" && q) {
     const activeSlide = slides[asi];
+    const isSigned = q.status === "signed";
+    // Generate downloadable quote HTML
+    const downloadQuoteHTML = () => {
+      const tierItems = lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf("best")));
+      const upgrades = lineItems.filter(li => li.is_upgrade);
+      const rows = tierItems.map(li => `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;font-size:13px">${li.description}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:center;font-size:13px">${li.qty}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:600;font-size:13px">${fmt$(li.qty * li.unit_price)}</td></tr>`).join("");
+      const upRows = upgrades.length > 0 ? `<tr><td colspan="3" style="padding:12px 10px 6px;font-weight:800;font-size:12px;color:#D4870E;text-transform:uppercase;border-bottom:2px solid #F59E0B30">Optional Upgrades</td></tr>` + upgrades.map(li => `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;font-size:13px">${li.description}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:center;font-size:13px">${li.qty}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-size:13px">${fmt$(li.qty * li.unit_price)}</td></tr>`).join("") : "";
+      const tierSection = TIERS.filter(t => tiersEnabled[t]).map(t => `<div style="flex:1;min-width:150px;padding:16px;border:2px solid ${TIER_COLORS[t]};border-radius:10px;text-align:center"><div style="font-size:12px;font-weight:800;color:${TIER_COLORS[t]};text-transform:uppercase;margin-bottom:4px">${TIER_LABELS[t]}</div><div style="font-size:24px;font-weight:900;font-family:monospace">${fmt$(tierTotal(t))}</div></div>`).join("");
+      const html = `<!DOCTYPE html><html><head><title>Quote - ${q.customer_name}</title><style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:40px;color:#1a1a1a;font-size:13px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse}th{text-align:left;padding:8px 10px;border-bottom:2px solid #1B2A4A;font-size:10px;text-transform:uppercase;color:#666}@media print{body{padding:20px}}</style></head><body>` +
+        `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:16px;border-bottom:3px solid #B22234"><div><div style="font-size:28px;font-weight:900;letter-spacing:-0.02em">ROOF<span style="color:#B22234">USA</span></div><div style="font-size:11px;color:#666;margin-top:2px">Roofus Construction, LLC · Columbia, MO</div></div><div style="text-align:right"><div style="font-weight:800;font-size:14px;color:#1B2A4A">QUOTE</div><div style="font-size:11px;color:#666;margin-top:4px">${fD(q.created_at)}</div><div style="margin-top:4px"><span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;background:${isSigned ? "#d4edda" : "#fff3cd"};color:${isSigned ? "#155724" : "#856404"}">${q.status?.toUpperCase() || "DRAFT"}</span></div></div></div>` +
+        `<div style="margin-bottom:20px;font-size:13px"><strong>Customer:</strong> ${q.customer_name}<br><strong>Address:</strong> ${q.customer_address || "—"}<br>${q.customer_email ? `<strong>Email:</strong> ${q.customer_email}<br>` : ""}${q.customer_phone ? `<strong>Phone:</strong> ${q.customer_phone}<br>` : ""}</div>` +
+        `<div style="display:flex;gap:12px;margin-bottom:24px">${tierSection}</div>` +
+        `<table><thead><tr><th>Description</th><th style="text-align:center;width:60px">Qty</th><th style="text-align:right;width:100px">Amount</th></tr></thead><tbody>${rows}${upRows}</tbody></table>` +
+        (isSigned && q.settings?.signature ? `<div style="margin-top:30px;padding:20px;border:2px solid #1B2A4A;border-radius:8px"><div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:8px">Electronic Signature</div><div style="font-family:cursive;font-size:28px;color:#1B2A4A;margin-bottom:8px">${q.settings.signature.name}</div><div style="font-size:10px;color:#999">Signed: ${fD(q.settings.signature.timestamp)} · Total: ${fmt$(q.settings.signature.total || 0)}</div></div>` : "") +
+        `<div style="margin-top:30px;text-align:center;font-size:9px;color:#bbb">Roof USA · Roofus Construction, LLC · Columbia, MO</div></body></html>`;
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `Quote - ${q.customer_name.replace(/[^a-zA-Z0-9-_ ]/g, "")}.html`;
+      document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 200);
+    };
     return (
       <div className="fu">
         {/* Editor Header */}
@@ -3339,10 +3363,13 @@ function QuoteBuilder({ user, isA, isM, items }) {
               <div style={{ fontSize: 11, color: C.t2 }}>{q.jn_job_name || q.customer_address || "No job linked"}</div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {q.status && <span style={{ fontSize: 10, fontWeight: 800, padding: "5px 12px", borderRadius: 6, textTransform: "uppercase", background: q.status === "signed" ? "#27AE6022" : q.status === "sent" ? "#2563EB22" : "#E6A81722", color: q.status === "signed" ? C.grn : q.status === "sent" ? "#2563EB" : C.wrn, alignSelf: "center" }}>{q.status}</span>}
-            <button onClick={() => navigator.clipboard.writeText(quoteLink).then(() => alert("Quote link copied!\n\n" + quoteLink))} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}><Copy size={14} /> Copy Link</button>
-            <button onClick={() => setView("preview")} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}><Eye size={14} /> Preview</button>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            {q.status && <select value={q.status} onChange={async e => { const ns = e.target.value; await sbPatch("quotes", q.id, { status: ns }); setQ({ ...q, status: ns }); await loadQuotes(); }} style={{ fontSize: 10, fontWeight: 800, padding: "5px 10px", borderRadius: 6, textTransform: "uppercase", background: q.status === "signed" ? "#27AE6022" : q.status === "sent" ? "#2563EB22" : q.status === "viewed" ? "#7C3AED22" : "#E6A81722", color: q.status === "signed" ? C.grn : q.status === "sent" ? "#2563EB" : q.status === "viewed" ? "#7C3AED" : C.wrn, border: "none", cursor: "pointer", appearance: "auto" }}>
+              <option value="draft">Draft</option><option value="sent">Sent</option><option value="viewed">Viewed</option><option value="signed">Signed</option>
+            </select>}
+            <button onClick={downloadQuoteHTML} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 12 }}><Download size={14} /></button>
+            <button onClick={() => navigator.clipboard.writeText(quoteLink).then(() => alert("Quote link copied!\n\n" + quoteLink))} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 12 }}><Copy size={14} /></button>
+            <button onClick={() => setView("preview")} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 12 }}><Eye size={14} /></button>
             <button onClick={() => setShowSend(true)} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12, background: "#2563EB" }}><Send size={14} /> Send</button>
             <button onClick={saveAll} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12 }} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
           </div>
@@ -3372,8 +3399,10 @@ function QuoteBuilder({ user, isA, isM, items }) {
         </div>}
 
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          {/* Mobile slide nav toggle */}
+          <button onClick={() => setShowSidePanel(!showSidePanel)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, marginBottom: 8 }} className="hide-mobile"><Layers size={14} /> Slides ({slides.length})</button>
           {/* Left: Slide List */}
-          <div style={{ width: 220, flexShrink: 0 }}>
+          <div className={`quote-sidebar${showSidePanel ? " open" : ""}`} style={{ width: 220, flexShrink: 0 }}>
             <div style={{ ...crd, borderRadius: 14, padding: 12 }}>
               <div style={{ ...lbl, marginBottom: 10 }}>Slides</div>
               {slides.map((s, i) => {
@@ -3580,6 +3609,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
                   {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>}
+            </div>}
+
+            {/* Internal Notes */}
+            {q && <div style={{ marginTop: 16, ...crd, borderRadius: 12, padding: 14, background: "#FFFBEB" }}>
+              <div style={{ ...lbl, color: C.wrn, fontSize: 10 }}>Internal Notes (not visible to customer)</div>
+              <textarea value={q.notes || ""} onChange={e => setQ({ ...q, notes: e.target.value })} placeholder="Add internal notes, reminders, follow-up items..." rows={3} style={{ ...inp, borderRadius: 8, fontSize: 12, background: "#fff", resize: "vertical", border: `1px solid #F59E0B30` }} />
             </div>}
           </div>
         </div>
@@ -3885,6 +3920,14 @@ function QuotePublicView({ quoteId, isPreview }) {
       await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: "+15738649965", message: `🎉 QUOTE SIGNED! ${quote.customer_name} just signed for ${fmt$(grandTotal)} (${TIER_LABELS[selectedTier]} tier). ${window.location.origin}/quote/${quote.id}` }) });
     } catch {}
+    // Email confirmation to customer
+    if (quote.customer_email) {
+      try {
+        await fetch("/api/notify?action=email", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: quote.customer_email, toName: quote.customer_name, subject: "Your Signed Agreement - Roof USA",
+            html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px"><h2 style="color:#1B2A4A">Thank You, ${quote.customer_name}!</h2><p>Your roofing agreement with Roof USA has been signed and confirmed.</p><div style="background:#f8f9fa;padding:16px;border-radius:8px;margin:16px 0"><p style="margin:0"><strong>Package:</strong> ${TIER_LABELS[selectedTier]}</p><p style="margin:8px 0 0"><strong>Total:</strong> ${fmt$(grandTotal)}</p><p style="margin:8px 0 0"><strong>Signed:</strong> ${new Date().toLocaleDateString()}</p></div><p>Our team will be in contact shortly to schedule your project. If you have any questions, reply to this email or call us.</p><p style="margin-top:24px">Thank you for choosing Roof USA!</p><hr style="border:none;border-top:1px solid #eee;margin:24px 0"><p style="font-size:12px;color:#999">Roof USA · Roofus Construction, LLC · Columbia, MO</p></div>` }) });
+      } catch {}
+    }
     setSigned(true);
   }
 
