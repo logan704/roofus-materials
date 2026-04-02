@@ -2907,13 +2907,6 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [tplName, setTplName] = useState("");
   const [showSidePanel, setShowSidePanel] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [hoverConnected, setHoverConnected] = useState(false);
-  const [hoverJobs, setHoverJobs] = useState([]);
-  const [hoverSearch, setHoverSearch] = useState("");
-  const [showHover, setShowHover] = useState(false);
-  const [hoverLoading, setHoverLoading] = useState(false);
-  const [hoverDesigns, setHoverDesigns] = useState([]);
-  const [hoverPhotos, setHoverPhotos] = useState([]);
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingFor, setRecordingFor] = useState(null); // slide index or "whole"
 
