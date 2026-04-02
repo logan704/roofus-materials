@@ -2871,6 +2871,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortBy, setSortBy] = useState("newest");
+  const [analyticsRange, setAnalyticsRange] = useState("all");
 
   // JN job search
   const [jnAll, setJnAll] = useState([]);
@@ -3057,7 +3058,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
       customer_phone: q.customer_phone || "",
       address: q.customer_address || "",
       notes: q.notes || "",
-      settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "", color_options: q.settings?.color_options || [] },
+      settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "", color_options: q.settings?.color_options || [], introVideo: q.settings?.introVideo || null },
       total_price: tierTotal("best"),
       updated_at: new Date().toISOString(),
     });
@@ -3205,12 +3206,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
         const blob = new Blob(chunks, { type: "video/webm" });
         const reader = new FileReader();
         reader.onload = () => {
-          if (forSlide !== null && forSlide !== undefined) {
+          if (forSlide === "intro") {
+            setQ(prev => ({ ...prev, settings: { ...prev.settings, introVideo: reader.result } }));
+          } else if (forSlide !== null && forSlide !== undefined) {
             const ns = [...slides];
             ns[forSlide] = { ...ns[forSlide], content: { ...ns[forSlide].content, video: reader.result } };
             setSlides(ns);
-          } else {
-            setQ(prev => ({ ...prev, settings: { ...prev.settings, introVideo: reader.result } }));
           }
         };
         reader.readAsDataURL(blob);
@@ -3469,8 +3470,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
 
   // ═══ ANALYTICS VIEW ═══
   if (view === "analytics") {
-    const signed = quotes.filter(q => q.status === "signed");
-    const sent = quotes.filter(q => q.status === "sent" || q.status === "viewed" || q.status === "signed");
+
     const closeRate = sent.length > 0 ? Math.round((signed.length / sent.length) * 100) : 0;
     const avgValue = signed.length > 0 ? signed.reduce((s, q) => s + (q.total_price || 0), 0) / signed.length : 0;
     const totalRevenue = signed.reduce((s, q) => s + (q.total_price || 0), 0);
@@ -3478,7 +3478,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
     const monthRevenue = thisMonth.reduce((s, q) => s + (q.total_price || 0), 0);
     // Quotes by month
     const byMonth = {};
-    quotes.forEach(q => {
+    rangedQuotes.forEach(q => {
       const d = new Date(q.created_at);
       const key = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
       if (!byMonth[key]) byMonth[key] = { created: 0, signed: 0, revenue: 0 };
@@ -3486,7 +3486,20 @@ function QuoteBuilder({ user, isA, isM, items }) {
       if (q.status === "signed") { byMonth[key].signed++; byMonth[key].revenue += q.total_price || 0; }
     });
     const chartData = Object.entries(byMonth).slice(-6).map(([k, v]) => ({ month: k, Quotes: v.created, Signed: v.signed, Revenue: v.revenue }));
-    const pipeline = quotes.filter(q => q.status === "sent" || q.status === "viewed");
+    // Date range filter
+    const rangeFilter = (q) => {
+      if (analyticsRange === "all") return true;
+      const d = new Date(q.created_at);
+      const now = new Date();
+      if (analyticsRange === "30") return (now - d) / 86400000 <= 30;
+      if (analyticsRange === "90") return (now - d) / 86400000 <= 90;
+      if (analyticsRange === "year") return d.getFullYear() === now.getFullYear();
+      return true;
+    };
+    const rangedQuotes = quotes.filter(rangeFilter);
+    const signed = rangedQuotes.filter(q => q.status === "signed");
+    const sent = rangedQuotes.filter(q => q.status === "sent" || q.status === "viewed" || q.status === "signed");
+    const pipeline = rangedQuotes.filter(q => q.status === "sent" || q.status === "viewed");
     const pipelineValue = pipeline.reduce((s, q) => s + (q.total_price || 0), 0);
     const avgDaysToSign = signed.length > 0 ? Math.round(signed.reduce((s, q) => { const created = new Date(q.created_at); const updated = new Date(q.updated_at || q.created_at); return s + (updated - created) / 86400000; }, 0) / signed.length) : 0;
     return (
@@ -3494,6 +3507,11 @@ function QuoteBuilder({ user, isA, isM, items }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <h2 style={{ fontSize: 22, fontWeight: 900, fontFamily: BC }}>Quote Analytics</h2>
           <button onClick={() => setView("list")} style={{ ...bS, borderRadius: 10, padding: "8px 14px" }}><ArrowLeft size={14} /> Back</button>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+          {[{ k: "30", l: "30 Days" }, { k: "90", l: "90 Days" }, { k: "year", l: "This Year" }, { k: "all", l: "All Time" }].map(r => (
+            <button key={r.k} onClick={() => setAnalyticsRange(r.k)} style={{ ...bS, borderRadius: 8, padding: "6px 14px", fontSize: 11, background: analyticsRange === r.k ? C.ac + "15" : "transparent", color: analyticsRange === r.k ? C.ac : C.t2, borderColor: analyticsRange === r.k ? C.ac + "40" : C.brd }}>{r.l}</button>
+          ))}
         </div>
         <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
           <Stat label="Close Rate" value={`${closeRate}%`} sub={`${signed.length} of ${sent.length} sent`} color={closeRate >= 50 ? C.grn : closeRate >= 25 ? C.wrn : C.red} />
@@ -3509,6 +3527,36 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke="#eee" /><XAxis dataKey="month" fontSize={11} /><YAxis fontSize={11} /><Tooltip /><Legend /><Bar dataKey="Quotes" fill={C.blu} radius={[4,4,0,0]} /><Bar dataKey="Signed" fill={C.grn} radius={[4,4,0,0]} /></BarChart>
           </ResponsiveContainer>
         </div>}
+        {/* Pipeline & Insights */}
+        <div style={{ display: "flex", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
+          <div style={{ ...crd, borderRadius: 14, padding: 16, flex: 1, minWidth: 250 }}>
+            <div style={lbl}>Quote Status Breakdown</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {[{ s: "draft", c: C.wrn, l: "Draft" }, { s: "sent", c: "#2563EB", l: "Sent" }, { s: "viewed", c: "#7C3AED", l: "Viewed" }, { s: "signed", c: C.grn, l: "Signed" }].map(st => {
+                const ct = rangedQuotes.filter(q => q.status === st.s).length;
+                const pct = rangedQuotes.length > 0 ? Math.round(ct / rangedQuotes.length * 100) : 0;
+                return <div key={st.s} style={{ flex: 1, textAlign: "center" }}>
+                  <div style={{ height: 60, display: "flex", alignItems: "flex-end", justifyContent: "center", marginBottom: 4 }}>
+                    <div style={{ width: 24, height: `${Math.max(4, pct)}%`, background: st.c, borderRadius: "4px 4px 0 0" }} />
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: st.c }}>{ct}</div>
+                  <div style={{ fontSize: 9, color: C.t2 }}>{st.l}</div>
+                </div>;
+              })}
+            </div>
+          </div>
+          <div style={{ ...crd, borderRadius: 14, padding: 16, flex: 1, minWidth: 250 }}>
+            <div style={lbl}>Conversion Funnel</div>
+            {[{ l: "Created", ct: rangedQuotes.length, c: C.t2 }, { l: "Sent", ct: sent.length, c: "#2563EB" }, { l: "Viewed", ct: rangedQuotes.filter(q => q.status === "viewed" || q.status === "signed").length, c: "#7C3AED" }, { l: "Signed", ct: signed.length, c: C.grn }].map((step, i) => {
+              const pct = rangedQuotes.length > 0 ? Math.round(step.ct / rangedQuotes.length * 100) : 0;
+              return <div key={i} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}><span style={{ fontWeight: 600 }}>{step.l}</span><span style={{ color: C.t2 }}>{step.ct} ({pct}%)</span></div>
+                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}><div style={{ height: "100%", width: `${pct}%`, background: step.c, borderRadius: 3, transition: "width .3s" }} /></div>
+              </div>;
+            })}
+          </div>
+        </div>
+
         {/* Recent signed quotes */}
         <div style={{ ...crd, borderRadius: 14, padding: 16 }}>
           <div style={lbl}>Recently Signed</div>
@@ -3535,11 +3583,20 @@ function QuoteBuilder({ user, isA, isM, items }) {
       const rows = tierItems.map(li => `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;font-size:13px">${li.description}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:center;font-size:13px">${li.qty}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:600;font-size:13px">${fmt$(li.qty * li.unit_price)}</td></tr>`).join("");
       const upRows = upgrades.length > 0 ? `<tr><td colspan="3" style="padding:12px 10px 6px;font-weight:800;font-size:12px;color:#D4870E;text-transform:uppercase;border-bottom:2px solid #F59E0B30">Optional Upgrades</td></tr>` + upgrades.map(li => `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;font-size:13px">${li.description}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:center;font-size:13px">${li.qty}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-size:13px">${fmt$(li.qty * li.unit_price)}</td></tr>`).join("") : "";
       const tierSection = TIERS.filter(t => tiersEnabled[t]).map(t => `<div style="flex:1;min-width:150px;padding:16px;border:2px solid ${TIER_COLORS[t]};border-radius:10px;text-align:center"><div style="font-size:12px;font-weight:800;color:${TIER_COLORS[t]};text-transform:uppercase;margin-bottom:4px">${TIER_LABELS[t]}</div><div style="font-size:24px;font-weight:900;font-family:monospace">${fmt$(tierTotal(t))}</div></div>`).join("");
+      // Include scope sections and value-add content
+      const scopeSections = {};
+      tierItems.forEach(li => { const s = li.category || "Other"; if (!scopeSections[s]) scopeSections[s] = []; scopeSections[s].push(li); });
+      const scopeHTML = Object.entries(scopeSections).map(([sec, items]) => `<div style="margin-bottom:16px"><div style="font-weight:800;font-size:12px;color:#1B2A4A;text-transform:uppercase;padding:6px 0;border-bottom:2px solid #1B2A4A20">${sec}</div>${items.map(li => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f0f0"><span>${li.description}</span><span style="font-weight:600">${li.qty} × ${fmt$(li.unit_price)} = ${fmt$(li.qty * li.unit_price)}</span></div>`).join("")}</div>`).join("");
+      const valueAddSlides = slides.filter(s => s.slide_type === "valueadd" && s.visible !== false);
+      const valueAddHTML = valueAddSlides.map(s => `<div style="margin-top:24px;padding:16px;background:#f8f9fa;border-radius:8px;page-break-inside:avoid"><h3 style="color:#1B2A4A;margin-bottom:8px">${s.content?.heading || s.title}</h3><pre style="font-family:Helvetica,sans-serif;white-space:pre-wrap;font-size:11px;line-height:1.6;color:#444">${s.content?.body || ""}</pre></div>`).join("");
       const html = `<!DOCTYPE html><html><head><title>Quote - ${q.customer_name}</title><style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:40px;color:#1a1a1a;font-size:13px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse}th{text-align:left;padding:8px 10px;border-bottom:2px solid #1B2A4A;font-size:10px;text-transform:uppercase;color:#666}@media print{body{padding:20px}}</style></head><body>` +
         `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:16px;border-bottom:3px solid #B22234"><div><div style="font-size:28px;font-weight:900;letter-spacing:-0.02em">ROOF<span style="color:#B22234">USA</span></div><div style="font-size:11px;color:#666;margin-top:2px">Roofus Construction, LLC · Columbia, MO</div></div><div style="text-align:right"><div style="font-weight:800;font-size:14px;color:#1B2A4A">QUOTE</div><div style="font-size:11px;color:#666;margin-top:4px">${fD(q.created_at)}</div><div style="margin-top:4px"><span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;background:${isSigned ? "#d4edda" : "#fff3cd"};color:${isSigned ? "#155724" : "#856404"}">${q.status?.toUpperCase() || "DRAFT"}</span></div></div></div>` +
         `<div style="margin-bottom:20px;font-size:13px"><strong>Customer:</strong> ${q.customer_name}<br><strong>Address:</strong> ${q.customer_address || "—"}<br>${q.customer_email ? `<strong>Email:</strong> ${q.customer_email}<br>` : ""}${q.customer_phone ? `<strong>Phone:</strong> ${q.customer_phone}<br>` : ""}</div>` +
         `<div style="display:flex;gap:12px;margin-bottom:24px">${tierSection}</div>` +
-        `<table><thead><tr><th>Description</th><th style="text-align:center;width:60px">Qty</th><th style="text-align:right;width:100px">Amount</th></tr></thead><tbody>${rows}${upRows}</tbody></table>` +
+        `<h3 style="color:#1B2A4A;margin:20px 0 10px;font-size:14px">SCOPE OF WORK</h3>` +
+        `${scopeHTML}` +
+        (upRows ? `<h3 style="color:#D4870E;margin:20px 0 10px;font-size:14px">OPTIONAL UPGRADES</h3><table><thead><tr><th>Description</th><th style="text-align:center;width:60px">Qty</th><th style="text-align:right;width:100px">Amount</th></tr></thead><tbody>${upRows}</tbody></table>` : "") +
+        `${valueAddHTML}` +
         (isSigned && q.settings?.signature ? `<div style="margin-top:30px;padding:20px;border:2px solid #1B2A4A;border-radius:8px"><div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:8px">Electronic Signature</div><div style="font-family:cursive;font-size:28px;color:#1B2A4A;margin-bottom:8px">${q.settings.signature.name}</div><div style="font-size:10px;color:#999">Signed: ${fD(q.settings.signature.timestamp)} · Total: ${fmt$(q.settings.signature.total || 0)}</div></div>` : "") +
         `<div style="margin-top:30px;text-align:center;font-size:9px;color:#bbb">Roof USA · Roofus Construction, LLC · Columbia, MO</div></body></html>`;
       const blob = new Blob([html], { type: "text/html" });
@@ -3637,6 +3694,21 @@ function QuoteBuilder({ user, isA, isM, items }) {
               </div>
             ))
           }
+        </div>}
+
+        {/* Intro Video */}
+        {q && <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+          {q.settings?.introVideo ? (
+            <>
+              <span style={{ fontSize: 12, color: C.grn, fontWeight: 600 }}>🎥 Intro video recorded</span>
+              <button onClick={() => { const v = document.createElement("video"); v.src = q.settings.introVideo; v.controls = true; v.style.cssText = "max-width:400px;border-radius:12px"; const m = document.createElement("div"); m.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;cursor:pointer"; m.onclick = () => m.remove(); m.appendChild(v); document.body.appendChild(m); v.play(); }} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6 }}>Preview</button>
+              <button onClick={() => setQ({ ...q, settings: { ...q.settings, introVideo: null } })} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6, color: C.red }}>Remove</button>
+            </>
+          ) : recording && recordingFor === "intro" ? (
+            <button onClick={stopRecording} style={{ ...bP, padding: "6px 14px", fontSize: 11, borderRadius: 8, background: C.red }}>⏹ Stop Recording Intro</button>
+          ) : (
+            <button onClick={() => startRecording("intro")} style={{ ...bS, borderRadius: 8, padding: "6px 12px", fontSize: 11 }} disabled={recording}>🎥 Record Intro Video</button>
+          )}
         </div>}
 
         {/* Expiration Management */}
@@ -3786,10 +3858,18 @@ function QuoteBuilder({ user, isA, isM, items }) {
                       <Fld label="Section Description">
                         <input value={activeSlide.content?.caption || ""} onChange={e => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, caption: e.target.value } }; setSlides(ns); }} style={{ ...inp, borderRadius: 10 }} placeholder="Describe what was found during inspection..." />
                       </Fld>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10, marginBottom: 12 }}>
                         {photos.map((p, i) => (
                           <div key={p.id || i} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: `1px solid ${C.brd}` }}>
-                            <img src={p.src} alt="" style={{ width: "100%", height: 120, objectFit: "cover" }} />
+                            <div style={{ position: "relative" }}>
+                              <img src={p.src} alt="" style={{ width: "100%", height: 160, objectFit: "cover" }} />
+                              {/* Annotation circles */}
+                              {(p.annotations || []).map((ann, ai) => (
+                                <div key={ai} onClick={e => { e.stopPropagation(); const np = [...photos]; np[i] = { ...np[i], annotations: (np[i].annotations || []).filter((_, j) => j !== ai) }; updatePhotos(np); }} style={{ position: "absolute", left: `${ann.x}%`, top: `${ann.y}%`, width: 30, height: 30, borderRadius: "50%", border: "3px solid #B22234", cursor: "pointer", transform: "translate(-50%,-50%)", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(178,34,52,0.15)", fontSize: 10, fontWeight: 800, color: "#B22234" }}>{ai + 1}</div>
+                              ))}
+                              {/* Click to add annotation */}
+                              <div onClick={e => { const rect = e.currentTarget.getBoundingClientRect(); const x = Math.round(((e.clientX - rect.left) / rect.width) * 100); const y = Math.round(((e.clientY - rect.top) / rect.height) * 100); const np = [...photos]; np[i] = { ...np[i], annotations: [...(np[i].annotations || []), { x, y, label: "" }] }; updatePhotos(np); }} style={{ position: "absolute", inset: 0, cursor: "crosshair" }} title="Click to add annotation circle" />
+                            </div>
                             <input value={p.caption || ""} onChange={e => { const np = [...photos]; np[i] = { ...np[i], caption: e.target.value }; updatePhotos(np); }} placeholder="Caption..." style={{ width: "100%", border: "none", borderTop: `1px solid ${C.brd}`, padding: "6px 8px", fontSize: 11, outline: "none" }} />
                             <button onClick={() => updatePhotos(photos.filter((_, j) => j !== i))} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", padding: "2px 4px" }}><X size={12} /></button>
                           </div>
@@ -3986,6 +4066,14 @@ function QuoteBuilder({ user, isA, isM, items }) {
                   <Clock size={14} /> Activity Log ({activity.length}) {showActivity ? "▲" : "▼"}
                 </button>
                 <button onClick={async () => { const qs = await sbGet("quote_questions", `quote_id=eq.${q.id}&order=created_at.desc`); if (qs?.length > 0) { alert("Customer Questions:\n\n" + qs.map(qq => `"${qq.question}" — ${qq.customer_name || "Customer"} (${fD(qq.created_at)})`).join("\n\n")); } else { alert("No questions yet."); } }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}>❓ Questions</button>
+                <button onClick={async () => {
+                  const tracks = await sbGet("quote_tracking", `quote_id=eq.${q.id}&event_type=eq.slide_view&order=created_at.desc`);
+                  if (!tracks?.length) { alert("No slide tracking data yet. Customer hasn't viewed the quote."); return; }
+                  const slideStats = {};
+                  tracks.forEach(t => { const title = t.metadata?.slide_title || "Unknown"; if (!slideStats[title]) slideStats[title] = { views: 0, totalTime: 0 }; slideStats[title].views++; slideStats[title].totalTime += t.duration_seconds || 0; });
+                  const report = Object.entries(slideStats).sort((a, b) => b[1].totalTime - a[1].totalTime).map(([title, s]) => `${title}: ${s.views} views, ${s.totalTime}s total`).join("\n");
+                  alert("Slide Engagement:\n\n" + report);
+                }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}>📊 Engagement</button>
               </div>
               {showActivity && <div style={{ ...crd, borderRadius: 12, padding: 12, marginTop: 8, maxHeight: 300, overflow: "auto" }}>
                 {activity.map((a, i) => {
@@ -4241,6 +4329,7 @@ function QuotePublicView({ quoteId, isPreview }) {
   const [selectedTier, setSelectedTier] = useState("best");
   const [selectedUpgrades, setSelectedUpgrades] = useState({});
   const [selectedColors, setSelectedColors] = useState({});
+  const [videoBubbleMin, setVideoBubbleMin] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -4393,15 +4482,26 @@ function QuotePublicView({ quoteId, isPreview }) {
       {/* Slide Content */}
       {/* Video Bubble */}
       {slides[currentSlide]?.content?.video && (
-        <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 500, width: 160, height: 160, borderRadius: "50%", overflow: "hidden", border: "3px solid #fff", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", cursor: "pointer" }}>
-          <video src={slides[currentSlide].content.video} autoPlay loop muted={false} playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} onClick={e => { e.target.muted = !e.target.muted; }} />
-        </div>
+        videoBubbleMin ? (
+          <button onClick={() => setVideoBubbleMin(false)} style={{ position: "fixed", bottom: 20, right: 20, zIndex: 500, width: 48, height: 48, borderRadius: "50%", background: NAVY, border: "2px solid #fff", boxShadow: "0 4px 16px rgba(0,0,0,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 20 }}>🎥</button>
+        ) : (
+          <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 500, borderRadius: 16, overflow: "hidden", border: "3px solid #fff", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+            <video src={slides[currentSlide].content.video} autoPlay playsInline style={{ width: 200, height: 150, objectFit: "cover", display: "block" }} />
+            <button onClick={() => setVideoBubbleMin(true)} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.5)", border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", padding: "2px 6px", fontSize: 10 }}>—</button>
+          </div>
+        )
       )}
 
       <div key={currentSlide} className="slide-enter" style={{ maxWidth: 800, margin: "0 auto", padding: "40px 24px", minHeight: 400 }}>
         {/* COVER */}
         {cs.slide_type === "cover" && (
           <div style={{ textAlign: "center" }}>
+            {quote.settings?.introVideo && (
+              <div style={{ marginBottom: 24, borderRadius: 16, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.1)" }}>
+                <video src={quote.settings.introVideo} controls playsInline style={{ width: "100%", maxHeight: 350, background: "#000" }} />
+                <div style={{ padding: "8px 12px", background: "#f8f9fa", fontSize: 12, color: "#666" }}>A personal message from your Roof USA team</div>
+              </div>
+            )}
             <img src={LOGO} alt="Roof USA" style={{ height: 70, marginBottom: 24 }} />
             <h1 style={{ fontSize: 32, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 8 }}>{cs.title || "Your Roofing Proposal"}</h1>
             <div style={{ width: 60, height: 3, background: RED, margin: "16px auto" }} />
@@ -4429,7 +4529,12 @@ function QuotePublicView({ quoteId, isPreview }) {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
                   {photos.map((p, i) => (
                     <div key={i} style={{ borderRadius: 12, overflow: "hidden", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                      <img src={p.src} alt={p.caption || ""} style={{ width: "100%", height: 200, objectFit: "cover" }} />
+                      <div style={{ position: "relative" }}>
+                        <img src={p.src} alt={p.caption || ""} style={{ width: "100%", height: 220, objectFit: "cover" }} />
+                        {(p.annotations || []).map((ann, ai) => (
+                          <div key={ai} style={{ position: "absolute", left: `${ann.x}%`, top: `${ann.y}%`, width: 32, height: 32, borderRadius: "50%", border: "3px solid #B22234", transform: "translate(-50%,-50%)", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(178,34,52,0.2)", fontSize: 11, fontWeight: 800, color: "#B22234", boxShadow: "0 2px 6px rgba(0,0,0,0.2)" }}>{ai + 1}</div>
+                        ))}
+                      </div>
                       {p.caption && <div style={{ padding: "10px 14px", fontSize: 13, color: "#444", background: "#f8f9fa" }}>{p.caption}</div>}
                     </div>
                   ))}
