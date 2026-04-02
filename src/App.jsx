@@ -2838,9 +2838,17 @@ const QUOTE_BASE_URL = typeof window !== "undefined" ? window.location.origin : 
 const SLIDE_TYPES = [
   { type: "cover", label: "Cover Page", icon: "🏠" },
   { type: "scope", label: "Scope of Work", icon: "📋" },
+  { type: "comparison", label: "Product Comparison", icon: "⚖️" },
   { type: "pricing", label: "Pricing & Authorization", icon: "💰" },
+  { type: "valueadd", label: "Info Page", icon: "ℹ️" },
   { type: "signature", label: "Signature & Terms", icon: "✍️" },
 ];
+const VALUEADD_PRESETS = {
+  about: { title: "About Roof USA", content: { heading: "About Roof USA", body: "Roofus Construction, LLC (d/b/a Roof USA) is a locally owned and operated roofing company serving Columbia, MO and surrounding areas.\n\nWe are CertainTeed ShingleMaster certified, ensuring the highest standards of workmanship and product quality.\n\nOur team brings years of experience in residential and commercial roofing, committed to delivering exceptional results on every project.\n\n• Licensed & Insured\n• ShingleMaster Certified\n• Local Columbia, MO Company\n• Manufacturer-Backed Warranties" } },
+  warranty: { title: "Warranty Information", content: { heading: "Your Warranty Coverage", body: "When you choose Roof USA, your investment is protected by comprehensive warranty coverage:\n\nMANUFACTURER WARRANTY\nAs a CertainTeed ShingleMaster certified installer, we offer manufacturer-backed warranties that cover material defects for the full lifetime of your roofing system.\n\nWORKMANSHIP WARRANTY\nOur workmanship warranty covers installation-related issues, giving you complete peace of mind.\n\nWHAT'S COVERED\n• Shingle defects and premature failure\n• Installation workmanship issues\n• Wind damage up to specified speeds\n• Algae resistance (where applicable)\n\nAll warranty details will be provided at project completion." } },
+  cleanup: { title: "Our Cleanup Process", content: { heading: "Job Site Cleanup", body: "We take pride in leaving your property cleaner than we found it:\n\nDURING THE JOB\n• Tarps placed around the perimeter to catch debris\n• Dump trailer on-site for immediate disposal\n• Daily cleanup at the end of each work day\n\nFINAL CLEANUP\n• Complete debris removal from roof and ground\n• Magnetic nail sweep of entire yard and driveway (3 passes minimum)\n• Gutter cleanout\n• Final walkthrough with homeowner\n• Haul-away of all old materials\n\nYour satisfaction with our cleanup is guaranteed." } },
+  gutters: { title: "Gutter Services", content: { heading: "Gutter Solutions", body: "Protect your home's foundation with our professional gutter services:\n\nGUTTER INSTALLATION\n• Seamless aluminum gutters custom-fabricated on-site\n• Multiple color options to match your home\n• Proper slope and drainage engineering\n\nGUTTER GUARDS\n• Keep debris out and water flowing\n• Reduce maintenance and cleaning\n• Multiple guard styles available\n\nDOWNSPOUT EXTENSIONS\n• Direct water away from your foundation\n• Underground drainage options\n• Custom routing for your landscape" } },
+};
 const DEFAULT_TERMS = `CONSTRUCTION AGREEMENT\n\nThis agreement is between Roof USA (Roofus Construction, LLC) and the Customer identified above.\n\n1. SCOPE: Contractor will perform the work described in the Scope of Work slides of this proposal.\n2. PAYMENT: Payment is due upon completion unless otherwise agreed in writing.\n3. WARRANTY: All work is warranted for the period specified by manufacturer guidelines.\n4. CHANGES: Any changes to the scope must be agreed in writing.\n5. INSURANCE: Contractor maintains general liability and workers' compensation insurance.\n6. CANCELLATION: Customer may cancel within 3 business days of signing.\n\nBy signing below, Customer authorizes Roof USA to proceed with the described work at the agreed price.`;
 const TIERS = ["good", "better", "best"];
 const TIER_LABELS = { good: "Good", better: "Better", best: "Best" };
@@ -2872,7 +2880,53 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [tiersEnabled, setTiersEnabled] = useState({ good: true, better: true, best: true });
   const [priceView, setPriceView] = useState("total"); // total, grouped, items
 
-  useEffect(() => { loadQuotes(); loadJnJobs(); }, []);
+  // Templates
+  const [templates, setTemplates] = useState([]);
+  const [showSaveTpl, setShowSaveTpl] = useState(false);
+  const [tplName, setTplName] = useState("");
+
+  useEffect(() => { loadQuotes(); loadJnJobs(); loadTemplates(); }, []);
+
+  async function loadTemplates() {
+    const data = await sbGet("quote_templates", "select=*&order=created_at.desc");
+    setTemplates(data || []);
+  }
+  async function saveAsTemplate() {
+    if (!tplName.trim() || !q) return;
+    const tplSlides = slides.map(s => ({ slide_type: s.slide_type, sort_order: s.sort_order, title: s.title, content: s.content, visible: s.visible }));
+    const tplItems = lineItems.map(li => ({ description: li.description, qty: li.qty, unit: li.unit, cost: li.cost, unit_price: li.unit_price, markup: li.markup, category: li.category, tier: li.tier, is_upgrade: li.is_upgrade, item_id: li.item_id, option: li.option }));
+    await sbPost("quote_templates", {
+      name: tplName, slides: { slides: tplSlides, lineItems: tplItems },
+      default_settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView },
+      created_by: user?.name || "Unknown",
+    });
+    setShowSaveTpl(false);
+    setTplName("");
+    await loadTemplates();
+  }
+  async function loadFromTemplate(tpl) {
+    if (!q) return;
+    const tplData = tpl.slides || {};
+    const tplSettings = tpl.default_settings || {};
+    // Load slides
+    const newSlides = (tplData.slides || []).map((s, i) => ({
+      quote_id: q.id, slide_type: s.slide_type, sort_order: i,
+      title: s.title, content: s.content, visible: s.visible !== false,
+    }));
+    setSlides(newSlides);
+    // Load line items
+    const newItems = (tplData.lineItems || []).map(li => ({ ...li }));
+    setLineItems(newItems);
+    // Load settings
+    if (tplSettings.margin != null) setMargin(tplSettings.margin);
+    if (tplSettings.tiers_enabled) setTiersEnabled(tplSettings.tiers_enabled);
+    if (tplSettings.price_view) setPriceView(tplSettings.price_view);
+    setAsi(0);
+  }
+  async function deleteTemplate(id) {
+    await sbDel("quote_templates", id);
+    await loadTemplates();
+  }
 
   async function loadJnJobs() {
     try { const r = await fetch("/api/jn?action=jobs"); const d = await r.json(); setJnAll(d.jobs || []); } catch {}
@@ -2903,6 +2957,8 @@ function QuoteBuilder({ user, isA, isM, items }) {
   }
   async function createQuote() {
     if (!nf.customer_name.trim()) return;
+    const selectedTpl = nf.template_id ? templates.find(t => t.id === nf.template_id) : null;
+    const tplSettings = selectedTpl?.default_settings || {};
     const newQ = {
       customer_name: nf.customer_name,
       customer_email: nf.customer_email,
@@ -2911,22 +2967,41 @@ function QuoteBuilder({ user, isA, isM, items }) {
       jn_job_id: nf.jn_job_id,
       status: "draft",
       created_by: user?.name || "Unknown",
-      settings: { margin: 35, tiers_enabled: { good: true, better: true, best: true }, price_view: "total", jn_job_name: nf.jn_job_name || "" },
+      settings: { margin: tplSettings.margin || 35, tiers_enabled: tplSettings.tiers_enabled || { good: true, better: true, best: true }, price_view: tplSettings.price_view || "total", jn_job_name: nf.jn_job_name || "" },
       expiration_date: new Date(Date.now() + 30 * 86400000).toISOString(),
+      template_id: nf.template_id || null,
     };
     const result = await sbPost("quotes", newQ);
     if (result && result.length > 0) {
       const created = result[0];
-      // Create default slides
-      const defaultSlides = [
-        { quote_id: created.id, slide_type: "cover", sort_order: 0, title: "Your Roofing Proposal", content: {}, visible: true },
-        { quote_id: created.id, slide_type: "scope", sort_order: 1, title: "Scope of Work", content: { sections: [{ name: "Roofing", items: [] }] }, visible: true },
-        { quote_id: created.id, slide_type: "pricing", sort_order: 2, title: "Investment Options", content: { terms: "" }, visible: true },
-        { quote_id: created.id, slide_type: "signature", sort_order: 3, title: "Authorization", content: { terms: DEFAULT_TERMS }, visible: true },
-      ];
-      for (const s of defaultSlides) await sbPost("quote_slides", s);
+      if (selectedTpl && selectedTpl.slides?.slides) {
+        // Create slides from template
+        for (const [i, s] of selectedTpl.slides.slides.entries()) {
+          await sbPost("quote_slides", { quote_id: created.id, slide_type: s.slide_type, sort_order: i, title: s.title, content: s.content, visible: s.visible !== false });
+        }
+        // Create line items from template
+        if (selectedTpl.slides.lineItems?.length > 0) {
+          const tplItems = selectedTpl.slides.lineItems.map(li => ({
+            quote_id: created.id, description: li.description || "", qty: li.qty || 1, unit: li.unit || "each",
+            unit_cost: li.cost || 0, labor_cost: 0, margin_pct: li.markup || tplSettings.margin || 35,
+            line_total: (li.qty || 1) * (li.unit_price || 0), tier: li.tier || "all",
+            section_name: li.category || "Other", is_upgrade: li.is_upgrade || false,
+            upgrade_price: li.is_upgrade ? (li.unit_price || 0) : null, portal_item_id: li.item_id || null, sort_order: 0,
+          }));
+          await sbPost("quote_line_items", tplItems);
+        }
+      } else {
+        // Create default slides
+        const defaultSlides = [
+          { quote_id: created.id, slide_type: "cover", sort_order: 0, title: "Your Roofing Proposal", content: {}, visible: true },
+          { quote_id: created.id, slide_type: "scope", sort_order: 1, title: "Scope of Work", content: { sections: [{ name: "Roofing", items: [] }] }, visible: true },
+          { quote_id: created.id, slide_type: "pricing", sort_order: 2, title: "Investment Options", content: { terms: "" }, visible: true },
+          { quote_id: created.id, slide_type: "signature", sort_order: 3, title: "Authorization", content: { terms: DEFAULT_TERMS }, visible: true },
+        ];
+        for (const s of defaultSlides) await sbPost("quote_slides", s);
+      }
       setShowNew(false);
-      setNf({ customer_name: "", customer_email: "", customer_phone: "", customer_address: "", jn_job_id: "", jn_job_name: "" });
+      setNf({ customer_name: "", customer_email: "", customer_phone: "", customer_address: "", jn_job_id: "", jn_job_name: "", template_id: "" });
       await loadQuotes();
       const fresh = await sbGet("quotes", `id=eq.${created.id}`);
       if (fresh && fresh.length > 0) await openQuote(fresh[0]);
@@ -3061,13 +3136,18 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const jnF = jnAll.filter((j) => { if (!jnSearch.trim()) return false; const s = jnSearch.toLowerCase(); return (j.name || "").toLowerCase().includes(s) || (j.address || "").toLowerCase().includes(s); }).slice(0, 6);
 
   // Helper: add a slide
-  const addSlide = (type) => {
+  const addSlide = (type, preset) => {
     const st = SLIDE_TYPES.find(s => s.type === type);
-    const newSlide = {
-      quote_id: q?.id, slide_type: type, sort_order: slides.length,
-      title: st?.label || type, visible: true,
-      content: type === "scope" ? { sections: [{ name: "Roofing", items: [] }] } : type === "signature" ? { terms: DEFAULT_TERMS } : {},
-    };
+    let content = {};
+    let title = st?.label || type;
+    if (type === "scope") content = { sections: [{ name: "Roofing", items: [] }] };
+    else if (type === "signature") content = { terms: DEFAULT_TERMS };
+    else if (type === "comparison") content = { products: [{ name: "Option A", features: ["Feature 1", "Feature 2"] }, { name: "Option B", features: ["Feature 1", "Feature 2"] }] };
+    else if (type === "valueadd" && preset && VALUEADD_PRESETS[preset]) {
+      title = VALUEADD_PRESETS[preset].title;
+      content = VALUEADD_PRESETS[preset].content;
+    } else if (type === "valueadd") content = { heading: "Page Title", body: "Add your content here..." };
+    const newSlide = { quote_id: q?.id, slide_type: type, sort_order: slides.length, title, visible: true, content };
     setSlides([...slides, newSlide]);
     setAsi(slides.length);
   };
@@ -3201,6 +3281,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
             </div>
             {nf.jn_job_id && <div style={{ marginTop: 6, fontSize: 11, color: C.grn }}><Check size={12} /> Linked to: {nf.jn_job_name}</div>}
           </Fld>
+          {templates.length > 0 && <Fld label="Start from Template (optional)">
+            <select value={nf.template_id || ""} onChange={e => setNf({ ...nf, template_id: e.target.value })} style={{ ...inp, borderRadius: 10, cursor: "pointer" }}>
+              <option value="">Blank Quote</option>
+              {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </Fld>}
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
             <button onClick={() => setShowNew(false)} style={bS}>Cancel</button>
             <button onClick={createQuote} style={{ ...bP, borderRadius: 10 }} disabled={!nf.customer_name.trim()}><Plus size={14} /> Create Quote</button>
@@ -3271,12 +3357,21 @@ function QuoteBuilder({ user, isA, isM, items }) {
               {/* Add slide */}
               <div style={{ marginTop: 8, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
                 <div style={{ ...lbl, fontSize: 9 }}>Add Slide</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                  {SLIDE_TYPES.map(st => (
-                    <button key={st.type} onClick={() => addSlide(st.type)} style={{ background: C.sf, border: `1px solid ${C.brd}`, borderRadius: 6, padding: "4px 8px", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
-                      <span>{st.icon}</span> {st.label.split(" ")[0]}
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {SLIDE_TYPES.filter(st => st.type !== "valueadd").map(st => (
+                    <button key={st.type} onClick={() => addSlide(st.type)} style={{ background: C.sf, border: `1px solid ${C.brd}`, borderRadius: 6, padding: "5px 8px", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, textAlign: "left" }}>
+                      <span>{st.icon}</span> {st.label}
                     </button>
                   ))}
+                  <div style={{ ...lbl, fontSize: 8, marginTop: 4, marginBottom: 2 }}>Info Pages</div>
+                  {Object.entries(VALUEADD_PRESETS).map(([k, v]) => (
+                    <button key={k} onClick={() => addSlide("valueadd", k)} style={{ background: C.sf, border: `1px solid ${C.brd}`, borderRadius: 6, padding: "5px 8px", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                      ℹ️ {v.title}
+                    </button>
+                  ))}
+                  <button onClick={() => addSlide("valueadd")} style={{ background: C.sf, border: `1px solid ${C.brd}`, borderRadius: 6, padding: "5px 8px", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                    ℹ️ Custom Page
+                  </button>
                 </div>
               </div>
             </div>
@@ -3389,10 +3484,86 @@ function QuoteBuilder({ user, isA, isM, items }) {
                     </div>
                   </div>
                 )}
+
+                {/* VALUE-ADD / INFO PAGE EDITOR */}
+                {activeSlide.slide_type === "valueadd" && (
+                  <div>
+                    <Fld label="Page Heading">
+                      <input value={activeSlide.content?.heading || ""} onChange={e => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, heading: e.target.value } }; setSlides(ns); }} style={{ ...inp, borderRadius: 10, fontWeight: 700, fontSize: 16 }} placeholder="Section heading..." />
+                    </Fld>
+                    <Fld label="Content">
+                      <textarea value={activeSlide.content?.body || ""} onChange={e => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, body: e.target.value } }; setSlides(ns); }} style={{ ...inp, borderRadius: 10, minHeight: 300, fontSize: 13, lineHeight: 1.7 }} placeholder="Write your content here. Use line breaks for formatting..." />
+                    </Fld>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <div style={{ ...lbl, width: "100%", marginBottom: 4 }}>Quick Fill</div>
+                      {Object.entries(VALUEADD_PRESETS).map(([k, v]) => (
+                        <button key={k} onClick={() => { const ns = [...slides]; ns[asi] = { ...ns[asi], title: v.title, content: v.content }; setSlides(ns); }} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6 }}>{v.title}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* PRODUCT COMPARISON EDITOR */}
+                {activeSlide.slide_type === "comparison" && (() => {
+                  const products = activeSlide.content?.products || [];
+                  const updateProducts = (newProds) => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, products: newProds } }; setSlides(ns); };
+                  return (
+                    <div>
+                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                        {products.map((p, pi) => (
+                          <div key={pi} style={{ flex: 1, minWidth: 220, ...crd, borderRadius: 12, padding: 14 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                              <input value={p.name || ""} onChange={e => { const np = [...products]; np[pi] = { ...np[pi], name: e.target.value }; updateProducts(np); }} style={{ ...inp, fontWeight: 800, fontSize: 14, border: "none", padding: 0, background: "transparent" }} placeholder="Product name..." />
+                              <button onClick={() => updateProducts(products.filter((_, i) => i !== pi))} style={{ background: "none", border: "none", cursor: "pointer", color: C.red }}><X size={14} /></button>
+                            </div>
+                            <Fld label="Description">
+                              <textarea value={p.description || ""} onChange={e => { const np = [...products]; np[pi] = { ...np[pi], description: e.target.value }; updateProducts(np); }} style={{ ...inp, borderRadius: 8, minHeight: 60, fontSize: 12 }} placeholder="Product description..." />
+                            </Fld>
+                            <Fld label="Features (one per line)">
+                              <textarea value={(p.features || []).join("\n")} onChange={e => { const np = [...products]; np[pi] = { ...np[pi], features: e.target.value.split("\n") }; updateProducts(np); }} style={{ ...inp, borderRadius: 8, minHeight: 100, fontSize: 12 }} placeholder="Feature 1&#10;Feature 2&#10;Feature 3" />
+                            </Fld>
+                            <Fld label="Price (optional)">
+                              <input value={p.price || ""} onChange={e => { const np = [...products]; np[pi] = { ...np[pi], price: e.target.value }; updateProducts(np); }} style={{ ...inp, borderRadius: 8, fontSize: 12 }} placeholder="e.g. $250/sq" />
+                            </Fld>
+                          </div>
+                        ))}
+                      </div>
+                      {products.length < 3 && <button onClick={() => updateProducts([...products, { name: "", features: [], description: "" }])} style={{ ...bS, marginTop: 12, borderRadius: 8, fontSize: 12 }}><Plus size={14} /> Add Product</button>}
+                    </div>
+                  );
+                })()}
               </div>
             ) : <Empty msg="Add a slide to get started" />}
+
+            {/* Save as Template + Load Template */}
+            {q && <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+              <button onClick={() => setShowSaveTpl(true)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}><Copy size={14} /> Save as Template</button>
+              {templates.length > 0 && <div style={{ position: "relative" }}>
+                <select onChange={e => { const t = templates.find(x => x.id === e.target.value); if (t && confirm("Load this template? It will replace current slides and items.")) loadFromTemplate(t); e.target.value = ""; }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, cursor: "pointer", appearance: "auto" }} defaultValue="">
+                  <option value="" disabled>Load Template...</option>
+                  {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>}
+            </div>}
           </div>
         </div>
+
+        {/* Save as Template Modal */}
+        <Modal open={showSaveTpl} onClose={() => setShowSaveTpl(false)} title="Save as Template">
+          <Fld label="Template Name"><input value={tplName} onChange={e => setTplName(e.target.value)} style={{ ...inp, borderRadius: 10 }} placeholder="e.g. Standard Roof Replacement..." /></Fld>
+          <div style={{ fontSize: 12, color: C.t2, marginBottom: 16 }}>This will save the current slides ({slides.length}), line items ({lineItems.length}), and pricing settings as a reusable template.</div>
+          {templates.length > 0 && <div style={{ marginBottom: 16 }}>
+            <div style={lbl}>Existing Templates</div>
+            {templates.map(t => <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${C.brd}` }}>
+              <span style={{ fontSize: 13 }}>{t.name}</span>
+              <button onClick={() => { if (confirm("Delete this template?")) deleteTemplate(t.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontSize: 11 }}><Trash2 size={12} /></button>
+            </div>)}
+          </div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={() => setShowSaveTpl(false)} style={bS}>Cancel</button>
+            <button onClick={saveAsTemplate} disabled={!tplName.trim()} style={{ ...bP, borderRadius: 10 }}><Check size={14} /> Save Template</button>
+          </div>
+        </Modal>
       </div>
     );
   }
@@ -3815,6 +3986,51 @@ function QuotePublicView({ quoteId, isPreview }) {
             )}
           </div>
         )}
+
+        {/* VALUE-ADD / INFO PAGE */}
+        {cs.slide_type === "valueadd" && (
+          <div>
+            <h2 style={{ fontSize: 28, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 8 }}>{cs.content?.heading || cs.title}</h2>
+            <div style={{ width: 50, height: 3, background: RED, marginBottom: 24 }} />
+            <div style={{ fontSize: 15, lineHeight: 1.8, color: "#333", whiteSpace: "pre-wrap" }}>
+              {(cs.content?.body || "").split("\n").map((line, i) => {
+                if (!line.trim()) return <br key={i} />;
+                if (line.trim().match(/^[A-Z][A-Z\s&]+$/) && line.trim().length > 3) return <div key={i} style={{ fontSize: 16, fontWeight: 800, color: NAVY, marginTop: 20, marginBottom: 6 }}>{line}</div>;
+                if (line.trim().startsWith("•") || line.trim().startsWith("-")) return <div key={i} style={{ paddingLeft: 16, position: "relative", marginBottom: 4 }}><span style={{ position: "absolute", left: 0, color: RED, fontWeight: 800 }}>•</span>{line.trim().replace(/^[•-]\s*/, "")}</div>;
+                return <div key={i}>{line}</div>;
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* PRODUCT COMPARISON */}
+        {cs.slide_type === "comparison" && (() => {
+          const products = cs.content?.products || [];
+          return (
+            <div>
+              <h2 style={{ fontSize: 24, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 20 }}>{cs.title}</h2>
+              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                {products.map((p, i) => (
+                  <div key={i} style={{ flex: 1, minWidth: 220, border: "2px solid #e5e7eb", borderRadius: 16, overflow: "hidden" }}>
+                    <div style={{ background: i === 0 ? NAVY : i === 1 ? RED : "#6B7280", color: "#fff", padding: "16px 20px", textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 800 }}>{p.name || `Option ${i + 1}`}</div>
+                      {p.price && <div style={{ fontSize: 14, opacity: 0.9, marginTop: 4 }}>{p.price}</div>}
+                    </div>
+                    <div style={{ padding: 20 }}>
+                      {p.description && <div style={{ fontSize: 13, color: "#666", marginBottom: 16, lineHeight: 1.6 }}>{p.description}</div>}
+                      {(p.features || []).filter(f => f.trim()).map((f, fi) => (
+                        <div key={fi} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: fi < p.features.length - 1 ? "1px solid #f0f0f0" : "none" }}>
+                          <span style={{ color: "#059669", fontWeight: 800, fontSize: 14, marginTop: 1 }}>✓</span>
+                          <span style={{ fontSize: 13, color: "#333" }}>{f}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Navigation */}
