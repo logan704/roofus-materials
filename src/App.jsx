@@ -28,6 +28,7 @@ select option{background:${C.w};color:${C.txt}}
   table{font-size:11px!important}
   td,th{padding:5px 4px!important}
 }
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
 @media(max-width:480px){
   .nav-wrap button{padding:4px 6px!important;font-size:9px!important}
   .nav-wrap svg{width:12px!important;height:12px!important}
@@ -2890,6 +2891,9 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [showSaveTpl, setShowSaveTpl] = useState(false);
   const [tplName, setTplName] = useState("");
   const [showSidePanel, setShowSidePanel] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [recordingFor, setRecordingFor] = useState(null); // slide index or "whole"
   const [activity, setActivity] = useState([]);
   const [showActivity, setShowActivity] = useState(false);
   const [questions, setQuestions] = useState([]);
@@ -3189,6 +3193,39 @@ function QuoteBuilder({ user, isA, isM, items }) {
     setSlides([...slides, newSlide]);
     setAsi(slides.length);
   };
+  // Video Recording
+  const startRecording = async (forSlide) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: true });
+      const mr = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9,opus" });
+      const chunks = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunks, { type: "video/webm" });
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (forSlide !== null && forSlide !== undefined) {
+            const ns = [...slides];
+            ns[forSlide] = { ...ns[forSlide], content: { ...ns[forSlide].content, video: reader.result } };
+            setSlides(ns);
+          } else {
+            setQ(prev => ({ ...prev, settings: { ...prev.settings, introVideo: reader.result } }));
+          }
+        };
+        reader.readAsDataURL(blob);
+        setRecording(false);
+        setMediaRecorder(null);
+        setRecordingFor(null);
+      };
+      mr.start();
+      setMediaRecorder(mr);
+      setRecording(true);
+      setRecordingFor(forSlide);
+    } catch (err) { console.error("Camera error:", err); alert("Could not access camera. Please allow camera permissions."); }
+  };
+  const stopRecording = () => { if (mediaRecorder) mediaRecorder.stop(); };
+
   const removeSlide = (idx) => {
     const ns = slides.filter((_, i) => i !== idx).map((s, i) => ({ ...s, sort_order: i }));
     setSlides(ns);
@@ -3373,15 +3410,17 @@ function QuoteBuilder({ user, isA, isM, items }) {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 800, fontSize: 15 }}>{qt.customer_name || "Untitled"} {expired && <span style={{ fontSize: 10, color: C.red, fontWeight: 700 }}>EXPIRED</span>}</div>
                     <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>
-                      {(qt.settings || {}).jn_job_name || qt.address || "No job linked"} · {fD(qt.created_at)}
+                      {(qt.settings || {}).jn_job_name || qt.address || "No job linked"} · {fD(qt.created_at)} · {qt.created_by || ""}
                       {daysLeft !== null && daysLeft > 0 && daysLeft <= 7 && qt.status !== "signed" && <span style={{ color: C.wrn, marginLeft: 8 }}>· {daysLeft}d left</span>}
+                      {qt.status === "viewed" && <span style={{ color: "#7C3AED", marginLeft: 8 }}>· Ready to follow up</span>}
                     </div>
                   </div>
                   {qt.total_price > 0 && <div style={{ fontFamily: MN, fontWeight: 800, fontSize: 16, color: qt.status === "signed" ? C.grn : C.txt, marginRight: 12 }}>{fmt$(qt.total_price)}</div>}
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4, textTransform: "uppercase", background: sc.bg, color: sc.c }}>{qt.status}</span>
-                    <button onClick={e => { e.stopPropagation(); duplicateQuote(qt); }} title="Duplicate" style={{ ...bS, padding: "6px 10px", borderRadius: 8 }}><Copy size={14} /></button>
-                    <button onClick={e => { e.stopPropagation(); if (confirm("Delete this quote?")) deleteQuote(qt.id); }} style={{ ...bS, padding: "6px 10px", borderRadius: 8 }}><Trash2 size={14} /></button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 4, textTransform: "uppercase", background: sc.bg, color: sc.c }}>{qt.status}</span>
+                    <button onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(`${QUOTE_BASE_URL}/quote/${qt.id}`).then(() => alert("Link copied!")); }} title="Copy Link" style={{ ...bS, padding: "5px 8px", borderRadius: 6 }}><Copy size={12} /></button>
+                    <button onClick={e => { e.stopPropagation(); duplicateQuote(qt); }} title="Duplicate" style={{ ...bS, padding: "5px 8px", borderRadius: 6 }}><Layers size={12} /></button>
+                    <button onClick={e => { e.stopPropagation(); if (confirm("Delete this quote?")) deleteQuote(qt.id); }} title="Delete" style={{ ...bS, padding: "5px 8px", borderRadius: 6 }}><Trash2 size={12} /></button>
                   </div>
                 </div>
               );
@@ -3447,6 +3486,9 @@ function QuoteBuilder({ user, isA, isM, items }) {
       if (q.status === "signed") { byMonth[key].signed++; byMonth[key].revenue += q.total_price || 0; }
     });
     const chartData = Object.entries(byMonth).slice(-6).map(([k, v]) => ({ month: k, Quotes: v.created, Signed: v.signed, Revenue: v.revenue }));
+    const pipeline = quotes.filter(q => q.status === "sent" || q.status === "viewed");
+    const pipelineValue = pipeline.reduce((s, q) => s + (q.total_price || 0), 0);
+    const avgDaysToSign = signed.length > 0 ? Math.round(signed.reduce((s, q) => { const created = new Date(q.created_at); const updated = new Date(q.updated_at || q.created_at); return s + (updated - created) / 86400000; }, 0) / signed.length) : 0;
     return (
       <div className="fu">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -3458,6 +3500,8 @@ function QuoteBuilder({ user, isA, isM, items }) {
           <Stat label="Avg Quote Value" value={fmt$(avgValue)} sub={`${signed.length} signed quotes`} />
           <Stat label="Total Revenue" value={fmt$(totalRevenue)} sub="All time signed" color={C.grn} />
           <Stat label="This Month" value={fmt$(monthRevenue)} sub={`${thisMonth.length} signed`} color={C.blu} />
+          <Stat label="Pipeline" value={fmt$(pipelineValue)} sub={`${pipeline.length} open quotes`} color="#7C3AED" />
+          <Stat label="Avg Days to Sign" value={`${avgDaysToSign}d`} sub="From created to signed" />
         </div>
         {chartData.length > 0 && <div style={{ ...crd, borderRadius: 14, padding: 20, marginBottom: 20 }}>
           <div style={lbl}>Quotes by Month</div>
@@ -3511,7 +3555,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <button onClick={async () => { await saveAll(); await loadQuotes(); setView("list"); }} style={{ ...bS, padding: "8px 12px", borderRadius: 10 }}><ArrowLeft size={16} /></button>
             <div>
               <h2 style={{ fontSize: 18, fontWeight: 900, fontFamily: BC }}>{q.customer_name}</h2>
-              <div style={{ fontSize: 11, color: C.t2 }}>{q.jn_job_name || q.customer_address || "No job linked"}</div>
+              <div style={{ fontSize: 11, color: C.t2 }}>{q.jn_job_name || q.customer_address || "No job linked"} · {slides.length} slides · {lineItems.length} items{tierTotal("best") > 0 ? ` · ${fmt$(tierTotal("best"))}` : ""}</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -3521,7 +3565,10 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <button onClick={downloadQuoteHTML} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 12 }}><Download size={14} /></button>
             <button onClick={() => navigator.clipboard.writeText(quoteLink).then(() => alert("Quote link copied!\n\n" + quoteLink))} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 12 }}><Copy size={14} /></button>
             <button onClick={() => setView("preview")} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 12 }}><Eye size={14} /></button>
-            <button onClick={() => setShowSend(true)} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12, background: "#2563EB" }}><Send size={14} /> Send</button>
+            <button onClick={() => setShowSend(true)} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12, background: "#2563EB" }}><Send size={14} /> {q.status === "sent" || q.status === "viewed" ? "Resend" : "Send"}</button>
+            {(q.status === "sent" || q.status === "viewed") && q.customer_phone && <button onClick={async () => {
+              try { await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: q.customer_phone, message: `Hi ${q.customer_name}, just following up on your roofing proposal from Roof USA. You can view it anytime here: ${quoteLink}` }) }); alert("Follow-up sent!"); } catch { alert("Failed to send"); }
+            }} style={{ ...bS, borderRadius: 10, padding: "8px 12px", fontSize: 11, color: "#7C3AED", borderColor: "#7C3AED40" }}>📱 Follow Up</button>}
             <button onClick={saveAll} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12 }} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
           </div>
         </div>
@@ -3678,6 +3725,15 @@ function QuoteBuilder({ user, isA, isM, items }) {
                       <Cl><Fld label="Phone"><input value={q.customer_phone || ""} onChange={e => setQ({ ...q, customer_phone: e.target.value })} style={{ ...inp, borderRadius: 10 }} /></Fld></Cl>
                     </Rw>
                     <Fld label="House Photo">
+                      {!activeSlide.content?.housePhoto && q.customer_address && (
+                        <button onClick={() => {
+                          const addr = encodeURIComponent(q.customer_address);
+                          const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${addr}&key=AIzaSyBbBi7zzfw4RQhjSrflMnbf2Np_LrOLweY`;
+                          const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: svUrl, photoSource: "streetview" } }; setSlides(ns);
+                        }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, marginBottom: 10, width: "100%" }}>
+                          <Image size={14} /> Load from Google Street View
+                        </button>
+                      )}
                       {activeSlide.content?.housePhoto ? (
                         <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
                           <img src={activeSlide.content.housePhoto} alt="" style={{ width: "100%", maxHeight: 250, objectFit: "cover" }} />
@@ -3924,6 +3980,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
                         <div style={{ fontSize: 12, fontWeight: 600 }}>{labels[a.event_type] || a.event_type}</div>
                         <div style={{ fontSize: 10, color: C.t2 }}>{a.timestamp ? new Date(a.timestamp).toLocaleString() : a.created_at ? new Date(a.created_at).toLocaleString() : "—"}</div>
                         {a.event_type === "signed" && a.metadata?.total && <div style={{ fontSize: 11, color: C.grn, fontWeight: 700, marginTop: 2 }}>{fmt$(a.metadata.total)} · {TIER_LABELS[a.metadata?.tier] || ""} tier</div>}
+                        {a.event_type === "slide_view" && <div style={{ fontSize: 10, color: C.t2 }}>{a.metadata?.slide_title || "Slide"} · {a.duration_seconds || 0}s</div>}
                       </div>
                     </div>
                   );
@@ -4227,6 +4284,7 @@ function QuotePublicView({ quoteId, isPreview }) {
       upgrades: Object.keys(selectedUpgrades).filter(k => selectedUpgrades[k]).map(k => lineItems[k]?.description),
       total: grandTotal,
       colorSelections: selectedColors,
+      customerComment: document.getElementById("customer-comment")?.value || "",
     };
     await sbPatch("quotes", quote.id, {
       status: "signed",
@@ -4274,6 +4332,16 @@ function QuotePublicView({ quoteId, isPreview }) {
     setSigned(true);
   }
 
+  // Keyboard navigation
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); setCurrentSlide(Math.min(slides.length - 1, currentSlide + 1)); }
+      if (e.key === "ArrowLeft") { e.preventDefault(); setCurrentSlide(Math.max(0, currentSlide - 1)); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [currentSlide, slides.length]);
+
   if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#fff" }}><div style={{ textAlign: "center" }}><img src={LOGO} alt="Roof USA" style={{ height: 50, marginBottom: 16 }} /><div style={{ color: "#999", fontSize: 14 }}>Loading your proposal...</div></div></div>;
   if (error) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#fff" }}><div style={{ textAlign: "center", padding: 40 }}><img src={LOGO} alt="Roof USA" style={{ height: 50, marginBottom: 16 }} /><div style={{ color: "#B22234", fontSize: 16, fontWeight: 700 }}>{error}</div></div></div>;
   if (!quote || slides.length === 0) return <div style={{ textAlign: "center", padding: 80, color: "#999" }}>No content available</div>;
@@ -4285,17 +4353,34 @@ function QuotePublicView({ quoteId, isPreview }) {
 
   return (
     <div style={{ fontFamily: "'Barlow', sans-serif", background: "#fff", minHeight: isPreview ? 600 : "100vh" }}>
-      {!isPreview && <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800;900&family=Barlow:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Dancing+Script:wght@700&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Barlow',sans-serif}`}</style>}
+      {!isPreview && <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800;900&family=Barlow:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Dancing+Script:wght@700&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Barlow',sans-serif;overflow-x:hidden}.slide-enter{animation:slideIn .3s ease-out}@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}`}</style>}
 
-      {/* Progress dots */}
-      <div style={{ display: "flex", justifyContent: "center", gap: 8, padding: "16px 20px", borderBottom: "1px solid #eee" }}>
-        {slides.map((_, i) => (
-          <button key={i} onClick={() => setCurrentSlide(i)} style={{ width: i === currentSlide ? 24 : 8, height: 8, borderRadius: 4, border: "none", background: i === currentSlide ? RED : "#ddd", cursor: "pointer", transition: "all .2s" }} />
-        ))}
+      {/* Header with progress */}
+      <div style={{ display: "flex", alignItems: "center", padding: "12px 20px", borderBottom: "1px solid #eee", gap: 12 }}>
+        <img src={LOGO} alt="Roof USA" style={{ height: 28, opacity: 0.7 }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            {slides.map((s, i) => {
+              const st = SLIDE_TYPES.find(t => t.type === s.slide_type);
+              return <button key={i} onClick={() => setCurrentSlide(i)} title={s.title} style={{ flex: 1, height: 4, borderRadius: 2, border: "none", background: i <= currentSlide ? RED : "#e5e7eb", cursor: "pointer", transition: "all .3s" }} />;
+            })}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+            <span style={{ fontSize: 10, color: "#999" }}>{slides[currentSlide]?.title}</span>
+            <span style={{ fontSize: 10, color: "#999" }}>{currentSlide + 1}/{slides.length}</span>
+          </div>
+        </div>
       </div>
 
       {/* Slide Content */}
-      <div style={{ maxWidth: 800, margin: "0 auto", padding: "40px 24px", minHeight: 400 }}>
+      {/* Video Bubble */}
+      {slides[currentSlide]?.content?.video && (
+        <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 500, width: 160, height: 160, borderRadius: "50%", overflow: "hidden", border: "3px solid #fff", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", cursor: "pointer" }}>
+          <video src={slides[currentSlide].content.video} autoPlay loop muted={false} playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} onClick={e => { e.target.muted = !e.target.muted; }} />
+        </div>
+      )}
+
+      <div key={currentSlide} className="slide-enter" style={{ maxWidth: 800, margin: "0 auto", padding: "40px 24px", minHeight: 400 }}>
         {/* COVER */}
         {cs.slide_type === "cover" && (
           <div style={{ textAlign: "center" }}>
@@ -4394,14 +4479,24 @@ function QuotePublicView({ quoteId, isPreview }) {
             <h2 style={{ fontSize: 24, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 20 }}>{cs.title}</h2>
             {/* Tier Cards */}
             <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
-              {TIERS.filter(t => tiersEnabled[t]).map(t => (
+              {TIERS.filter(t => tiersEnabled[t]).map(t => {
+                const tierItemCount = lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(t))).length;
+                const addedItems = lineItems.filter(li => !li.is_upgrade && li.tier === t);
+                const isBest = t === TIERS.filter(tt => tiersEnabled[tt]).slice(-1)[0];
+                return (
                 <div key={t} onClick={() => setSelectedTier(t)} style={{ flex: 1, minWidth: 200, padding: 24, borderRadius: 16, border: selectedTier === t ? `3px solid ${TIER_COLORS[t]}` : "2px solid #e5e7eb", cursor: "pointer", textAlign: "center", background: selectedTier === t ? TIER_COLORS[t] + "08" : "#fff", transition: "all .2s", position: "relative" }}>
                   {selectedTier === t && <div style={{ position: "absolute", top: -12, left: "50%", transform: "translateX(-50%)", background: TIER_COLORS[t], color: "#fff", fontSize: 10, fontWeight: 800, padding: "3px 12px", borderRadius: 10, textTransform: "uppercase" }}>Selected</div>}
+                  {isBest && <div style={{ position: "absolute", top: -12, right: 12, background: "#F59E0B", color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 8 }}>BEST VALUE</div>}
                   <div style={{ fontSize: 14, fontWeight: 800, color: TIER_COLORS[t], textTransform: "uppercase", marginBottom: 8 }}>{TIER_LABELS[t]}</div>
                   <div style={{ fontSize: 32, fontWeight: 900, fontFamily: "'IBM Plex Mono', monospace", color: TIER_COLORS[t] }}>{fmt$(tierTotal(t))}</div>
-                  <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>{lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(t))).length} items included</div>
+                  <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>{tierItemCount} items included</div>
+                  {addedItems.length > 0 && <div style={{ fontSize: 11, color: TIER_COLORS[t], marginTop: 8, borderTop: "1px solid #eee", paddingTop: 8, textAlign: "left" }}>
+                    <div style={{ fontWeight: 700, fontSize: 10, marginBottom: 4 }}>Adds:</div>
+                    {addedItems.slice(0, 4).map((li, i) => <div key={i} style={{ fontSize: 11, padding: "2px 0" }}>+ {li.description}</div>)}
+                    {addedItems.length > 4 && <div style={{ fontSize: 10, color: "#999" }}>+ {addedItems.length - 4} more</div>}
+                  </div>}
                 </div>
-              ))}
+              );})}
             </div>
             {/* Optional Upgrades */}
             {lineItems.filter(li => li.is_upgrade).length > 0 && (
@@ -4441,11 +4536,18 @@ function QuotePublicView({ quoteId, isPreview }) {
             )}
 
             {/* Grand Total */}
-            <div style={{ padding: 20, background: NAVY, borderRadius: 14, color: "#fff", textAlign: "center" }}>
-              <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".1em", opacity: 0.7, marginBottom: 8 }}>Your Investment</div>
-              <div style={{ fontSize: 40, fontWeight: 900, fontFamily: "'IBM Plex Mono', monospace" }}>{fmt$(grandTotal)}</div>
-              <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>{TIER_LABELS[selectedTier]} Package{selectedUpgradesTotal > 0 ? ` + ${fmt$(selectedUpgradesTotal)} upgrades` : ""}</div>
+            <div style={{ padding: 24, background: `linear-gradient(135deg, ${NAVY}, #2d4a7a)`, borderRadius: 16, color: "#fff", textAlign: "center", boxShadow: "0 4px 20px rgba(27,42,74,0.3)" }}>
+              <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".15em", opacity: 0.7, marginBottom: 8 }}>Your Investment</div>
+              <div style={{ fontSize: 44, fontWeight: 900, fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "-0.02em" }}>{fmt$(grandTotal)}</div>
+              <div style={{ fontSize: 13, opacity: 0.7, marginTop: 8 }}>{TIER_LABELS[selectedTier]} Package{selectedUpgradesTotal > 0 ? ` + ${fmt$(selectedUpgradesTotal)} in upgrades` : ""}</div>
             </div>
+            {/* Customer Comment */}
+            {!isPreview && !signed && (
+              <div style={{ marginTop: 16, padding: 16, background: "#f8f9fa", borderRadius: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>Comments or Special Requests (optional)</div>
+                <textarea id="customer-comment" placeholder="Any notes or special requests for your project..." style={{ width: "100%", padding: "10px 14px", border: "1px solid #ddd", borderRadius: 8, fontSize: 14, outline: "none", resize: "vertical", minHeight: 60, fontFamily: "'Barlow', sans-serif" }} />
+              </div>
+            )}
           </div>
         )}
 
@@ -4455,9 +4557,16 @@ function QuotePublicView({ quoteId, isPreview }) {
             <h2 style={{ fontSize: 24, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 20 }}>{cs.title}</h2>
             {signed ? (
               <div style={{ textAlign: "center", padding: 40 }}>
-                <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "#059669" }}>Quote Signed!</div>
-                <div style={{ fontSize: 14, color: "#666", marginTop: 8 }}>Thank you for choosing Roof USA. We'll be in touch shortly.</div>
+                <div style={{ fontSize: 64, marginBottom: 16 }}>🎉</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: "#059669", fontFamily: "'Barlow Condensed', sans-serif" }}>You're All Set!</div>
+                <div style={{ fontSize: 15, color: "#666", marginTop: 12, lineHeight: 1.6 }}>Thank you for choosing Roof USA, {quote.customer_name}!</div>
+                <div style={{ marginTop: 20, padding: 16, background: "#f0fdf4", borderRadius: 12, display: "inline-block" }}>
+                  <div style={{ fontSize: 12, color: "#166534", fontWeight: 700, marginBottom: 4 }}>WHAT HAPPENS NEXT</div>
+                  <div style={{ fontSize: 14, color: "#333", lineHeight: 1.7 }}>
+                    Our team has been notified and will contact you<br/>within 1 business day to schedule your project.
+                  </div>
+                </div>
+                {quote.customer_email && <div style={{ marginTop: 16, fontSize: 12, color: "#999" }}>A confirmation has been sent to {quote.customer_email}</div>}
               </div>
             ) : (
               <div>
@@ -4477,6 +4586,12 @@ function QuotePublicView({ quoteId, isPreview }) {
                   <div style={{ fontSize: 13, fontWeight: 700, color: NAVY, marginBottom: 12 }}>Type your full legal name to sign</div>
                   <input value={sigName} onChange={e => setSigName(e.target.value)} placeholder="Your full name..." style={{ width: "100%", maxWidth: 400, padding: "16px 20px", fontSize: 20, fontFamily: "'Dancing Script', cursive", textAlign: "center", border: `2px solid ${C.brd}`, borderRadius: 12, outline: "none", background: "#fffef5" }} />
                   {sigName && <div style={{ marginTop: 12, fontFamily: "'Dancing Script', cursive", fontSize: 36, color: NAVY }}>{sigName}</div>}
+                  {/* Second signer (optional) */}
+                  <details style={{ marginTop: 16, textAlign: "left", maxWidth: 400, marginLeft: "auto", marginRight: "auto" }}>
+                    <summary style={{ fontSize: 12, color: "#999", cursor: "pointer" }}>Add second signer (optional)</summary>
+                    <input value={sigName2} onChange={e => setSigName2(e.target.value)} placeholder="Second signer's full name..." style={{ width: "100%", padding: "12px 16px", fontSize: 16, fontFamily: "'Dancing Script', cursive", textAlign: "center", border: `1px solid ${C.brd}`, borderRadius: 10, outline: "none", marginTop: 8, background: "#fffef5" }} />
+                    {sigName2 && <div style={{ marginTop: 8, fontFamily: "'Dancing Script', cursive", fontSize: 24, color: NAVY, textAlign: "center" }}>{sigName2}</div>}
+                  </details>
                   <button onClick={handleSign} disabled={!sigName.trim() || isPreview} style={{ ...bP, marginTop: 20, padding: "14px 40px", fontSize: 16, borderRadius: 12, background: sigName.trim() ? "#059669" : "#ccc", opacity: isPreview ? 0.5 : 1 }}>
                     {isPreview ? "Signing disabled in preview" : "Sign & Authorize"}
                   </button>
@@ -4556,9 +4671,14 @@ function QuotePublicView({ quoteId, isPreview }) {
 
       {/* Navigation */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderTop: "1px solid #eee", maxWidth: 800, margin: "0 auto" }}>
-        <button onClick={() => setCurrentSlide(Math.max(0, currentSlide - 1))} disabled={currentSlide === 0} style={{ ...bS, borderRadius: 10, padding: "10px 20px", opacity: currentSlide === 0 ? 0.3 : 1 }}>← Previous</button>
-        <span style={{ fontSize: 12, color: "#999" }}>{currentSlide + 1} of {slides.length}</span>
-        <button onClick={() => setCurrentSlide(Math.min(slides.length - 1, currentSlide + 1))} disabled={currentSlide === slides.length - 1} style={{ ...bP, borderRadius: 10, padding: "10px 20px", opacity: currentSlide === slides.length - 1 ? 0.3 : 1 }}>Next →</button>
+        <button onClick={() => setCurrentSlide(Math.max(0, currentSlide - 1))} disabled={currentSlide === 0} style={{ background: "transparent", border: `1px solid ${currentSlide === 0 ? "#eee" : "#ddd"}`, borderRadius: 10, padding: "12px 24px", fontSize: 14, fontWeight: 600, cursor: currentSlide === 0 ? "default" : "pointer", color: currentSlide === 0 ? "#ccc" : "#333", fontFamily: "'Barlow', sans-serif" }}>← Previous</button>
+        {currentSlide === slides.length - 1 && slides[currentSlide]?.slide_type !== "signature" ? (
+          <span style={{ fontSize: 12, color: "#999" }}>Last slide</span>
+        ) : (
+          <button onClick={() => setCurrentSlide(Math.min(slides.length - 1, currentSlide + 1))} disabled={currentSlide === slides.length - 1} style={{ background: currentSlide === slides.length - 1 ? "#ccc" : RED, color: "#fff", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: currentSlide === slides.length - 1 ? "default" : "pointer", fontFamily: "'Barlow', sans-serif", boxShadow: currentSlide < slides.length - 1 ? "0 2px 8px rgba(178,34,52,0.3)" : "none" }}>
+            {currentSlide === slides.length - 2 && slides[slides.length - 1]?.slide_type === "signature" ? "Review & Sign →" : "Next →"}
+          </button>
+        )}
       </div>
 
       {/* Footer */}
