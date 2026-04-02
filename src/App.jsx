@@ -3260,7 +3260,6 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <Search size={14} style={{ position: "absolute", left: 12, top: 12, color: C.t2 }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search quotes..." style={{ ...inp, paddingLeft: 34, borderRadius: 10 }} />
           </div>
-          </div>
         </div>
         {loading ? <div style={{ textAlign: "center", padding: 40, color: C.t2 }}>Loading quotes...</div> :
           filtered.length === 0 ? <Empty msg={quotes.length === 0 ? "No quotes yet. Create your first quote!" : "No quotes match this filter."} /> :
