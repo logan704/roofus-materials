@@ -1,7 +1,7 @@
 var https = require("https");
 var SB_HOST = "bygvyzknybizrvvhdmdt.supabase.co";
 var SB_KEY = process.env.VITE_SUPABASE_ANON_KEY || "";
-var REDIR = "https://roofus-materials-logan-9759s-projects.vercel.app/api/hover?action=callback";
+var REDIR = "https://roofus-materials-logan-9759s-projects.vercel.app/api/hover-callback";
 
 function hr(opts, pd) {
   return new Promise(function(ok, no) {
