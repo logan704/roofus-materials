@@ -3726,10 +3726,28 @@ function QuoteBuilder({ user, isA, isM, items }) {
                     </Rw>
                     <Fld label="House Photo">
                       {!activeSlide.content?.housePhoto && q.customer_address && (
-                        <button onClick={() => {
-                          const addr = encodeURIComponent(q.customer_address);
-                          const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${addr}&key=AIzaSyBbBi7zzfw4RQhjSrflMnbf2Np_LrOLweY`;
-                          const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: svUrl, photoSource: "streetview" } }; setSlides(ns);
+                        <button onClick={async () => {
+                          try {
+                            const addr = encodeURIComponent(q.customer_address);
+                            const svUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${addr}&key=AIzaSyBbBi7zzfw4RQhjSrflMnbf2Np_LrOLweY`;
+                            // Try loading as img to verify it works
+                            const img = new window.Image();
+                            img.crossOrigin = "anonymous";
+                            img.onload = () => {
+                              const canvas = document.createElement("canvas");
+                              canvas.width = img.width; canvas.height = img.height;
+                              canvas.getContext("2d").drawImage(img, 0, 0);
+                              try {
+                                const b64 = canvas.toDataURL("image/jpeg", 0.8);
+                                const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: b64 } }; setSlides(ns);
+                              } catch {
+                                // CORS blocked canvas - use URL directly
+                                const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: svUrl } }; setSlides(ns);
+                              }
+                            };
+                            img.onerror = () => { alert("Could not load Street View image. The address may not have coverage, or try uploading manually."); };
+                            img.src = svUrl;
+                          } catch { alert("Failed to load Street View. Try uploading a photo manually."); }
                         }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, marginBottom: 10, width: "100%" }}>
                           <Image size={14} /> Load from Google Street View
                         </button>
