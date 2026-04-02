@@ -3216,37 +3216,66 @@ function QuoteBuilder({ user, isA, isM, items }) {
   if (view === "list") {
     const filtered = quotes.filter(qt => {
       if (statusFilter !== "all" && qt.status !== statusFilter) return false;
-      if (search && !qt.customer_name?.toLowerCase().includes(search.toLowerCase()) && !qt.jn_job_name?.toLowerCase().includes(search.toLowerCase())) return false;
+      const jnName = (qt.settings || {}).jn_job_name || "";
+      if (search && !qt.customer_name?.toLowerCase().includes(search.toLowerCase()) && !jnName.toLowerCase().includes(search.toLowerCase()) && !(qt.address || "").toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
+    const draftCt = quotes.filter(q => q.status === "draft").length;
+    const sentCt = quotes.filter(q => q.status === "sent").length;
+    const viewedCt = quotes.filter(q => q.status === "viewed").length;
+    const signedCt = quotes.filter(q => q.status === "signed").length;
+    const signedTotal = quotes.filter(q => q.status === "signed").reduce((s, q) => s + (q.total_price || 0), 0);
     return (
       <div className="fu">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
           <h2 style={{ fontSize: 22, fontWeight: 900, fontFamily: BC }}>Quotes</h2>
           <button onClick={() => setShowNew(true)} style={{ ...bP, borderRadius: 12, padding: "12px 20px" }}><Plus size={16} /> New Quote</button>
         </div>
+        {/* Stats */}
+        {quotes.length > 0 && <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+          <div style={{ ...crd, flex: "1 1 120px", minWidth: 100, padding: 14, borderRadius: 12, cursor: "pointer", background: statusFilter === "draft" ? C.sf : C.card }} onClick={() => setStatusFilter(statusFilter === "draft" ? "all" : "draft")}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.wrn, textTransform: "uppercase" }}>Drafts</div>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: MN }}>{draftCt}</div>
+          </div>
+          <div style={{ ...crd, flex: "1 1 120px", minWidth: 100, padding: 14, borderRadius: 12, cursor: "pointer", background: statusFilter === "sent" ? C.sf : C.card }} onClick={() => setStatusFilter(statusFilter === "sent" ? "all" : "sent")}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#2563EB", textTransform: "uppercase" }}>Sent</div>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: MN }}>{sentCt}</div>
+          </div>
+          <div style={{ ...crd, flex: "1 1 120px", minWidth: 100, padding: 14, borderRadius: 12, cursor: "pointer", background: statusFilter === "viewed" ? C.sf : C.card }} onClick={() => setStatusFilter(statusFilter === "viewed" ? "all" : "viewed")}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#7C3AED", textTransform: "uppercase" }}>Viewed</div>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: MN }}>{viewedCt}</div>
+          </div>
+          <div style={{ ...crd, flex: "1 1 120px", minWidth: 100, padding: 14, borderRadius: 12, cursor: "pointer", background: statusFilter === "signed" ? C.sf : C.card }} onClick={() => setStatusFilter(statusFilter === "signed" ? "all" : "signed")}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.grn, textTransform: "uppercase" }}>Signed</div>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: MN }}>{signedCt}</div>
+            {signedTotal > 0 && <div style={{ fontSize: 10, color: C.grn, marginTop: 2 }}>{fmt$(signedTotal)}</div>}
+          </div>
+        </div>}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
             <Search size={14} style={{ position: "absolute", left: 12, top: 12, color: C.t2 }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search quotes..." style={{ ...inp, paddingLeft: 34, borderRadius: 10 }} />
           </div>
-          {["all", "draft", "sent", "viewed", "signed"].map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, background: statusFilter === s ? C.sf : "transparent", color: statusFilter === s ? C.ac : C.t2, border: statusFilter === s ? `1px solid ${C.ac}30` : `1px solid ${C.brd}` }}>{s.charAt(0).toUpperCase() + s.slice(1)}</button>
-          ))}
+          </div>
         </div>
         {loading ? <div style={{ textAlign: "center", padding: 40, color: C.t2 }}>Loading quotes...</div> :
-          filtered.length === 0 ? <Empty msg="No quotes yet. Create your first quote!" /> :
+          filtered.length === 0 ? <Empty msg={quotes.length === 0 ? "No quotes yet. Create your first quote!" : "No quotes match this filter."} /> :
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {filtered.map(qt => {
               const statusColors = { draft: { bg: "#E6A81722", c: C.wrn }, sent: { bg: "#2563EB22", c: "#2563EB" }, viewed: { bg: "#7C3AED22", c: "#7C3AED" }, signed: { bg: "#27AE6022", c: C.grn } };
               const sc = statusColors[qt.status] || statusColors.draft;
+              const daysLeft = qt.expiration_date ? Math.ceil((new Date(qt.expiration_date) - new Date()) / 86400000) : null;
+              const expired = daysLeft !== null && daysLeft <= 0 && qt.status !== "signed";
               return (
-                <div key={qt.id} style={{ ...crd, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", borderRadius: 14, gap: 12, flexWrap: "wrap" }} onClick={() => openQuote(qt)}>
+                <div key={qt.id} style={{ ...crd, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", borderRadius: 14, gap: 12, flexWrap: "wrap", opacity: expired ? 0.6 : 1 }} onClick={() => openQuote(qt)}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 800, fontSize: 15 }}>{qt.customer_name || "Untitled"}</div>
-                    <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{(qt.settings || {}).jn_job_name || qt.address || "No job linked"} · {fD(qt.created_at)}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15 }}>{qt.customer_name || "Untitled"} {expired && <span style={{ fontSize: 10, color: C.red, fontWeight: 700 }}>EXPIRED</span>}</div>
+                    <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>
+                      {(qt.settings || {}).jn_job_name || qt.address || "No job linked"} · {fD(qt.created_at)}
+                      {daysLeft !== null && daysLeft > 0 && daysLeft <= 7 && qt.status !== "signed" && <span style={{ color: C.wrn, marginLeft: 8 }}>· {daysLeft}d left</span>}
+                    </div>
                   </div>
-                  {qt.total_price > 0 && <div style={{ fontFamily: MN, fontWeight: 800, fontSize: 16, color: C.grn, marginRight: 12 }}>{fmt$(qt.total_price)}</div>}
+                  {qt.total_price > 0 && <div style={{ fontFamily: MN, fontWeight: 800, fontSize: 16, color: qt.status === "signed" ? C.grn : C.txt, marginRight: 12 }}>{fmt$(qt.total_price)}</div>}
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4, textTransform: "uppercase", background: sc.bg, color: sc.c }}>{qt.status}</span>
                     <button onClick={e => { e.stopPropagation(); duplicateQuote(qt); }} title="Duplicate" style={{ ...bS, padding: "6px 10px", borderRadius: 8 }}><Copy size={14} /></button>
@@ -3334,6 +3363,13 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <button onClick={sendQuote} disabled={sending || (!q.customer_phone && !q.customer_email)} style={{ ...bP, borderRadius: 10, background: "#2563EB", opacity: (!q.customer_phone && !q.customer_email) ? 0.5 : 1 }}>{sending ? "Sending..." : "Send Quote"}</button>
           </div>
         </Modal>
+
+        {/* Signed Quote Banner */}
+        {q.status === "signed" && <div style={{ padding: "12px 16px", background: "#D1FAE5", borderRadius: 12, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 20 }}>✅</span>
+          <div><div style={{ fontWeight: 800, color: C.grn, fontSize: 14 }}>This quote has been signed</div>
+          <div style={{ fontSize: 12, color: "#166534" }}>Signed by {(q.settings?.signature?.name) || "customer"} on {q.settings?.signature?.timestamp ? fD(q.settings.signature.timestamp) : "—"} · {fmt$(q.total_price || q.settings?.signature?.total || 0)}</div></div>
+        </div>}
 
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
           {/* Left: Slide List */}
@@ -3822,6 +3858,28 @@ function QuotePublicView({ quoteId, isPreview }) {
       settings: { ...(quote.settings || {}), signature: sigData, selected_tier: selectedTier, selected_upgrades: selectedUpgrades },
     });
     await sbPost("quote_tracking", { quote_id: quote.id, event_type: "signed", timestamp: new Date().toISOString(), user_agent: navigator.userAgent, metadata: sigData });
+    // Generate signed quote HTML and upload to JN
+    if (quote.jn_job_id) {
+      try {
+        const tierItems = lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(selectedTier)));
+        const upgradeList = Object.keys(selectedUpgrades).filter(k => selectedUpgrades[k]).map(k => lineItems[k]).filter(Boolean);
+        const rows = [...tierItems, ...upgradeList].map(li => `<tr><td style="padding:6px;border-bottom:1px solid #ddd">${li.description}${li.is_upgrade ? ' <span style="color:#D4870E;font-size:10px">(UPGRADE)</span>' : ''}</td><td style="padding:6px;border-bottom:1px solid #ddd;text-align:center">${li.qty}</td><td style="padding:6px;border-bottom:1px solid #ddd;text-align:right;font-weight:700">${fmt$(li.qty * li.unit_price)}</td></tr>`).join("");
+        const html = `<!DOCTYPE html><html><head><title>Signed Quote - ${quote.customer_name}</title><style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;color:#666}td{padding:6px;border-bottom:1px solid #ddd}.r{text-align:right}</style></head><body>` +
+          `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234"><div><div style="font-size:24px;font-weight:900">ROOF<span style="color:#B22234">USA</span></div><div style="font-size:10px;color:#666;margin-top:2px">Construction, LLC · Columbia, MO</div></div><div style="text-align:right"><div style="font-weight:800;font-size:13px;color:#1B2A4A">SIGNED QUOTE</div><div style="margin-top:3px;font-size:11px;color:#666">Date: ${fD(sigData.timestamp)}</div></div></div>` +
+          `<div style="margin-bottom:16px"><strong>Customer:</strong> ${quote.customer_name}<br><strong>Address:</strong> ${quote.address || "—"}<br><strong>Package:</strong> ${TIER_LABELS[selectedTier]}</div>` +
+          `<table><thead><tr><th>Description</th><th style="text-align:center">Qty</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>` +
+          `<div style="margin-top:14px;padding:12px;background:#1B2A4A;color:#fff;border-radius:5px;display:flex;justify-content:space-between;font-size:16px;font-weight:800"><span>Total:</span><span>${fmt$(grandTotal)}</span></div>` +
+          `<div style="margin-top:30px;padding:20px;border:2px solid #1B2A4A;border-radius:8px"><div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:8px">Electronic Signature</div>` +
+          `<div style="font-family:cursive;font-size:28px;color:#1B2A4A;margin-bottom:8px">${sigName}</div>` +
+          `<div style="font-size:10px;color:#999">Signed: ${new Date(sigData.timestamp).toLocaleString()} | Agent: ${navigator.userAgent.slice(0, 60)}</div></div>` +
+          `<div style="margin-top:30px;text-align:center;font-size:8px;color:#bbb">Roof USA · Roofus Construction, LLC · Columbia, MO</div></body></html>`;
+        const fileName = `Signed Quote - ${quote.customer_name.replace(/[^a-zA-Z0-9-_ ]/g, "")}.html`;
+        await fetch("/api/jn?action=upload", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName, htmlContent: html, relatedId: quote.jn_job_id, jobName: quote.customer_name, jobAddress: quote.address || "" }),
+        });
+      } catch (e) { console.error("JN upload error:", e); }
+    }
     // Notify Logan via SMS
     try {
       await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" },
