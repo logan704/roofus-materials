@@ -330,9 +330,23 @@ export default function App() {
   const [templates, setTemplates] = useState([]);
   const [shrinkLog, setShrinkLog] = useState([]);
   const [trackedJobs, setTrackedJobs] = useState([]);
+  // Check for Hover OAuth callback
+  useEffect(() => {
+    if (window.location.search.includes("hover=connected")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
   // Public quote URL detection
   const [publicQuoteId, setPublicQuoteId] = useState(null);
-  useEffect(() => { const m = window.location.pathname.match(/^\/quote\/(.+)/); if (m) setPublicQuoteId(m[1]); }, []);
+  useEffect(() => {
+    const m = window.location.pathname.match(/^\/quote\/(.+)/);
+    if (m) setPublicQuoteId(m[1]);
+    // Check for Hover OAuth callback
+    if (window.location.search.includes("hover=connected")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   const [pg, setPg] = useState("home");
   const [vOrd, setVOrd] = useState(null);
@@ -2893,15 +2907,56 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [tplName, setTplName] = useState("");
   const [showSidePanel, setShowSidePanel] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [hoverConnected, setHoverConnected] = useState(false);
+  const [hoverJobs, setHoverJobs] = useState([]);
+  const [hoverSearch, setHoverSearch] = useState("");
+  const [showHover, setShowHover] = useState(false);
+  const [hoverLoading, setHoverLoading] = useState(false);
+  const [hoverDesigns, setHoverDesigns] = useState([]);
+  const [hoverPhotos, setHoverPhotos] = useState([]);
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingFor, setRecordingFor] = useState(null); // slide index or "whole"
+
+  // Hover integration
+  const [hoverConnected, setHoverConnected] = useState(false);
+  const [hoverJobs, setHoverJobs] = useState([]);
+  const [hoverSearch, setHoverSearch] = useState("");
+  const [showHoverModal, setShowHoverModal] = useState(false);
+  const [hoverLoading, setHoverLoading] = useState(false);
+  const [hoverPhotos, setHoverPhotos] = useState([]);
+  const [hoverDesigns, setHoverDesigns] = useState([]);
+  const [selectedHoverJob, setSelectedHoverJob] = useState(null);
   const [activity, setActivity] = useState([]);
   const [showActivity, setShowActivity] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [showQuestions, setShowQuestions] = useState(false);
   const [listView, setListView] = useState("quotes"); // quotes, analytics
 
-  useEffect(() => { loadQuotes(); loadJnJobs(); loadTemplates(); }, []);
+  useEffect(() => { loadQuotes(); loadJnJobs(); loadTemplates(); checkHover(); }, []);
+
+  async function checkHover() {
+    try { const r = await fetch("/api/hover?action=status"); const d = await r.json(); setHoverConnected(d.connected); } catch { setHoverConnected(false); }
+  }
+  async function connectHover() {
+    try { const r = await fetch("/api/hover?action=auth_url"); const d = await r.json(); if (d.url) window.location.href = d.url; } catch { alert("Failed to start Hover connection"); }
+  }
+  async function searchHoverJobs(query) {
+    setHoverLoading(true);
+    try { const r = await fetch(`/api/hover?action=jobs&search=${encodeURIComponent(query)}`); const d = await r.json(); setHoverJobs(d.results || d.jobs || []); } catch { setHoverJobs([]); }
+    setHoverLoading(false);
+  }
+  async function loadHoverJobData(jobId) {
+    setHoverLoading(true);
+    try {
+      const [photosRes, designsRes] = await Promise.all([
+        fetch(`/api/hover?action=photos&id=${jobId}`).then(r => r.json()),
+        fetch(`/api/hover?action=instant_designs&id=${jobId}`).then(r => r.json()),
+      ]);
+      setHoverPhotos(photosRes.results || photosRes.photos || photosRes || []);
+      setHoverDesigns(designsRes.results || designsRes.instant_design_images || designsRes || []);
+    } catch { setHoverPhotos([]); setHoverDesigns([]); }
+    setHoverLoading(false);
+  }
 
   async function loadActivity(quoteId) {
     const data = await sbGet("quote_tracking", `quote_id=eq.${quoteId}&order=timestamp.desc`);
@@ -3612,7 +3667,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <button onClick={async () => { await saveAll(); await loadQuotes(); setView("list"); }} style={{ ...bS, padding: "8px 12px", borderRadius: 10 }}><ArrowLeft size={16} /></button>
             <div>
               <h2 style={{ fontSize: 18, fontWeight: 900, fontFamily: BC }}>{q.customer_name}</h2>
-              <div style={{ fontSize: 11, color: C.t2 }}>{q.jn_job_name || q.customer_address || "No job linked"} · {slides.length} slides · {lineItems.length} items{tierTotal("best") > 0 ? ` · ${fmt$(tierTotal("best"))}` : ""}</div>
+              <div style={{ fontSize: 11, color: C.t2 }}>{q.jn_job_name || q.customer_address || "No job linked"} · {slides.length} slides · {lineItems.length} items{tierTotal("best") > 0 ? ` · ${fmt$(tierTotal("best"))}` : ""}{hoverConnected ? " · 📐 Hover" : ""}</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -3629,6 +3684,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <button onClick={saveAll} style={{ ...bP, borderRadius: 10, padding: "8px 14px", fontSize: 12 }} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
           </div>
         </div>
+        {/* Hover Connection Status */}
+        {!hoverConnected && <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", background: "#EEF6FF", borderRadius: 10, marginBottom: 12, fontSize: 12 }}>
+          <span>🏠</span>
+          <span style={{ flex: 1, color: "#2563EB" }}>Connect Hover to import property photos and AI visualizations</span>
+          <button onClick={connectHover} style={{ ...bP, padding: "6px 14px", fontSize: 11, borderRadius: 8, background: "#2563EB" }}>Connect Hover</button>
+        </div>}
 
         {/* Send Quote Modal */}
         <Modal open={showSend} onClose={() => setShowSend(false)} title="Send Quote">
@@ -3643,6 +3704,172 @@ function QuoteBuilder({ user, isA, isM, items }) {
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button onClick={() => setShowSend(false)} style={bS}>Cancel</button>
             <button onClick={sendQuote} disabled={sending || (!q.customer_phone && !q.customer_email)} style={{ ...bP, borderRadius: 10, background: "#2563EB", opacity: (!q.customer_phone && !q.customer_email) ? 0.5 : 1 }}>{sending ? "Sending..." : "Send Quote"}</button>
+          </div>
+        </Modal>
+
+        {/* Hover Import Modal */}
+        <Modal open={showHoverModal} onClose={() => { setShowHoverModal(false); setSelectedHoverJob(null); setHoverPhotos([]); setHoverDesigns([]); }} title={selectedHoverJob ? "Hover: " + (selectedHoverJob.name || "Job") : "Import from Hover"} wide>
+          {!selectedHoverJob ? (
+            <div>
+              <div style={{ position: "relative", marginBottom: 16 }}>
+                <Search size={14} style={{ position: "absolute", left: 12, top: 12, color: C.t2 }} />
+                <input value={hoverSearch} onChange={e => setHoverSearch(e.target.value)} onKeyDown={e => { if (e.key === "Enter") searchHoverJobs(hoverSearch); }} placeholder="Search Hover jobs by address..." style={{ ...inp, paddingLeft: 34, borderRadius: 10 }} />
+              </div>
+              {hoverLoading ? <div style={{ textAlign: "center", padding: 30, color: C.t2 }}>Loading Hover jobs...</div> :
+                hoverJobs.length === 0 ? <div style={{ textAlign: "center", padding: 30, color: C.t2 }}>Search for a property address to find Hover jobs</div> :
+                <div style={{ maxHeight: 400, overflow: "auto" }}>
+                  {hoverJobs.map(job => (
+                    <div key={job.id} onClick={() => { setSelectedHoverJob(job); loadHoverJobData(job.id); }} style={{ ...crd, marginBottom: 8, cursor: "pointer", borderRadius: 10, padding: 14 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>{job.name || job.location_line_1 || "Unnamed Job"}</div>
+                      <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>
+                        {[job.location_line_1, job.location_city, job.location_region].filter(Boolean).join(", ")}
+                        {job.state && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: job.state === "complete" ? C.grn : C.wrn, textTransform: "uppercase" }}>{job.state}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              }
+            </div>
+          ) : (
+            <div>
+              <button onClick={() => { setSelectedHoverJob(null); setHoverPhotos([]); setHoverDesigns([]); }} style={{ ...bS, borderRadius: 8, padding: "6px 12px", fontSize: 11, marginBottom: 16 }}><ArrowLeft size={12} /> Back to Jobs</button>
+
+              {/* Instant Designs */}
+              {hoverDesigns.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ ...lbl, color: "#2563EB" }}>🎨 Instant Design Visualizations</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
+                    {hoverDesigns.map((design, i) => (
+                      <div key={i} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: `2px solid ${C.brd}`, cursor: "pointer" }}
+                        onClick={() => {
+                          const imgUrl = design.image_url || design.url || design.src;
+                          if (imgUrl && slides[asi]) {
+                            const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: imgUrl } }; setSlides(ns);
+                            setShowHoverModal(false); setSelectedHoverJob(null);
+                          }
+                        }}>
+                        <img src={design.image_url || design.url || design.thumbnail_url || ""} alt="" style={{ width: "100%", height: 130, objectFit: "cover" }} />
+                        <div style={{ padding: "6px 8px", background: "#EEF6FF", fontSize: 10, fontWeight: 600, color: "#2563EB" }}>
+                          {design.name || design.style || "AI Visualization"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Property Photos */}
+              {hoverLoading ? <div style={{ textAlign: "center", padding: 20, color: C.t2 }}>Loading photos...</div> :
+                hoverPhotos.length > 0 ? (
+                <div>
+                  <div style={lbl}>📸 Property Photos</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                    {hoverPhotos.map((photo, i) => {
+                      const imgUrl = photo.image_url || photo.url || photo.src || photo.thumbnail_url;
+                      if (!imgUrl) return null;
+                      return (
+                        <div key={i} style={{ borderRadius: 8, overflow: "hidden", border: `1px solid ${C.brd}`, cursor: "pointer" }}
+                          onClick={() => {
+                            if (slides[asi]?.slide_type === "photos") {
+                              // Add to photos array
+                              const currentPhotos = slides[asi].content?.photos || [];
+                              const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, photos: [...currentPhotos, { src: imgUrl, caption: photo.label || "", id: uid() }] } }; setSlides(ns);
+                            } else {
+                              // Set as house photo
+                              const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: imgUrl } }; setSlides(ns);
+                              setShowHoverModal(false); setSelectedHoverJob(null);
+                            }
+                          }}>
+                          <img src={imgUrl} alt="" style={{ width: "100%", height: 100, objectFit: "cover" }} />
+                          {photo.label && <div style={{ padding: "4px 6px", fontSize: 9, color: C.t2 }}>{photo.label}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.t2, marginTop: 8 }}>
+                    {slides[asi]?.slide_type === "photos" ? "Click photos to add them to the inspection gallery" : "Click a photo to use as house image"}
+                  </div>
+                </div>
+              ) : <div style={{ textAlign: "center", padding: 20, color: C.t2 }}>No photos found for this job</div>}
+            </div>
+          )}
+        </Modal>
+
+        {/* Hover Browser Modal */}
+        <Modal open={showHover} onClose={() => setShowHover(false)} title="Hover — Pull Photos & Designs" wide>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <div style={{ position: "relative", flex: 1 }}>
+                <Search size={14} style={{ position: "absolute", left: 10, top: 11, color: C.t2 }} />
+                <input value={hoverSearch} onChange={e => setHoverSearch(e.target.value)} onKeyDown={e => e.key === "Enter" && searchHoverJobs(hoverSearch)} placeholder="Search Hover jobs by address..." style={{ ...inp, paddingLeft: 32, borderRadius: 10, fontSize: 13 }} />
+              </div>
+              <button onClick={() => searchHoverJobs(hoverSearch)} style={{ ...bP, borderRadius: 10, padding: "8px 16px", fontSize: 12 }}>Search</button>
+            </div>
+            {hoverLoading && <div style={{ textAlign: "center", padding: 20, color: C.t2 }}>Loading from Hover...</div>}
+
+            {/* Job Results */}
+            {hoverJobs.length > 0 && !hoverPhotos.length && !hoverDesigns.length && (
+              <div>
+                <div style={lbl}>Hover Jobs</div>
+                {hoverJobs.map(job => (
+                  <div key={job.id} style={{ ...crd, borderRadius: 10, padding: 12, marginBottom: 8, cursor: "pointer" }} onClick={() => { loadHoverPhotos(job.id); loadHoverDesigns(job.id); }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{job.name || job.location_line_1 || "Job"}</div>
+                    <div style={{ fontSize: 11, color: C.t2 }}>{job.location_line_1}{job.location_city ? `, ${job.location_city}` : ""} · {job.state || ""}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Photos */}
+            {hoverPhotos.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={lbl}>Property Photos ({hoverPhotos.length})</span>
+                  <button onClick={() => { setHoverPhotos([]); setHoverDesigns([]); }} style={{ ...bS, padding: "3px 8px", fontSize: 10, borderRadius: 6 }}>← Back</button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                  {hoverPhotos.slice(0, 20).map((photo, i) => {
+                    const url = photo.url || photo.image_url || photo.original_url || "";
+                    if (!url) return null;
+                    return (
+                      <div key={i} style={{ borderRadius: 8, overflow: "hidden", border: `1px solid ${C.brd}`, cursor: "pointer" }} onClick={() => {
+                        const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: url } }; setSlides(ns); setShowHover(false);
+                      }}>
+                        <img src={url} alt="" style={{ width: "100%", height: 100, objectFit: "cover" }} />
+                        <div style={{ padding: "4px 6px", fontSize: 9, color: C.t2 }}>Click to use</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Instant Designs */}
+            {hoverDesigns.length > 0 && (
+              <div>
+                <div style={lbl}>Instant Design Renders ({hoverDesigns.length})</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+                  {hoverDesigns.map((design, i) => {
+                    const url = design.url || design.image_url || design.original_url || "";
+                    if (!url) return null;
+                    return (
+                      <div key={i} style={{ borderRadius: 10, overflow: "hidden", border: `2px solid #4F46E540`, cursor: "pointer", background: "#F5F3FF" }} onClick={() => {
+                        const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: url } }; setSlides(ns); setShowHover(false);
+                      }}>
+                        <img src={url} alt="" style={{ width: "100%", height: 130, objectFit: "cover" }} />
+                        <div style={{ padding: "6px 8px", fontSize: 10, color: "#4F46E5", fontWeight: 600 }}>Instant Design · Click to use</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {!hoverLoading && hoverJobs.length === 0 && !hoverPhotos.length && (
+              <div style={{ textAlign: "center", padding: 24, color: C.t2, fontSize: 13 }}>
+                Search for a property address to find Hover jobs, photos, and Instant Designs.
+              </div>
+            )}
           </div>
         </Modal>
 
@@ -3824,6 +4051,11 @@ function QuoteBuilder({ user, isA, isM, items }) {
                           <Image size={14} /> Load from Google Street View
                         </button>
                       )}
+                      {hoverConnected && !activeSlide.content?.housePhoto && (
+                        <button onClick={() => { setShowHoverModal(true); if (q.customer_address) searchHoverJobs(q.customer_address); }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, marginBottom: 10, width: "100%", background: "#EEF6FF", borderColor: "#2563EB40", color: "#2563EB" }}>
+                          🏠 Import from Hover
+                        </button>
+                      )}
                       {activeSlide.content?.housePhoto ? (
                         <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
                           <img src={activeSlide.content.housePhoto} alt="" style={{ width: "100%", maxHeight: 250, objectFit: "cover" }} />
@@ -3879,6 +4111,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
                         <Camera size={14} /> Upload Photos
                         <input type="file" accept="image/*" multiple onChange={addPhoto} style={{ display: "none" }} />
                       </label>
+                      {hoverConnected && <button onClick={() => { setShowHoverModal(true); if (q.customer_address) searchHoverJobs(q.customer_address); }} style={{ ...bS, borderRadius: 10, padding: "10px 16px", fontSize: 12, background: "#EEF6FF", borderColor: "#2563EB40", color: "#2563EB" }}>🏠 Import from Hover</button>}
                       <span style={{ fontSize: 11, color: C.t2, marginLeft: 8 }}>{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
                     </div>
                   );
