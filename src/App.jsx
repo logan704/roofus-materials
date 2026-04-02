@@ -2839,6 +2839,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
 const QUOTE_BASE_URL = typeof window !== "undefined" ? window.location.origin : "";
 const SLIDE_TYPES = [
   { type: "cover", label: "Cover Page", icon: "🏠" },
+  { type: "photos", label: "Inspection Photos", icon: "📸" },
   { type: "scope", label: "Scope of Work", icon: "📋" },
   { type: "comparison", label: "Product Comparison", icon: "⚖️" },
   { type: "pricing", label: "Pricing & Authorization", icon: "💰" },
@@ -3177,6 +3178,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
     if (type === "scope") content = { sections: [{ name: "Roofing", items: [] }] };
     else if (type === "signature") content = { terms: DEFAULT_TERMS };
     else if (type === "comparison") content = { products: [{ name: "Option A", features: ["Feature 1", "Feature 2"] }, { name: "Option B", features: ["Feature 1", "Feature 2"] }] };
+    else if (type === "photos") content = { photos: [], caption: "Here's what we found during our inspection of your roof." };
     else if (type === "valueadd" && preset && VALUEADD_PRESETS[preset]) {
       title = VALUEADD_PRESETS[preset].title;
       content = VALUEADD_PRESETS[preset].content;
@@ -3410,6 +3412,58 @@ function QuoteBuilder({ user, isA, isM, items }) {
     );
   }
 
+  // ═══ ANALYTICS VIEW ═══
+  if (view === "analytics") {
+    const signed = quotes.filter(q => q.status === "signed");
+    const sent = quotes.filter(q => q.status === "sent" || q.status === "viewed" || q.status === "signed");
+    const closeRate = sent.length > 0 ? Math.round((signed.length / sent.length) * 100) : 0;
+    const avgValue = signed.length > 0 ? signed.reduce((s, q) => s + (q.total_price || 0), 0) / signed.length : 0;
+    const totalRevenue = signed.reduce((s, q) => s + (q.total_price || 0), 0);
+    const thisMonth = quotes.filter(q => q.status === "signed" && new Date(q.updated_at || q.created_at).getMonth() === new Date().getMonth() && new Date(q.updated_at || q.created_at).getFullYear() === new Date().getFullYear());
+    const monthRevenue = thisMonth.reduce((s, q) => s + (q.total_price || 0), 0);
+    // Quotes by month
+    const byMonth = {};
+    quotes.forEach(q => {
+      const d = new Date(q.created_at);
+      const key = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+      if (!byMonth[key]) byMonth[key] = { created: 0, signed: 0, revenue: 0 };
+      byMonth[key].created++;
+      if (q.status === "signed") { byMonth[key].signed++; byMonth[key].revenue += q.total_price || 0; }
+    });
+    const chartData = Object.entries(byMonth).slice(-6).map(([k, v]) => ({ month: k, Quotes: v.created, Signed: v.signed, Revenue: v.revenue }));
+    return (
+      <div className="fu">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontSize: 22, fontWeight: 900, fontFamily: BC }}>Quote Analytics</h2>
+          <button onClick={() => setView("list")} style={{ ...bS, borderRadius: 10, padding: "8px 14px" }}><ArrowLeft size={14} /> Back</button>
+        </div>
+        <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+          <Stat label="Close Rate" value={`${closeRate}%`} sub={`${signed.length} of ${sent.length} sent`} color={closeRate >= 50 ? C.grn : closeRate >= 25 ? C.wrn : C.red} />
+          <Stat label="Avg Quote Value" value={fmt$(avgValue)} sub={`${signed.length} signed quotes`} />
+          <Stat label="Total Revenue" value={fmt$(totalRevenue)} sub="All time signed" color={C.grn} />
+          <Stat label="This Month" value={fmt$(monthRevenue)} sub={`${thisMonth.length} signed`} color={C.blu} />
+        </div>
+        {chartData.length > 0 && <div style={{ ...crd, borderRadius: 14, padding: 20, marginBottom: 20 }}>
+          <div style={lbl}>Quotes by Month</div>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke="#eee" /><XAxis dataKey="month" fontSize={11} /><YAxis fontSize={11} /><Tooltip /><Legend /><Bar dataKey="Quotes" fill={C.blu} radius={[4,4,0,0]} /><Bar dataKey="Signed" fill={C.grn} radius={[4,4,0,0]} /></BarChart>
+          </ResponsiveContainer>
+        </div>}
+        {/* Recent signed quotes */}
+        <div style={{ ...crd, borderRadius: 14, padding: 16 }}>
+          <div style={lbl}>Recently Signed</div>
+          {signed.length === 0 ? <div style={{ color: C.t2, fontSize: 13, padding: 16, textAlign: "center" }}>No signed quotes yet</div> :
+            signed.slice(0, 10).map(qt => (
+              <div key={qt.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.brd}` }}>
+                <div><div style={{ fontWeight: 700, fontSize: 13 }}>{qt.customer_name}</div><div style={{ fontSize: 11, color: C.t2 }}>{fD(qt.updated_at || qt.created_at)}</div></div>
+                <div style={{ fontFamily: MN, fontWeight: 800, color: C.grn }}>{fmt$(qt.total_price || 0)}</div>
+              </div>
+            ))}
+        </div>
+      </div>
+    );
+  }
+
   // ═══ EDIT VIEW ═══
   if (view === "edit" && q) {
     const activeSlide = slides[asi];
@@ -3478,6 +3532,72 @@ function QuoteBuilder({ user, isA, isM, items }) {
           <div><div style={{ fontWeight: 800, color: C.grn, fontSize: 14 }}>This quote has been signed</div>
           <div style={{ fontSize: 12, color: "#166534" }}>Signed by {(q.settings?.signature?.name) || "customer"} on {q.settings?.signature?.timestamp ? fD(q.settings.signature.timestamp) : "—"} · {fmt$(q.total_price || q.settings?.signature?.total || 0)}</div></div>
         </div>}
+
+        {/* Quick Actions Bar */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <button onClick={() => { setShowActivity(!showActivity); setShowQuestions(false); }} style={{ ...bS, borderRadius: 8, padding: "6px 12px", fontSize: 11, background: showActivity ? C.sf : "transparent" }}><Clock size={12} /> Activity ({activity.length})</button>
+          <button onClick={() => { setShowQuestions(!showQuestions); setShowActivity(false); }} style={{ ...bS, borderRadius: 8, padding: "6px 12px", fontSize: 11, background: showQuestions ? C.sf : "transparent", color: questions.filter(x => !x.answered).length > 0 ? C.ac : C.t2, borderColor: questions.filter(x => !x.answered).length > 0 ? C.ac + "40" : C.brd }}>❓ Questions {questions.filter(x => !x.answered).length > 0 && <span style={{ background: C.red, color: "#fff", fontSize: 9, fontWeight: 800, borderRadius: 8, padding: "1px 5px", marginLeft: 4 }}>{questions.filter(x => !x.answered).length}</span>}</button>
+          {q.expiration_date && <span style={{ fontSize: 10, color: C.t2, marginLeft: 4 }}>Expires: {fD(q.expiration_date)} <button onClick={() => extendExpiration(30)} style={{ background: "none", border: "none", color: "#2563EB", cursor: "pointer", fontSize: 10, fontWeight: 700, textDecoration: "underline" }}>+30 days</button></span>}
+        </div>
+
+        {/* Activity Log Panel */}
+        {showActivity && <div style={{ ...crd, borderRadius: 12, marginBottom: 16, maxHeight: 300, overflow: "auto" }}>
+          <div style={{ ...lbl, marginBottom: 8 }}>Activity Log</div>
+          {activity.length === 0 ? <div style={{ color: C.t2, fontSize: 12 }}>No activity yet</div> :
+            activity.map((a, i) => {
+              const icons = { opened: "👀", signed: "✍️", sent: "📤", created: "📝" };
+              return <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: i < activity.length - 1 ? `1px solid ${C.brd}` : "none" }}>
+                <span style={{ fontSize: 14 }}>{icons[a.event_type] || "📌"}</span>
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{a.event_type}</span>
+                  {a.user_agent && <span style={{ fontSize: 10, color: C.t2, marginLeft: 8 }}>{a.user_agent.includes("Mobile") ? "📱 Mobile" : "💻 Desktop"}</span>}
+                </div>
+                <span style={{ fontSize: 10, color: C.t2 }}>{a.timestamp ? new Date(a.timestamp).toLocaleString() : "—"}</span>
+              </div>;
+            })
+          }
+        </div>}
+
+        {/* Questions Panel */}
+        {showQuestions && <div style={{ ...crd, borderRadius: 12, marginBottom: 16 }}>
+          <div style={{ ...lbl, marginBottom: 8 }}>Customer Questions</div>
+          {questions.length === 0 ? <div style={{ color: C.t2, fontSize: 12 }}>No questions yet. Customers can ask questions from any slide in their quote view.</div> :
+            questions.map((qn, i) => (
+              <div key={i} style={{ padding: "10px 0", borderBottom: i < questions.length - 1 ? `1px solid ${C.brd}` : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{qn.question}</div>
+                    <div style={{ fontSize: 10, color: C.t2, marginTop: 2 }}>{qn.customer_name || "Customer"} · {qn.created_at ? new Date(qn.created_at).toLocaleString() : "—"}</div>
+                  </div>
+                  {!qn.answered ? <button onClick={() => markQuestionAnswered(qn.id)} style={{ ...bP, padding: "4px 10px", fontSize: 10, borderRadius: 6, background: C.grn }}><Check size={10} /> Done</button> : <span style={{ fontSize: 10, color: C.grn, fontWeight: 700 }}>✓ Answered</span>}
+                </div>
+              </div>
+            ))
+          }
+        </div>}
+
+        {/* Expiration Management */}
+        {q && q.expiration_date && q.status !== "signed" && (() => {
+          const daysLeft = Math.ceil((new Date(q.expiration_date) - new Date()) / 86400000);
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", background: daysLeft <= 3 ? "#FEE2E2" : daysLeft <= 7 ? "#FEF3C7" : C.sf, borderRadius: 10, marginBottom: 16, fontSize: 12 }}>
+              <Clock size={14} color={daysLeft <= 3 ? C.red : daysLeft <= 7 ? C.wrn : C.t2} />
+              <span style={{ flex: 1, color: daysLeft <= 3 ? C.red : daysLeft <= 7 ? C.wrn : C.t2, fontWeight: 600 }}>
+                {daysLeft <= 0 ? "This quote has expired" : `Expires in ${daysLeft} day${daysLeft !== 1 ? "s" : ""} (${fD(q.expiration_date)})`}
+              </span>
+              <button onClick={async () => {
+                const newExp = new Date(Date.now() + 30 * 86400000).toISOString();
+                await sbPatch("quotes", q.id, { expiration_date: newExp });
+                setQ({ ...q, expiration_date: newExp });
+              }} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6 }}>+30 days</button>
+              <button onClick={async () => {
+                const newExp = new Date(Date.now() + 90 * 86400000).toISOString();
+                await sbPatch("quotes", q.id, { expiration_date: newExp });
+                setQ({ ...q, expiration_date: newExp });
+              }} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6 }}>+90 days</button>
+            </div>
+          );
+        })()}
 
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
           {/* Mobile slide nav toggle */}
@@ -3548,6 +3668,43 @@ function QuoteBuilder({ user, isA, isM, items }) {
                   </div>
                 )}
 
+                {/* INSPECTION PHOTOS EDITOR */}
+                {activeSlide.slide_type === "photos" && (() => {
+                  const photos = activeSlide.content?.photos || [];
+                  const updatePhotos = (newPhotos) => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, photos: newPhotos } }; setSlides(ns); };
+                  const addPhoto = async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    const newPhotos = [...photos];
+                    for (const file of files) {
+                      const base64 = await compressPhoto(file);
+                      newPhotos.push({ src: base64, caption: "", id: uid() });
+                    }
+                    updatePhotos(newPhotos);
+                    e.target.value = "";
+                  };
+                  return (
+                    <div>
+                      <Fld label="Section Description">
+                        <input value={activeSlide.content?.caption || ""} onChange={e => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, caption: e.target.value } }; setSlides(ns); }} style={{ ...inp, borderRadius: 10 }} placeholder="Describe what was found during inspection..." />
+                      </Fld>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
+                        {photos.map((p, i) => (
+                          <div key={p.id || i} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: `1px solid ${C.brd}` }}>
+                            <img src={p.src} alt="" style={{ width: "100%", height: 120, objectFit: "cover" }} />
+                            <input value={p.caption || ""} onChange={e => { const np = [...photos]; np[i] = { ...np[i], caption: e.target.value }; updatePhotos(np); }} placeholder="Caption..." style={{ width: "100%", border: "none", borderTop: `1px solid ${C.brd}`, padding: "6px 8px", fontSize: 11, outline: "none" }} />
+                            <button onClick={() => updatePhotos(photos.filter((_, j) => j !== i))} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", padding: "2px 4px" }}><X size={12} /></button>
+                          </div>
+                        ))}
+                      </div>
+                      <label style={{ ...bS, borderRadius: 10, padding: "10px 16px", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        <Camera size={14} /> Upload Photos
+                        <input type="file" accept="image/*" multiple onChange={addPhoto} style={{ display: "none" }} />
+                      </label>
+                      <span style={{ fontSize: 11, color: C.t2, marginLeft: 8 }}>{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
+                    </div>
+                  );
+                })()}
+
                 {/* SCOPE OF WORK EDITOR */}
                 {activeSlide.slide_type === "scope" && <ScopeEditor slide={activeSlide} slides={slides} setSlides={setSlides} asi={asi} items={items} lineItems={lineItems} addLineItem={addLineItem} addManualItem={addManualItem} updateLI={updateLI} removeLI={removeLI} />}
 
@@ -3615,6 +3772,13 @@ function QuoteBuilder({ user, isA, isM, items }) {
                         <div><span style={{ fontSize: 10, color: C.t2 }}>GP$</span><div style={{ fontFamily: MN, fontWeight: 800, color: C.grn }}>{fmt$(tierTotal("best") - totalCost)}</div></div>
                         <div><span style={{ fontSize: 10, color: C.t2 }}>GP%</span><div style={{ fontFamily: MN, fontWeight: 800, color: C.grn }}>{tierTotal("best") > 0 ? ((1 - totalCost / tierTotal("best")) * 100).toFixed(1) : 0}%</div></div>
                       </div>
+                    {/* Detailed Cost Breakdown */}
+                    <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
+                      <div><span style={{ fontSize: 10, color: C.t2 }}>Material Cost</span><div style={{ fontFamily: MN, fontWeight: 700, fontSize: 12 }}>{fmt$(lineItems.filter(li => !li.is_upgrade).reduce((s, li) => s + (li.qty || 1) * (li.cost || 0), 0))}</div></div>
+                      <div><span style={{ fontSize: 10, color: C.t2 }}>Labor Cost</span><div style={{ fontFamily: MN, fontWeight: 700, fontSize: 12 }}>{fmt$(lineItems.filter(li => !li.is_upgrade).reduce((s, li) => s + (li.labor_cost || 0), 0))}</div></div>
+                      <div><span style={{ fontSize: 10, color: C.t2 }}>Total Cost</span><div style={{ fontFamily: MN, fontWeight: 700, fontSize: 12 }}>{fmt$(lineItems.filter(li => !li.is_upgrade).reduce((s, li) => s + (li.qty || 1) * (li.cost || 0) + (li.labor_cost || 0), 0))}</div></div>
+                      <div><span style={{ fontSize: 10, color: C.t2 }}>Revenue (Best)</span><div style={{ fontFamily: MN, fontWeight: 700, fontSize: 12, color: C.grn }}>{fmt$(tierTotal("best"))}</div></div>
+                    </div>
                     </div>}
                   </div>
                 )}
@@ -3700,9 +3864,12 @@ function QuoteBuilder({ user, isA, isM, items }) {
 
             {/* Activity Log */}
             {q && activity.length > 0 && <div style={{ marginTop: 16 }}>
-              <button onClick={() => setShowActivity(!showActivity)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, width: "100%" }}>
-                <Clock size={14} /> Activity Log ({activity.length}) {showActivity ? "▲" : "▼"}
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setShowActivity(!showActivity)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, flex: 1 }}>
+                  <Clock size={14} /> Activity Log ({activity.length}) {showActivity ? "▲" : "▼"}
+                </button>
+                <button onClick={async () => { const qs = await sbGet("quote_questions", `quote_id=eq.${q.id}&order=created_at.desc`); if (qs?.length > 0) { alert("Customer Questions:\n\n" + qs.map(qq => `"${qq.question}" — ${qq.customer_name || "Customer"} (${fD(qq.created_at)})`).join("\n\n")); } else { alert("No questions yet."); } }} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12 }}>❓ Questions</button>
+              </div>
               {showActivity && <div style={{ ...crd, borderRadius: 12, padding: 12, marginTop: 8, maxHeight: 300, overflow: "auto" }}>
                 {activity.map((a, i) => {
                   const icons = { opened: "👀", signed: "✍️", sent: "📤", viewed: "👁️" };
@@ -3829,6 +3996,7 @@ function ScopeEditor({ slide, slides, setSlides, asi, items, lineItems, addLineI
                 <select value={li.tier || "all"} onChange={e => updateLI(realIdx, "tier", e.target.value)} style={{ width: 55, border: `1px solid ${C.brd}`, borderRadius: 4, fontSize: 9, padding: "2px", background: TIER_COLORS[li.tier] ? TIER_COLORS[li.tier] + "15" : "transparent" }}>
                   <option value="all">All</option><option value="good">Good</option><option value="better">Better</option><option value="best">Best</option>
                 </select>
+                <input type="number" value={li.labor_cost || 0} onChange={e => updateLI(realIdx, "labor_cost", Number(e.target.value))} title="Labor cost (hidden)" style={{ width: 55, border: `1px solid ${C.brd}`, borderRadius: 4, textAlign: "right", fontSize: 10, padding: "2px", fontFamily: MN, color: C.t2, background: "#FFFBEB" }} step="0.01" placeholder="Labor" />
                 <span style={{ fontSize: 10, fontFamily: MN, color: C.t2, width: 60, textAlign: "right" }}>{fmt$(li.qty * li.unit_price)}</span>
                 <button onClick={() => removeLI(realIdx)} style={{ background: "none", border: "none", cursor: "pointer", color: C.red, padding: 2 }}><X size={11} /></button>
               </div>
@@ -4089,6 +4257,27 @@ function QuotePublicView({ quoteId, isPreview }) {
         )}
 
         {/* SCOPE */}
+        {/* INSPECTION PHOTOS */}
+        {cs.slide_type === "photos" && (() => {
+          const photos = cs.content?.photos || [];
+          return (
+            <div>
+              <h2 style={{ fontSize: 24, fontWeight: 900, fontFamily: "'Barlow Condensed', sans-serif", color: NAVY, marginBottom: 8 }}>{cs.title}</h2>
+              {cs.content?.caption && <p style={{ fontSize: 15, color: "#555", marginBottom: 20, lineHeight: 1.6 }}>{cs.content.caption}</p>}
+              {photos.length > 0 ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
+                  {photos.map((p, i) => (
+                    <div key={i} style={{ borderRadius: 12, overflow: "hidden", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                      <img src={p.src} alt={p.caption || ""} style={{ width: "100%", height: 200, objectFit: "cover" }} />
+                      {p.caption && <div style={{ padding: "10px 14px", fontSize: 13, color: "#444", background: "#f8f9fa" }}>{p.caption}</div>}
+                    </div>
+                  ))}
+                </div>
+              ) : <div style={{ padding: 40, textAlign: "center", color: "#999" }}>No photos added</div>}
+            </div>
+          );
+        })()}
+
         {cs.slide_type === "scope" && (() => {
           const tierItems = lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(selectedTier)));
           const grouped = {};
@@ -4266,6 +4455,27 @@ function QuotePublicView({ quoteId, isPreview }) {
           );
         })()}
       </div>
+
+      {/* Customer Question Box */}
+      {!isPreview && !signed && cs.slide_type !== "signature" && (
+        <div style={{ maxWidth: 800, margin: "0 auto", padding: "0 24px" }}>
+          <details style={{ borderTop: "1px solid #eee", paddingTop: 16, marginTop: 8 }}>
+            <summary style={{ fontSize: 13, color: "#666", cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Have a question about this section?</summary>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input id="q-input" placeholder="Type your question..." style={{ flex: 1, padding: "10px 14px", border: "1px solid #ddd", borderRadius: 8, fontSize: 14, outline: "none" }} />
+              <button onClick={async () => {
+                const inp = document.getElementById("q-input");
+                const qText = inp?.value?.trim();
+                if (!qText) return;
+                await sbPost("quote_questions", { quote_id: quote.id, slide_id: cs.id || null, question: qText, customer_name: quote.customer_name });
+                try { await fetch("/api/notify?action=sms", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: "+15738649965", message: `❓ Question from ${quote.customer_name} on their quote: "${qText}"` }) }); } catch {}
+                inp.value = "";
+                alert("Question sent! We\'ve notified your rep and will get back to you soon.");
+              }} style={{ background: RED, color: "#fff", border: "none", borderRadius: 8, padding: "10px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Send</button>
+            </div>
+          </details>
+        </div>
+      )}
 
       {/* Navigation */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", borderTop: "1px solid #eee", maxWidth: 800, margin: "0 auto" }}>
