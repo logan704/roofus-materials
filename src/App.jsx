@@ -2863,11 +2863,13 @@ function QuoteBuilder({ user, isA, isM, items }) {
   const [q, setQ] = useState(null); // current quote
   const [slides, setSlides] = useState([]);
   const [lineItems, setLineItems] = useState([]);
-  const [asi, setAsi] = useState(0); // active slide index
+  const [asi, setAsiRaw] = useState(0); // active slide index
+  const setAsi = (newIdx) => { setAsiRaw(newIdx); };
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("newest");
 
   // JN job search
   const [jnAll, setJnAll] = useState([]);
@@ -3051,7 +3053,7 @@ function QuoteBuilder({ user, isA, isM, items }) {
       customer_phone: q.customer_phone || "",
       address: q.customer_address || "",
       notes: q.notes || "",
-      settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "" },
+      settings: { margin, tiers_enabled: tiersEnabled, price_view: priceView, jn_job_name: q.jn_job_name || "", color_options: q.settings?.color_options || [] },
       total_price: tierTotal("best"),
       updated_at: new Date().toISOString(),
     });
@@ -3255,6 +3257,13 @@ function QuoteBuilder({ user, isA, isM, items }) {
       const jnName = (qt.settings || {}).jn_job_name || "";
       if (search && !qt.customer_name?.toLowerCase().includes(search.toLowerCase()) && !jnName.toLowerCase().includes(search.toLowerCase()) && !(qt.address || "").toLowerCase().includes(search.toLowerCase())) return false;
       return true;
+    }).sort((a, b) => {
+      if (sortBy === "newest") return new Date(b.created_at) - new Date(a.created_at);
+      if (sortBy === "oldest") return new Date(a.created_at) - new Date(b.created_at);
+      if (sortBy === "name") return (a.customer_name || "").localeCompare(b.customer_name || "");
+      if (sortBy === "value_high") return (b.total_price || 0) - (a.total_price || 0);
+      if (sortBy === "value_low") return (a.total_price || 0) - (b.total_price || 0);
+      return 0;
     });
     const draftCt = quotes.filter(q => q.status === "draft").length;
     const sentCt = quotes.filter(q => q.status === "sent").length;
@@ -3343,6 +3352,13 @@ function QuoteBuilder({ user, isA, isM, items }) {
             <Search size={14} style={{ position: "absolute", left: 12, top: 12, color: C.t2 }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search quotes..." style={{ ...inp, paddingLeft: 34, borderRadius: 10 }} />
           </div>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...bS, borderRadius: 10, padding: "8px 14px", fontSize: 12, appearance: "auto", cursor: "pointer" }}>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="name">Name A→Z</option>
+            <option value="value_high">Highest Value</option>
+            <option value="value_low">Lowest Value</option>
+          </select>
         </div>
         {loading ? <div style={{ textAlign: "center", padding: 40, color: C.t2 }}>Loading quotes...</div> :
           filtered.length === 0 ? <Empty msg={quotes.length === 0 ? "No quotes yet. Create your first quote!" : "No quotes match this filter."} /> :
@@ -3661,10 +3677,19 @@ function QuoteBuilder({ user, isA, isM, items }) {
                       <Cl><Fld label="Email"><input value={q.customer_email || ""} onChange={e => setQ({ ...q, customer_email: e.target.value })} style={{ ...inp, borderRadius: 10 }} /></Fld></Cl>
                       <Cl><Fld label="Phone"><input value={q.customer_phone || ""} onChange={e => setQ({ ...q, customer_phone: e.target.value })} style={{ ...inp, borderRadius: 10 }} /></Fld></Cl>
                     </Rw>
-                    <div style={{ marginTop: 16, padding: 20, background: C.sf, borderRadius: 12, textAlign: "center" }}>
-                      <div style={{ fontSize: 12, color: C.t2, marginBottom: 8 }}>Cover page will display Roof USA branding, customer info, and date.</div>
-                      <div style={{ fontSize: 11, color: C.t2 }}>📷 Photo upload coming in Phase 2</div>
-                    </div>
+                    <Fld label="House Photo">
+                      {activeSlide.content?.housePhoto ? (
+                        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
+                          <img src={activeSlide.content.housePhoto} alt="" style={{ width: "100%", maxHeight: 250, objectFit: "cover" }} />
+                          <button onClick={() => { const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: null } }; setSlides(ns); }} style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 6, color: "#fff", cursor: "pointer", padding: "4px 8px" }}><X size={14} /> Remove</button>
+                        </div>
+                      ) : (
+                        <label style={{ display: "block", padding: 30, background: C.sf, borderRadius: 12, textAlign: "center", cursor: "pointer", border: `2px dashed ${C.brd}` }}>
+                          <Camera size={24} color={C.t2} /><div style={{ fontSize: 12, color: C.t2, marginTop: 8 }}>Click to upload house photo</div>
+                          <input type="file" accept="image/*" onChange={async (e) => { if (e.target.files?.[0]) { const b64 = await compressPhoto(e.target.files[0]); const ns = [...slides]; ns[asi] = { ...ns[asi], content: { ...ns[asi].content, housePhoto: b64 } }; setSlides(ns); } e.target.value=""; }} style={{ display: "none" }} />
+                        </label>
+                      )}
+                    </Fld>
                   </div>
                 )}
 
@@ -3737,13 +3762,17 @@ function QuoteBuilder({ user, isA, isM, items }) {
                     </Fld>
                     {/* Tier Summary */}
                     <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-                      {TIERS.filter(t => tiersEnabled[t]).map(t => (
+                      {TIERS.filter(t => tiersEnabled[t]).map(t => {
+                        const prevTier = TIERS[TIERS.indexOf(t) - 1];
+                        const addedItems = lineItems.filter(li => !li.is_upgrade && li.tier === t);
+                        return (
                         <div key={t} style={{ ...crd, flex: 1, minWidth: 160, borderRadius: 12, borderTop: `3px solid ${TIER_COLORS[t]}` }}>
                           <div style={{ fontSize: 11, fontWeight: 800, color: TIER_COLORS[t], textTransform: "uppercase", marginBottom: 6 }}>{TIER_LABELS[t]}</div>
                           <div style={{ fontSize: 24, fontWeight: 900, fontFamily: MN }}>{fmt$(tierTotal(t))}</div>
                           <div style={{ fontSize: 10, color: C.t2, marginTop: 4 }}>{lineItems.filter(li => !li.is_upgrade && (li.tier === "all" || TIERS.indexOf(li.tier) <= TIERS.indexOf(t))).length} items</div>
+                          {addedItems.length > 0 && prevTier && <div style={{ fontSize: 9, color: TIER_COLORS[t], marginTop: 6, borderTop: `1px solid ${C.brd}`, paddingTop: 4 }}>+ {addedItems.map(li => li.description).join(", ")}</div>}
                         </div>
-                      ))}
+                      );})}
                     </div>
                     {/* Optional Upgrades Total */}
                     {lineItems.filter(li => li.is_upgrade).length > 0 && (
@@ -3763,6 +3792,20 @@ function QuoteBuilder({ user, isA, isM, items }) {
                         })}
                       </div>
                     )}
+                    {/* Product Color Selections */}
+                    <div style={{ marginTop: 16, padding: 12, background: C.sf, borderRadius: 10 }}>
+                      <div style={{ ...lbl }}>Customer Color/Product Selections</div>
+                      <div style={{ fontSize: 11, color: C.t2, marginBottom: 8 }}>Add dropdowns the customer can choose from (e.g. shingle color, drip edge color)</div>
+                      {(q.settings?.color_options || []).map((co, i) => (
+                        <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                          <input value={co.label} onChange={e => { const opts = [...(q.settings?.color_options || [])]; opts[i] = { ...opts[i], label: e.target.value }; setQ({ ...q, settings: { ...q.settings, color_options: opts } }); }} style={{ ...inp, borderRadius: 6, padding: "6px 10px", fontSize: 12, flex: 1 }} placeholder="Label (e.g. Shingle Color)" />
+                          <input value={co.choices.join(", ")} onChange={e => { const opts = [...(q.settings?.color_options || [])]; opts[i] = { ...opts[i], choices: e.target.value.split(",").map(s => s.trim()).filter(Boolean) }; setQ({ ...q, settings: { ...q.settings, color_options: opts } }); }} style={{ ...inp, borderRadius: 6, padding: "6px 10px", fontSize: 12, flex: 2 }} placeholder="Options, comma separated" />
+                          <button onClick={() => { const opts = (q.settings?.color_options || []).filter((_, j) => j !== i); setQ({ ...q, settings: { ...q.settings, color_options: opts } }); }} style={{ background: "none", border: "none", cursor: "pointer", color: C.red }}><X size={14} /></button>
+                        </div>
+                      ))}
+                      <button onClick={() => { const opts = [...(q.settings?.color_options || []), { label: "", choices: [] }]; setQ({ ...q, settings: { ...q.settings, color_options: opts } }); }} style={{ ...bS, padding: "4px 10px", fontSize: 10, borderRadius: 6, marginTop: 4 }}><Plus size={10} /> Add Selection</button>
+                    </div>
+
                     {/* GP Summary (admin only) */}
                     {isA && <div style={{ marginTop: 16, padding: 12, background: "#d4edda", borderRadius: 10 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: C.grn }}>PROFIT SUMMARY (Admin Only — Hidden from Customer)</div>
@@ -4103,13 +4146,26 @@ function QuotePublicView({ quoteId, isPreview }) {
   const [quote, setQuote] = useState(null);
   const [slides, setSlides] = useState([]);
   const [lineItems, setLineItems] = useState([]);
-  const [currentSlide, setCurrentSlide] = useState(0);
+  const [currentSlide, setCurrentSlideRaw] = useState(0);
+  const [slideEnterTime, setSlideEnterTime] = useState(Date.now());
+  const setCurrentSlide = (idx) => {
+    // Track time on previous slide
+    if (!isPreview && quote) {
+      const duration = Math.round((Date.now() - slideEnterTime) / 1000);
+      if (duration > 1) {
+        sbPost("quote_tracking", { quote_id: quote.id, event_type: "slide_view", slide_id: slides[currentSlide]?.id || null, timestamp: new Date().toISOString(), duration_seconds: duration, metadata: { slide_type: slides[currentSlide]?.slide_type, slide_title: slides[currentSlide]?.title } }).catch(() => {});
+      }
+    }
+    setSlideEnterTime(Date.now());
+    setCurrentSlideRaw(idx);
+  };
   const [loading, setLoading] = useState(true);
   const [signed, setSigned] = useState(false);
   const [sigName, setSigName] = useState("");
   const [sigName2, setSigName2] = useState("");
   const [selectedTier, setSelectedTier] = useState("best");
   const [selectedUpgrades, setSelectedUpgrades] = useState({});
+  const [selectedColors, setSelectedColors] = useState({});
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -4170,6 +4226,7 @@ function QuotePublicView({ quoteId, isPreview }) {
       tier: selectedTier,
       upgrades: Object.keys(selectedUpgrades).filter(k => selectedUpgrades[k]).map(k => lineItems[k]?.description),
       total: grandTotal,
+      colorSelections: selectedColors,
     };
     await sbPatch("quotes", quote.id, {
       status: "signed",
@@ -4248,6 +4305,7 @@ function QuotePublicView({ quoteId, isPreview }) {
             <div style={{ fontSize: 18, fontWeight: 600, marginTop: 20 }}>{quote.customer_name}</div>
             <div style={{ fontSize: 14, color: "#666", marginTop: 6 }}>{(quote.address || "")}</div>
             <div style={{ fontSize: 13, color: "#999", marginTop: 20 }}>{fD(quote.created_at)}</div>
+            {cs.content?.housePhoto && <div style={{ marginTop: 24, borderRadius: 16, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.1)" }}><img src={cs.content.housePhoto} alt="" style={{ width: "100%", maxHeight: 350, objectFit: "cover" }} /></div>}
             <div style={{ marginTop: 30, padding: 16, background: "#f8f9fa", borderRadius: 12, display: "inline-block" }}>
               <div style={{ fontSize: 11, color: "#999", textTransform: "uppercase", letterSpacing: ".1em" }}>Prepared by</div>
               <div style={{ fontSize: 14, fontWeight: 700, marginTop: 4 }}>Roof USA · Columbia, MO</div>
@@ -4363,6 +4421,25 @@ function QuotePublicView({ quoteId, isPreview }) {
                 })}
               </div>
             )}
+            {/* Product Selections */}
+            {(quote.settings?.color_options || []).length > 0 && (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: NAVY, marginBottom: 12 }}>Product Selections</div>
+                {(quote.settings?.color_options || []).map((co, i) => (
+                  <div key={i} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 6 }}>{co.label}</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {co.choices.map((ch, ci) => (
+                        <button key={ci} onClick={() => setSelectedColors({ ...selectedColors, [co.label]: ch })} style={{ padding: "8px 16px", borderRadius: 8, border: selectedColors[co.label] === ch ? `2px solid ${NAVY}` : "2px solid #e5e7eb", background: selectedColors[co.label] === ch ? NAVY + "10" : "#fff", cursor: "pointer", fontSize: 13, fontWeight: selectedColors[co.label] === ch ? 700 : 400 }}>
+                          {ch}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Grand Total */}
             <div style={{ padding: 20, background: NAVY, borderRadius: 14, color: "#fff", textAlign: "center" }}>
               <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".1em", opacity: 0.7, marginBottom: 8 }}>Your Investment</div>
