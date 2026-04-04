@@ -34,7 +34,6 @@ select option{background:${C.w};color:${C.txt}}
 const MN = `'IBM Plex Mono',monospace`;
 const BC = `'Barlow Condensed',sans-serif`;
 
-
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 // Compress and resize photo from file input → base64 string
@@ -2710,6 +2709,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
     const j = calcJob(editJob);
     const sc = SC[j.status]||SC.in_progress;
     return (
+      <>
       <div className="fu">
         <button onClick={()=>setEditJob(null)} style={{...bS,marginBottom:16,borderRadius:10,padding:"8px 14px",fontSize:13}}><ArrowLeft size={14}/> Back</button>
         <div style={{background:C.card,borderRadius:16,border:`1px solid ${C.brd}`,padding:28,marginBottom:16,boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
@@ -2807,6 +2807,8 @@ function JobTracker({ jobs, sJ, orders, items }) {
           </div>
         </div>
       </div>
+      {viewOrder&&<OrderPDF order={viewOrder} items={items} onClose={()=>setViewOrder(null)} />}
+      </>
     );
   }
 
