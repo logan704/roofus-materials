@@ -38,20 +38,47 @@ module.exports = async (req, res) => {
 
   try {
     if (action === "ping") {
-      return res.status(200).json({ ok: true, version: "jn-finance-v1" });
+      return res.status(200).json({ ok: true, version: "jn-finance-v2" });
     }
 
-    if (action === "probe") {
-      const results = {};
-      try {
-        const inv = await jnGet("/invoices?limit=3");
-        results.invoices = inv;
-      } catch (e) { results.invoices = { error: e.message }; }
-      try {
-        const pay = await jnGet("/payments?limit=3");
-        results.payments = pay;
-      } catch (e) { results.payments = { error: e.message }; }
-      return res.status(200).json({ ok: true, probe: results });
+    if (action === "invoices") {
+      const all = [];
+      let page = 0;
+      let hasMore = true;
+      while (hasMore && page < 10) {
+        const offset = page * 500;
+        const r = await jnGet("/invoices?select=jnid,number,status_name,total,total_paid,date_created,date_due,date_paid_in_full,related,is_active,is_archived&limit=500&offset=" + offset);
+        const results = (r.data && r.data.results) || [];
+        all.push(...results);
+        hasMore = results.length === 500;
+        page++;
+      }
+
+      const byJob = {};
+      for (const inv of all) {
+        const rels = inv.related || [];
+        for (const rel of rels) {
+          const rid = typeof rel === "string" ? rel : rel.id;
+          const rtype = typeof rel === "string" ? "unknown" : (rel.type || "");
+          if (rtype === "job" || rtype === "unknown") {
+            if (!byJob[rid]) byJob[rid] = [];
+            byJob[rid].push({
+              id: inv.jnid,
+              number: inv.number,
+              status: inv.status_name,
+              total: inv.total || 0,
+              paid: inv.total_paid || 0,
+              due: (inv.total || 0) - (inv.total_paid || 0),
+              created: inv.date_created,
+              dateDue: inv.date_due,
+              paidInFull: inv.date_paid_in_full || 0,
+              active: inv.is_active,
+            });
+          }
+        }
+      }
+
+      return res.status(200).json({ ok: true, byJob, totalInvoices: all.length });
     }
 
     return res.status(400).json({ error: "Unknown action: " + action });
