@@ -2569,6 +2569,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
   const [cCat, setCCat] = useState("labor"); const [cDesc, setCDesc] = useState(""); const [cAmt, setCAmt] = useState("");
   const [jnFinance, setJnFinance] = useState({});
   const [finLoading, setFinLoading] = useState(false);
+  const [viewOrder, setViewOrder] = useState(null);
 
   const fetchFinance = useCallback(async () => {
     setFinLoading(true);
@@ -2630,7 +2631,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
     const collected = invoices.reduce((s,i) => s + (i.paid||0), 0);
     const balance = invoiced - collected;
     const unbilled = contract - invoiced;
-    return { ...j, totalCosts:total, projGP$, actGP$, actGP, variance, labor, mat, other, matOrd, invoices, invoiced, collected, balance, unbilled };
+    return { ...j, totalCosts:total, projGP$, actGP$, actGP, variance, labor, mat, other, matOrd, linkedOrders:linked, invoices, invoiced, collected, balance, unbilled };
   };
 
   const allCalc = jobs.map(calcJob);
@@ -2742,7 +2743,17 @@ function JobTracker({ jobs, sJ, orders, items }) {
               </div>
               {!(j.costs||[]).length&&!j.matOrd&&<div style={{padding:20,textAlign:"center",color:C.t2,fontSize:13}}>No costs yet.</div>}
               {(j.costs||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:c.category==="labor"?C.blu+"15":c.category==="material"?RED+"15":C.wrn+"15",color:c.category==="labor"?C.blu:c.category==="material"?RED:C.wrn}}>{c.category}</span><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(c.amount)}</span><button onClick={()=>{deleteCost(j.id,c.id); setEditJob({...editJob,costs:(editJob.costs||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
-              {j.matOrd>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:RED+"15",color:RED}}>material</span><span style={{fontSize:13,fontWeight:600,color:C.t2}}>Linked Orders (auto)</span></div><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(j.matOrd)}</span></div>}
+              {(j.linkedOrders||[]).map(ord=>{const ordTotal=(ord.lines||[]).reduce((s,l)=>s+l.qty*(l.markupCost||l.unitCost||0),0); return (
+                <div key={ord.id} onClick={()=>setViewOrder(ord)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,cursor:"pointer",transition:"background .15s",borderRadius:4}} onMouseEnter={(e)=>{e.currentTarget.style.background=C.sf;}} onMouseLeave={(e)=>{e.currentTarget.style.background="transparent";}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,background:RED+"15",color:RED}}>material</span>
+                    <span style={{fontSize:13,fontWeight:600}}>{ord.jobName||"Material Order"}</span>
+                    <span style={{fontSize:11,color:C.t2}}>{fD(ord.date)}</span>
+                    <span style={{fontSize:10,color:C.blu,fontWeight:600}}>View →</span>
+                  </div>
+                  <span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(ordTotal)}</span>
+                </div>
+              );})}
               {j.totalCosts>0&&<div style={{marginTop:12,paddingTop:12,borderTop:`2px solid ${C.brd}`}}>
                 {j.labor>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:C.blu,fontWeight:600}}>Labor</span><span style={{fontFamily:MN}}>{fmt$(j.labor)}</span></div>}
                 {j.mat>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span style={{color:RED,fontWeight:600}}>Materials</span><span style={{fontFamily:MN}}>{fmt$(j.mat)}</span></div>}
@@ -2862,6 +2873,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setAddModal(false)} style={{...bS,borderRadius:10}}>Cancel</button><button onClick={addJob} disabled={!nName.trim()} style={{...bP,borderRadius:10,opacity:nName.trim()?1:0.5}}><Check size={14}/> Add Job</button></div>
       </Modal>}
+      {viewOrder&&<OrderPDF order={viewOrder} items={items} onClose={()=>setViewOrder(null)} />}
     </div>
   );
 }
