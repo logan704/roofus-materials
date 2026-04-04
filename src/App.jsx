@@ -182,19 +182,42 @@ async function deleteFromJN(jnFileId) {
 
 // Create OSB note in JobNimbus
 async function createOSBNote(order) {
-  if (!order.jnJobId || !order.osbDesc) return;
+  if (!order.jnJobId || !order.osbDesc) return null;
   try {
     const unit = order.osbQty === 1 ? "sheet" : "sheets";
     const jobName = order.jobName || "job";
     const noteText = order.type === "return"
       ? `Returned ${order.osbQty || 0} ${unit} 7/16 OSB from ${jobName}\nNote: ${order.osbDesc}`
       : `Brought ${order.osbQty || 0} ${unit} 7/16 OSB to ${jobName}\nNote: ${order.osbDesc}`;
-    await fetch("/api/jn-finance?action=create_note", {
+    const r = await fetch("/api/jn-finance?action=create_note", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId: order.jnJobId, note: noteText, typeName: "Wood/Upgrades" }),
     });
-  } catch (e) { console.error("JN note error:", e); }
+    const data = await r.json();
+    return data?.result?.data?.jnid || null;
+  } catch (e) { console.error("JN note error:", e); return null; }
+}
+
+async function deleteOSBNote(noteId) {
+  if (!noteId) return;
+  try { await fetch(`/api/jn-finance?action=delete_note&id=${noteId}`, { method: "DELETE" }); } catch (e) { console.error("JN note delete error:", e); }
+}
+
+async function updateOSBNote(noteId, order, newOsbQty) {
+  if (!noteId || !order.osbDesc) return;
+  try {
+    const unit = newOsbQty === 1 ? "sheet" : "sheets";
+    const jobName = order.jobName || "job";
+    const noteText = order.type === "return"
+      ? `Returned ${newOsbQty} ${unit} 7/16 OSB from ${jobName}\nNote: ${order.osbDesc}`
+      : `Brought ${newOsbQty} ${unit} 7/16 OSB to ${jobName}\nNote: ${order.osbDesc}`;
+    await fetch("/api/jn-finance?action=update_note", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ noteId, note: noteText }),
+    });
+  } catch (e) { console.error("JN note update error:", e); }
 }
 
 // ─── PDF VIEWER MODAL ───
@@ -452,6 +475,8 @@ export default function App() {
         onDelete={canDeleteOrders ? (id) => {
           const ord = orders.find((o) => o.id === id);
           if (ord) {
+            if (ord.jnFileId) deleteFromJN(ord.jnFileId);
+            if (ord.osbNoteId) deleteOSBNote(ord.osbNoteId);
             const updatedItems = items.map((it) => {
               const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
               if (!ls.length) return it;
@@ -511,6 +536,18 @@ export default function App() {
             uploadToJN(updatedOrd, items).then((newFileId) => {
               if (newFileId) sO((prev) => prev.map((o) => o.id === id ? { ...o, jnFileId: newFileId } : o));
             });
+          }
+          // Update OSB note if qty changed
+          if (updatedOrd.osbNoteId && updatedOrd.osbDesc) {
+            const iMap2 = Object.fromEntries(items.map((i) => [i.id, i]));
+            const newOsbQty = newLines.filter(l => (iMap2[l.itemId]?.name || "").toLowerCase() === "7/16 osb").reduce((s,l) => s + l.qty, 0);
+            if (newOsbQty > 0) {
+              updateOSBNote(updatedOrd.osbNoteId, updatedOrd, newOsbQty);
+              sO((prev) => prev.map((o) => o.id === id ? { ...o, osbQty: newOsbQty } : o));
+            } else {
+              deleteOSBNote(updatedOrd.osbNoteId);
+              sO((prev) => prev.map((o) => o.id === id ? { ...o, osbNoteId: "", osbDesc: "", osbQty: 0 } : o));
+            }
           }
         } : null}
       />}
@@ -984,15 +1021,17 @@ function Approvals({ orders, sO, items, sI, view }) {
       jnFileId = await uploadToJN(approvedOrder, items);
     }
     // Create OSB note in JN if applicable
+    let osbNoteId = null;
     if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
-      await createOSBNote(approvedOrder);
+      osbNoteId = await createOSBNote(approvedOrder);
     }
-    sO(orders.map((o) => o.id === id ? { ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "" } : o));
+    sO(orders.map((o) => o.id === id ? { ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" } : o));
   };
   const reject = (id) => { if (confirm("Reject this order?")) sO(orders.map((o) => o.id === id ? { ...o, status: "rejected", approvedDate: new Date().toISOString() } : o)); };
   const deleteOrder = (id) => {
     const ord = orders.find((o) => o.id === id);
     if (ord?.jnFileId) deleteFromJN(ord.jnFileId);
+    if (ord?.osbNoteId) deleteOSBNote(ord.osbNoteId);
     if (ord && sI) {
       sI(items.map((it) => {
         const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
