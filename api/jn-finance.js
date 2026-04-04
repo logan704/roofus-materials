@@ -38,7 +38,12 @@ module.exports = async (req, res) => {
 
   try {
     if (action === "ping") {
-      return res.status(200).json({ ok: true, version: "jn-finance-v2" });
+      return res.status(200).json({ ok: true, version: "jn-finance-v3" });
+    }
+
+    if (action === "probe_notes") {
+      const r = await jnGet("/activities?limit=5");
+      return res.status(200).json({ ok: true, activities: r });
     }
 
     if (action === "invoices") {
@@ -53,7 +58,6 @@ module.exports = async (req, res) => {
         hasMore = results.length === 500;
         page++;
       }
-
       const byJob = {};
       for (const inv of all) {
         const rels = inv.related || [];
@@ -62,22 +66,10 @@ module.exports = async (req, res) => {
           const rtype = typeof rel === "string" ? "unknown" : (rel.type || "");
           if (rtype === "job" || rtype === "unknown") {
             if (!byJob[rid]) byJob[rid] = [];
-            byJob[rid].push({
-              id: inv.jnid,
-              number: inv.number,
-              status: inv.status_name,
-              total: inv.total || 0,
-              paid: inv.total_paid || 0,
-              due: (inv.total || 0) - (inv.total_paid || 0),
-              created: inv.date_created,
-              dateDue: inv.date_due,
-              paidInFull: inv.date_paid_in_full || 0,
-              active: inv.is_active,
-            });
+            byJob[rid].push({ id: inv.jnid, number: inv.number, status: inv.status_name, total: inv.total || 0, paid: inv.total_paid || 0, due: (inv.total || 0) - (inv.total_paid || 0), created: inv.date_created, dateDue: inv.date_due, paidInFull: inv.date_paid_in_full || 0, active: inv.is_active });
           }
         }
       }
-
       return res.status(200).json({ ok: true, byJob, totalInvoices: all.length });
     }
 
