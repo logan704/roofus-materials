@@ -10,7 +10,7 @@ module.exports = async (req, res) => {
   const url = new URL(req.url, "https://" + req.headers.host);
   const action = url.searchParams.get("action");
   try {
-    if (action === "ping") return res.status(200).json({ ok: true, version: "jn-finance-v7" });
+    if (action === "ping") return res.status(200).json({ ok: true, version: "jn-finance-v8" });
     if (action === "invoices") {
       const all = []; let page = 0; let hasMore = true;
       while (hasMore && page < 10) { const offset = page * 500; const r = await jnReq("GET", "/invoices?select=jnid,number,status_name,total,total_paid,date_created,date_due,date_paid_in_full,related,is_active,is_archived&limit=500&offset=" + offset); const results = (r.data && r.data.results) || []; all.push(...results); hasMore = results.length === 500; page++; }
@@ -32,8 +32,9 @@ module.exports = async (req, res) => {
       return res.status(200).json({ ok: true, result: r });
     }
     if (action === "delete_note") {
-      const noteId = url.searchParams.get("id");
-      if (!noteId) return res.status(400).json({ error: "id required" });
+      const body = JSON.parse(JSON.stringify(req.body || {}));
+      const noteId = body.noteId || url.searchParams.get("id");
+      if (!noteId) return res.status(400).json({ error: "noteId required" });
       const r = await jnReq("DELETE", "/activities/" + noteId);
       return res.status(200).json({ ok: true, result: r });
     }

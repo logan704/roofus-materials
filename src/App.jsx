@@ -201,7 +201,7 @@ async function createOSBNote(order) {
 
 async function deleteOSBNote(noteId) {
   if (!noteId) return;
-  try { await fetch(`/api/jn-finance?action=delete_note&id=${noteId}`, { method: "DELETE" }); } catch (e) { console.error("JN note delete error:", e); }
+  try { await fetch("/api/jn-finance?action=delete_note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ noteId }) }); } catch (e) { console.error("JN note delete error:", e); }
 }
 
 async function updateOSBNote(noteId, order, newOsbQty) {
