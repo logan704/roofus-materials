@@ -180,6 +180,21 @@ async function deleteFromJN(jnFileId) {
   try { await fetch(`/api/jn?action=delete&id=${jnFileId}`, { method: "DELETE" }); } catch (e) { console.error("JN delete error:", e); }
 }
 
+// Create OSB note in JobNimbus
+async function createOSBNote(order) {
+  if (!order.jnJobId || !order.osbDesc) return;
+  try {
+    const prefix = order.type === "return" ? `Return: ${order.osbQty || 0}` : `${order.osbQty || 0}`;
+    const unit = order.osbQty === 1 ? "sheet" : "sheets";
+    const noteText = `${prefix} ${unit} 7/16 OSB — ${order.osbDesc}`;
+    await fetch("/api/jn-finance?action=create_note", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId: order.jnJobId, note: noteText, typeName: "Wood/Upgrades" }),
+    });
+  } catch (e) { console.error("JN note error:", e); }
+}
+
 // ─── PDF VIEWER MODAL ───
 function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
   const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
@@ -388,7 +403,7 @@ export default function App() {
 
           <NavBtn icon={FileText} label="History" active={pg === "history"} onClick={() => setPg("history")} />
           {(isA || isM) && <NavBtn icon={DollarSign} label="Jobs" active={pg === "jobs"} onClick={() => setPg("jobs")} />}
-          {isA && <NavBtn icon={BarChart2} label="Reports" active={pg === "reports"} onClick={() => setPg("reports")} />}
+          {isA && <NavBtn icon={BarChart2} label="Material Reports" active={pg === "reports"} onClick={() => setPg("reports")} />}
 
           {/* Settings Dropdown */}
           <div style={{ position: "relative" }}>
@@ -427,7 +442,7 @@ export default function App() {
         {pg === "supplier" && isA && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && isA && <TplMgr templates={templates} sT={sT} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} isA={isA} isM={isM} view={setVOrd} sO={sO} />}
-        {pg === "jobs" && (isA || isM) && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} />}
+        {pg === "jobs" && (isA || isM) && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} nav={setPg} />}
         {pg === "reports" && isA && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
         {pg === "settings" && isA && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
@@ -621,6 +636,8 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   const [jnAll, setJnAll] = useState([]);
   const [showJnDrop, setShowJnDrop] = useState(false);
   const [manualMode, setManualMode] = useState(false);
+  const [osbPrompt, setOsbPrompt] = useState(false);
+  const [osbDesc, setOsbDesc] = useState("");
 
   // Auto-load JN jobs on mount
   useEffect(() => {
@@ -696,9 +713,15 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
     return !hasOpts || (l.option && l.option !== "");
   });
 
+  const osbLines = lines.filter(l => (iMap[l.itemId]?.name || "").toLowerCase() === "7/16 osb");
+  const hasOSB = osbLines.length > 0;
+  const osbQty = osbLines.reduce((s,l) => s + l.qty, 0);
+  const osbUnit = iMap[osbLines[0]?.itemId]?.unit || "sheet";
+
   const submit = () => {
     if (!lines.length || !allOptionsSet) return;
-    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: "", jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
+    if (hasOSB && !osbDesc.trim()) { setOsbPrompt(true); return; }
+    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: "", jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     if (type === "order") {
       sI(items.map((it) => {
         const ls2 = lines.filter((l) => l.itemId === it.id);
@@ -933,6 +956,16 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
           </div>
         </div>
       </div>
+      {osbPrompt&&<Modal open onClose={()=>setOsbPrompt(false)} title="OSB Description Required">
+        <div style={{padding:"4px 0"}}>
+          <p style={{fontSize:14,color:C.t2,marginBottom:16}}>This {type==="return"?"return":"order"} includes <strong>{osbQty} {osbUnit}{osbQty!==1?"s":""} of 7/16 OSB</strong>. Please describe why the wood is needed{type==="return"?" or why it's being returned":""}.</p>
+          <Fld label="Description (required)"><textarea value={osbDesc} onChange={(e)=>setOsbDesc(e.target.value)} placeholder={type==="return"?"e.g. Unused sheets, no damage found":"e.g. Water damage on north side of roof, replacing 3 sheets"} rows={3} style={{...inp,resize:"vertical",minHeight:80}}/></Fld>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}}>
+            <button onClick={()=>setOsbPrompt(false)} style={{...bS,borderRadius:10}}>Cancel</button>
+            <button onClick={()=>{if(osbDesc.trim()){setOsbPrompt(false);setTimeout(submit,50);}}} disabled={!osbDesc.trim()} style={{...bP,borderRadius:10,opacity:osbDesc.trim()?1:0.5}}><Check size={14}/> Continue & Submit</button>
+          </div>
+        </div>
+      </Modal>}
     </div>
   );
 }
@@ -947,6 +980,10 @@ function Approvals({ orders, sO, items, sI, view }) {
     let jnFileId = null;
     if (approvedOrder.jnJobId) {
       jnFileId = await uploadToJN(approvedOrder, items);
+    }
+    // Create OSB note in JN if applicable
+    if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
+      await createOSBNote(approvedOrder);
     }
     sO(orders.map((o) => o.id === id ? { ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "" } : o));
   };
@@ -986,6 +1023,7 @@ function Approvals({ orders, sO, items, sI, view }) {
                 </div>
                 <div style={{ fontSize: 12, color: C.t2 }}>By {o.userName} · {fD(o.date)}{o.jobName ? ` · ${o.jobName}` : ""}</div>
                 <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{o.lines.length} items · Cost: {fmt$(cost)} · Sell: <strong style={{ color: C.ac }}>{fmt$(tot)}</strong></div>
+                {o.osbDesc&&<div style={{fontSize:12,marginTop:4,padding:"6px 10px",background:C.wrn+"12",borderRadius:6,border:`1px solid ${C.wrn}33`}}><strong style={{color:C.wrn}}>OSB Note:</strong> <span style={{color:C.txt}}>{o.osbQty} {o.osbQty===1?"sheet":"sheets"} — {o.osbDesc}</span></div>}
               </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                 <button onClick={() => view(o)} style={{ ...bS, padding: "8px 12px", fontSize: 12 }}><Eye size={13} /> View</button>
@@ -2553,7 +2591,7 @@ function SupplierCost({ items, sI }) {
 }
 
 // ═══ JOB PROFIT TRACKER ═══
-function JobTracker({ jobs, sJ, orders, items }) {
+function JobTracker({ jobs, sJ, orders, items, nav }) {
   const [view, setView] = useState("list"); // list, detail, reports, history
   const [editJob, setEditJob] = useState(null);
   const [filterStatus, setFilterStatus] = useState("all");
@@ -2569,6 +2607,8 @@ function JobTracker({ jobs, sJ, orders, items }) {
   const [jnFinance, setJnFinance] = useState({});
   const [finLoading, setFinLoading] = useState(false);
   const [viewOrder, setViewOrder] = useState(null);
+  const [showJobReports, setShowJobReports] = useState(false);
+  const [reportRange, setReportRange] = useState("all");
 
   const fetchFinance = useCallback(async () => {
     setFinLoading(true);
@@ -2615,7 +2655,7 @@ function JobTracker({ jobs, sJ, orders, items }) {
     const contract = j.contractAmount || 0;
     const costs = (j.costs || []).reduce((s,c) => s + (c.amount||0), 0);
     const linked = orders.filter((o) => o.jnJobId && o.jnJobId === j.jnJobId && o.status === "approved");
-    const matOrd = linked.reduce((s,o) => s + (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.markupCost||l.unitCost||0), 0), 0);
+    const matOrd = linked.reduce((s,o) => { const lt = (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.markupCost||l.unitCost||0), 0); return s + (o.type === "return" ? -lt : lt); }, 0);
     const total = costs + matOrd;
     const projGP$ = contract * ((j.projectedGP||0)/100);
     const actGP$ = contract - total;
@@ -2663,46 +2703,6 @@ function JobTracker({ jobs, sJ, orders, items }) {
   const deleteCost = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
   const updateJob = (jid,upd) => { sJ(jobs.map(j=>j.id===jid?{...j,...upd}:j)); };
 
-  // ── REPORTS ──
-  if (view === "reports") {
-    const fade = allCalc.filter(j=>j.status==="closed"&&j.variance<-500).sort((a,b)=>a.variance-b.variance);
-    const wins = allCalc.filter(j=>j.status==="closed"&&j.variance>500).sort((a,b)=>b.variance-a.variance);
-    const tL=closedJ.reduce((s,j)=>s+j.labor,0), tM=closedJ.reduce((s,j)=>s+j.mat,0), tO=closedJ.reduce((s,j)=>s+j.other,0), tAll=tL+tM+tO;
-    return (
-      <div className="fu">
-        <button onClick={()=>setView("list")} style={{...bS,marginBottom:16,borderRadius:10,padding:"8px 14px",fontSize:13}}><ArrowLeft size={14}/> Back to Jobs</button>
-        <h1 style={{fontSize:26,fontWeight:900,marginBottom:20,fontFamily:BC}}>JOB PROFITABILITY REPORTS</h1>
-        <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
-          {[{l:"Avg Proj GP%",v:avgProjGP.toFixed(1)+"%",c:C.blu},{l:"Avg Actual GP%",v:avgActGP.toFixed(1)+"%",c:avgActGP>=avgProjGP?C.grn:C.red},{l:"Proj Profit (Open)",v:fmt$(totProjProfit),c:C.blu},{l:"Actual Profit (Closed)",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
-            <div key={i} style={{flex:"1 1 200px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:20,textAlign:"center"}}>
-              <div style={{fontSize:11,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>{s.l}</div>
-              <div style={{fontSize:28,fontWeight:900,color:s.c,fontFamily:MN}}>{s.v}</div>
-            </div>
-          ))}
-        </div>
-        {tAll>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:24,marginBottom:20}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:16}}>Cost Breakdown (Completed)</div>
-          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
-            {[{l:"Labor",v:tL,c:C.blu},{l:"Materials",v:tM,c:RED},{l:"Other",v:tO,c:C.wrn}].map(c=>(
-              <div key={c.l} style={{flex:"1 1 150px",textAlign:"center"}}>
-                <div style={{fontSize:22,fontWeight:800,color:c.c,fontFamily:MN}}>{fmt$(c.v)}</div>
-                <div style={{fontSize:12,color:C.t2,marginTop:4}}>{c.l} · {tAll>0?((c.v/tAll)*100).toFixed(0):0}%</div>
-                <div style={{height:6,background:C.sf,borderRadius:3,marginTop:6}}><div style={{height:6,background:c.c,borderRadius:3,width:(tAll>0?(c.v/tAll)*100:0)+"%"}}/></div>
-              </div>
-            ))}
-          </div>
-        </div>}
-        {fade.length>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:24,marginBottom:20}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Profit Fade — Underperforming</div>
-          {fade.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.red,fontFamily:MN}}>{fmt$(j.variance)}</div><div style={{fontSize:10,color:C.t2}}>Proj {j.projectedGP}% → Actual {j.actGP.toFixed(1)}%</div></div></div>))}
-        </div>}
-        {wins.length>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:24}}>
-          <div style={{fontSize:13,fontWeight:700,color:C.grn,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Profit Wins — Overperforming</div>
-          {wins.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.grn,fontFamily:MN}}>+{fmt$(j.variance)}</div><div style={{fontSize:10,color:C.t2}}>Proj {j.projectedGP}% → Actual {j.actGP.toFixed(1)}%</div></div></div>))}
-        </div>}
-      </div>
-    );
-  }
 
   // ── JOB DETAIL ──
   if (editJob) {
@@ -2743,15 +2743,15 @@ function JobTracker({ jobs, sJ, orders, items }) {
               </div>
               {!(j.costs||[]).length&&!j.matOrd&&<div style={{padding:20,textAlign:"center",color:C.t2,fontSize:13}}>No costs yet.</div>}
               {(j.costs||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:c.category==="labor"?C.blu+"15":c.category==="material"?RED+"15":C.wrn+"15",color:c.category==="labor"?C.blu:c.category==="material"?RED:C.wrn}}>{c.category}</span><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(c.amount)}</span><button onClick={()=>{deleteCost(j.id,c.id); setEditJob({...editJob,costs:(editJob.costs||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
-              {(j.linkedOrders||[]).map(ord=>{const ordTotal=(ord.lines||[]).reduce((s,l)=>s+l.qty*(l.markupCost||l.unitCost||0),0); return (
+              {(j.linkedOrders||[]).map(ord=>{const ordTotal=(ord.lines||[]).reduce((s,l)=>s+l.qty*(l.markupCost||l.unitCost||0),0); const isRet=ord.type==="return"; return (
                 <div key={ord.id} onClick={()=>setViewOrder(ord)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,cursor:"pointer",transition:"background .15s",borderRadius:4}} onMouseEnter={(e)=>{e.currentTarget.style.background=C.sf;}} onMouseLeave={(e)=>{e.currentTarget.style.background="transparent";}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,background:RED+"15",color:RED}}>material</span>
+                    <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,background:isRet?C.grn+"15":RED+"15",color:isRet?C.grn:RED}}>{isRet?"return":"material"}</span>
                     <span style={{fontSize:13,fontWeight:600}}>{ord.jobName||"Material Order"}</span>
                     <span style={{fontSize:11,color:C.t2}}>{fD(ord.date)}</span>
                     <span style={{fontSize:10,color:C.blu,fontWeight:600}}>View →</span>
                   </div>
-                  <span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(ordTotal)}</span>
+                  <span style={{fontFamily:MN,fontWeight:700,fontSize:14,color:isRet?C.grn:C.txt}}>{isRet?"-":""}{fmt$(ordTotal)}</span>
                 </div>
               );})}
               {j.totalCosts>0&&<div style={{marginTop:12,paddingTop:12,borderTop:`2px solid ${C.brd}`}}>
@@ -2814,14 +2814,61 @@ function JobTracker({ jobs, sJ, orders, items }) {
 
   // ── LIST ──
   const isHistory = view === "history";
-  const listJobs = isHistory ? filtered.filter(j=>j.status==="closed") : filtered.filter(j=>j.status!=="closed");
+  const activeList = filtered.filter(j=>j.status!=="closed");
+  const historyList = filtered.filter(j=>j.status==="closed");
+  // Active: waiting_invoices first (oldest), then in_progress (oldest to newest)
+  if (sortBy === "date") {
+    activeList.sort((a,b) => { const sp={waiting_invoices:0,in_progress:1}; const pa=sp[a.status]??1, pb=sp[b.status]??1; if(pa!==pb) return pa-pb; return new Date(a.createdDate||0)-new Date(b.createdDate||0); });
+    historyList.sort((a,b) => new Date(b.completedDate||b.createdDate||0)-new Date(a.completedDate||a.createdDate||0));
+  }
+  const listJobs = isHistory ? historyList : activeList;
   const activeStatuses = STATUSES.filter(s=>s!=="closed");
+
+  // ── REPORT DATA ──
+  const now = Date.now();
+  const rangeMs = {all:0,"30":30*86400000,"90":90*86400000,"180":180*86400000,"365":365*86400000};
+  const rClosed = closedJ.filter(j => reportRange==="all" || (j.completedDate && (now - new Date(j.completedDate).getTime()) < rangeMs[reportRange]));
+  const rAll = allCalc.filter(j => reportRange==="all" || (j.createdDate && (now - new Date(j.createdDate).getTime()) < rangeMs[reportRange]));
+  const rAvgContract = rClosed.length ? rClosed.reduce((s,j)=>s+j.contractAmount,0)/rClosed.length : 0;
+  const rAvgGP = rClosed.length ? rClosed.reduce((s,j)=>s+j.actGP,0)/rClosed.length : 0;
+  const rAvgGP$ = rClosed.length ? rClosed.reduce((s,j)=>s+j.actGP$,0)/rClosed.length : 0;
+  const rAvgProjGP = rClosed.length ? rClosed.reduce((s,j)=>s+(j.projectedGP||0),0)/rClosed.length : 0;
+  const rTotContract = rClosed.reduce((s,j)=>s+j.contractAmount,0);
+  const rTotCosts = rClosed.reduce((s,j)=>s+j.totalCosts,0);
+  const rTotLabor = rClosed.reduce((s,j)=>s+j.labor,0);
+  const rTotMat = rClosed.reduce((s,j)=>s+j.mat,0);
+  const rTotOther = rClosed.reduce((s,j)=>s+j.other,0);
+  const rLaborPct = rTotContract>0 ? (rTotLabor/rTotContract*100) : 0;
+  const rMatPct = rTotContract>0 ? (rTotMat/rTotContract*100) : 0;
+  const rOtherPct = rTotContract>0 ? (rTotOther/rTotContract*100) : 0;
+  const rTotInvoiced = rAll.reduce((s,j)=>s+j.invoiced,0);
+  const rTotCollected = rAll.reduce((s,j)=>s+j.collected,0);
+  const rCollectionRate = rTotInvoiced>0 ? (rTotCollected/rTotInvoiced*100) : 0;
+  const rInsurance = rClosed.filter(j=>j.isInsurance);
+  const rRetail = rClosed.filter(j=>!j.isInsurance);
+  const rInsGP = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.actGP,0)/rInsurance.length : 0;
+  const rRetGP = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGP,0)/rRetail.length : 0;
+  const rInsAvgContract = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.contractAmount,0)/rInsurance.length : 0;
+  const rRetAvgContract = rRetail.length ? rRetail.reduce((s,j)=>s+j.contractAmount,0)/rRetail.length : 0;
+  const fade = rClosed.filter(j=>j.variance<-500).sort((a,b)=>a.variance-b.variance);
+  const wins = rClosed.filter(j=>j.variance>500).sort((a,b)=>b.variance-a.variance);
+  const unbilled = rAll.filter(j=>j.jnJobId&&j.contractAmount>0&&j.unbilled>500);
+  // GP trend by month
+  const monthMap = {};
+  rClosed.forEach(j => { const d = new Date(j.completedDate||j.createdDate); const k = d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); if(!monthMap[k]) monthMap[k]={month:k,count:0,totalGP:0}; monthMap[k].count++; monthMap[k].totalGP+=j.actGP; });
+  const gpTrend = Object.values(monthMap).map(m=>({month:m.month,gp:+(m.totalGP/m.count).toFixed(1)})).sort((a,b)=>a.month.localeCompare(b.month)).slice(-12);
+
+  const dBtn = (label, icon, open, onClick, color) => (
+    <button onClick={onClick} style={{flex:"1 1 200px",display:"flex",alignItems:"center",justifyContent:"center",gap:10,padding:"18px 24px",background:open?color:C.card,color:open?"#fff":color,border:`2px solid ${color}`,borderRadius:14,fontSize:16,fontWeight:800,cursor:"pointer",transition:"all .2s",fontFamily:BC,letterSpacing:".03em"}}>
+      {icon} {label} <ChevronDown size={18} style={{transform:open?"rotate(180deg)":"rotate(0)",transition:"transform .2s"}}/>
+    </button>
+  );
 
   return (
     <div className="fu">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
         <div><h1 style={{fontSize:26,fontWeight:900,fontFamily:BC}}>JOBS</h1><p style={{color:C.t2,fontSize:14,marginTop:4}}>{jobs.length} total · {activeJ.length} active · {closedJ.length} closed</p></div>
-        <div style={{display:"flex",gap:8}}><button onClick={fetchFinance} disabled={finLoading} style={{...bS,borderRadius:10,padding:"10px 16px",fontSize:13,opacity:finLoading?0.5:1}}><RotateCcw size={14}/> {finLoading?"Syncing...":"Sync JN"}</button><button onClick={()=>setView("reports")} style={{...bS,borderRadius:10,padding:"10px 16px",fontSize:13}}><BarChart2 size={14}/> Reports</button><button onClick={()=>setAddModal(true)} style={{...bP,borderRadius:10,padding:"10px 16px",fontSize:13}}><Plus size={14}/> Add Job</button></div>
+        <div style={{display:"flex",gap:8}}><button onClick={fetchFinance} disabled={finLoading} style={{...bS,borderRadius:10,padding:"10px 16px",fontSize:13,opacity:finLoading?0.5:1}}><RotateCcw size={14}/> {finLoading?"Syncing...":"Sync JN"}</button><button onClick={()=>setAddModal(true)} style={{...bP,borderRadius:10,padding:"10px 16px",fontSize:13}}><Plus size={14}/> Add Job</button></div>
       </div>
 
       {/* ACTIVE / HISTORY TABS */}
@@ -2829,6 +2876,94 @@ function JobTracker({ jobs, sJ, orders, items }) {
         <button onClick={()=>setView("list")} style={{...(!isHistory?bP:bS),borderRadius:10,padding:"10px 20px",fontSize:14,fontWeight:700}}>Active Jobs ({activeJ.length})</button>
         <button onClick={()=>setView("history")} style={{...(isHistory?bP:bS),borderRadius:10,padding:"10px 20px",fontSize:14,fontWeight:700}}>History ({closedJ.length})</button>
       </div>
+
+      {/* REPORT DROPDOWNS */}
+      <div style={{display:"flex",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+        {dBtn("Job Gross Profit",<DollarSign size={20}/>,showJobReports,()=>setShowJobReports(!showJobReports),NAVY)}
+        {dBtn("Material Reports",<Package size={20}/>,false,()=>nav("reports"),RED)}
+      </div>
+
+      {showJobReports&&<div style={{background:C.card,borderRadius:16,border:`2px solid ${NAVY}22`,padding:24,marginBottom:20,boxShadow:"0 4px 16px rgba(0,0,0,0.06)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:8}}>
+          <h2 style={{fontSize:20,fontWeight:900,fontFamily:BC,color:NAVY}}>JOB GROSS PROFIT REPORTS</h2>
+          <select value={reportRange} onChange={(e)=>setReportRange(e.target.value)} style={{...inp,width:"auto",minWidth:130,borderRadius:10,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}><option value="all">All Time</option><option value="30">Last 30 Days</option><option value="90">Last 90 Days</option><option value="180">Last 6 Months</option><option value="365">Last 12 Months</option></select>
+        </div>
+
+        {/* SUMMARY CARDS */}
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:20}}>
+          {[{l:"Closed Jobs",v:rClosed.length,c:C.blu},{l:"Avg Contract",v:fmt$(rAvgContract),c:C.txt},{l:"Avg GP%",v:rAvgGP.toFixed(1)+"%",c:rAvgGP>=rAvgProjGP?C.grn:C.red},{l:"Avg GP$",v:fmt$(rAvgGP$),c:rAvgGP$>=0?C.grn:C.red},{l:"Collection Rate",v:rCollectionRate.toFixed(0)+"%",c:rCollectionRate>=90?C.grn:C.wrn}].map((s,i)=>(
+            <div key={i} style={{flex:"1 1 140px",background:C.sf,borderRadius:12,padding:"14px 16px",textAlign:"center"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>{s.l}</div><div style={{fontSize:22,fontWeight:900,color:s.c,fontFamily:MN}}>{s.v}</div></div>
+          ))}
+        </div>
+
+        {/* PROJECTED VS ACTUAL */}
+        <div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Projected vs Actual GP%</div>
+          <div style={{display:"flex",gap:20,flexWrap:"wrap",alignItems:"center"}}>
+            <div style={{flex:"1 1 150px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Projected</div><div style={{fontSize:32,fontWeight:900,color:C.blu,fontFamily:MN}}>{rAvgProjGP.toFixed(1)}%</div></div>
+            <div style={{fontSize:24,color:C.t2}}>→</div>
+            <div style={{flex:"1 1 150px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Actual</div><div style={{fontSize:32,fontWeight:900,color:rAvgGP>=rAvgProjGP?C.grn:C.red,fontFamily:MN}}>{rAvgGP.toFixed(1)}%</div></div>
+            <div style={{flex:"1 1 150px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Difference</div><div style={{fontSize:32,fontWeight:900,color:(rAvgGP-rAvgProjGP)>=0?C.grn:C.red,fontFamily:MN}}>{(rAvgGP-rAvgProjGP)>=0?"+":""}{(rAvgGP-rAvgProjGP).toFixed(1)}%</div></div>
+          </div>
+        </div>
+
+        {/* COST AS % OF CONTRACT */}
+        {rTotContract>0&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Avg Cost as % of Contract (Closed Jobs)</div>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+            {[{l:"Labor",v:rLaborPct,c:C.blu},{l:"Materials",v:rMatPct,c:RED},{l:"Other",v:rOtherPct,c:C.wrn}].map(c=>(
+              <div key={c.l} style={{flex:"1 1 150px",textAlign:"center"}}>
+                <div style={{fontSize:28,fontWeight:900,color:c.c,fontFamily:MN}}>{c.v.toFixed(1)}%</div>
+                <div style={{fontSize:12,color:C.t2,marginTop:2}}>{c.l} · {fmt$(c.l==="Labor"?rTotLabor:c.l==="Materials"?rTotMat:rTotOther)}</div>
+                <div style={{height:8,background:"#fff",borderRadius:4,marginTop:8}}><div style={{height:8,background:c.c,borderRadius:4,width:Math.min(c.v,100)+"%"}}/></div>
+              </div>
+            ))}
+          </div>
+          <div style={{textAlign:"center",marginTop:12,fontSize:13,fontWeight:700,color:C.t2}}>Total Cost: {fmt$(rTotCosts)} of {fmt$(rTotContract)} ({rTotContract>0?(rTotCosts/rTotContract*100).toFixed(1):0}%)</div>
+        </div>}
+
+        {/* INSURANCE VS RETAIL */}
+        {(rInsurance.length>0||rRetail.length>0)&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Insurance vs Retail</div>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+            {[{l:"Insurance",count:rInsurance.length,gp:rInsGP,contract:rInsAvgContract,c:C.blu},{l:"Retail",count:rRetail.length,gp:rRetGP,contract:rRetAvgContract,c:C.wrn}].map(t=>(
+              <div key={t.l} style={{flex:"1 1 200px",background:"#fff",borderRadius:12,padding:16,border:`1px solid ${C.brd}`}}>
+                <div style={{fontSize:14,fontWeight:800,color:t.c,marginBottom:10}}>{t.l} ({t.count} jobs)</div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}}><span style={{color:C.t2}}>Avg GP%</span><span style={{fontWeight:700,fontFamily:MN}}>{t.gp.toFixed(1)}%</span></div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}><span style={{color:C.t2}}>Avg Contract</span><span style={{fontWeight:700,fontFamily:MN}}>{fmt$(t.contract)}</span></div>
+              </div>
+            ))}
+          </div>
+        </div>}
+
+        {/* GP TREND BY MONTH */}
+        {gpTrend.length>1&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>GP% Trend by Month</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={gpTrend}><CartesianGrid strokeDasharray="3 3" stroke={C.brd}/><XAxis dataKey="month" tick={{fontSize:10}} stroke={C.t2}/><YAxis tick={{fontSize:10}} stroke={C.t2} unit="%"/><Tooltip formatter={(v)=>v+"%"}/><Bar dataKey="gp" fill={NAVY} radius={[4,4,0,0]}/></BarChart>
+          </ResponsiveContainer>
+        </div>}
+
+        {/* PROFIT FADE */}
+        {fade.length>0&&<div style={{background:"#fff",borderRadius:14,border:`1px solid ${C.brd}`,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Profit Fade — Underperforming ({fade.length})</div>
+          {fade.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.red,fontFamily:MN}}>{fmt$(j.variance)}</div><div style={{fontSize:10,color:C.t2}}>Proj {j.projectedGP}% → Actual {j.actGP.toFixed(1)}%</div></div></div>))}
+        </div>}
+
+        {/* PROFIT WINS */}
+        {wins.length>0&&<div style={{background:"#fff",borderRadius:14,border:`1px solid ${C.brd}`,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.grn,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Profit Wins — Overperforming ({wins.length})</div>
+          {wins.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.grn,fontFamily:MN}}>+{fmt$(j.variance)}</div><div style={{fontSize:10,color:C.t2}}>Proj {j.projectedGP}% → Actual {j.actGP.toFixed(1)}%</div></div></div>))}
+        </div>}
+
+        {/* UNBILLED JOBS */}
+        {unbilled.length>0&&<div style={{background:"#fff",borderRadius:14,border:`1px solid ${C.brd}`,padding:20}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.wrn,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Unbilled — Contract {'>'} Invoiced ({unbilled.length})</div>
+          {unbilled.slice(0,10).map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14}}>{j.name}</div><div style={{fontSize:11,color:C.t2}}>{j.address}</div></div><div style={{textAlign:"right"}}><div style={{fontWeight:700,fontFamily:MN}}>{fmt$(j.contractAmount)}</div><div style={{fontSize:10,color:C.t2}}>Invoiced: {fmt$(j.invoiced)} · Unbilled: <span style={{color:C.wrn,fontWeight:700}}>{fmt$(j.unbilled)}</span></div></div></div>))}
+        </div>}
+
+        {!rClosed.length&&<div style={{padding:30,textAlign:"center",color:C.t2,fontSize:14}}>No closed jobs in this time range. Close some jobs to see reports.</div>}
+      </div>}
 
       <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
         {[{l:"Active",v:activeJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Invoiced",v:fmt$(totInvoiced),c:NAVY},{l:"Collected",v:fmt$(totCollected),c:C.grn},{l:"Closed",v:closedJ.length,c:C.grn},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
