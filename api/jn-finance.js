@@ -1,6 +1,6 @@
 const https = require("https");
 
-const JN_KEY = process.env.JN_KEY || process.env.JN_API_KEY || process.env.JOBNIMBUS_KEY || "";
+var KEY = "mn9nk0ezvo8k986n";
 const JN_BASE = "app.jobnimbus.com";
 
 function jnGet(path) {
@@ -10,7 +10,7 @@ function jnGet(path) {
       path: "/api1" + path,
       method: "GET",
       headers: {
-        Authorization: "Bearer " + JN_KEY,
+        Authorization: "Bearer " + KEY,
         "Content-Type": "application/json",
       },
     };
@@ -38,7 +38,7 @@ module.exports = async (req, res) => {
 
   try {
     if (action === "ping") {
-      return res.status(200).json({ ok: true, version: "jn-finance-v1", hasKey: !!JN_KEY });
+      return res.status(200).json({ ok: true, version: "jn-finance-v1" });
     }
 
     if (action === "probe") {
@@ -51,7 +51,7 @@ module.exports = async (req, res) => {
         const pay = await jnGet("/payments?limit=3");
         results.payments = pay;
       } catch (e) { results.payments = { error: e.message }; }
-      return res.status(200).json({ ok: true, keyPresent: !!JN_KEY, probe: results });
+      return res.status(200).json({ ok: true, probe: results });
     }
 
     return res.status(400).json({ error: "Unknown action: " + action });
