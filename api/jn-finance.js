@@ -11,7 +11,23 @@ module.exports = async (req, res) => {
   const url = new URL(req.url, "https://" + req.headers.host);
   const action = url.searchParams.get("action");
   try {
-    if (action === "ping") return res.status(200).json({ ok: true, version: "jn-finance-v4" });
+    if (action === "ping") return res.status(200).json({ ok: true, version: "jn-finance-v5" });
+    if (action === "test_note") {
+      const jobId = url.searchParams.get("jobId");
+      if (!jobId) return res.status(400).json({ error: "add ?jobId=XXXXX to the URL" });
+      var results = {};
+      try {
+        var r1 = await jnPost("/activities", { record_type_name: "Wood/Upgrades", note: "TEST - 2 sheets 7/16 OSB - portal test note", related: [jobId], is_active: true });
+        results.attempt1_flat_related = r1;
+      } catch(e) { results.attempt1_flat_related = { error: e.message }; }
+      if (results.attempt1_flat_related && results.attempt1_flat_related.status && results.attempt1_flat_related.status !== 200) {
+        try {
+          var r2 = await jnPost("/activities", { record_type_name: "Wood/Upgrades", note: "TEST - 2 sheets 7/16 OSB - portal test note", primary: { id: jobId }, is_active: true });
+          results.attempt2_primary = r2;
+        } catch(e) { results.attempt2_primary = { error: e.message }; }
+      }
+      return res.status(200).json({ ok: true, results: results });
+    }
     if (action === "invoices") {
       const all = []; let page = 0; let hasMore = true;
       while (hasMore && page < 10) { const offset = page * 500; const r = await jnGet("/invoices?select=jnid,number,status_name,total,total_paid,date_created,date_due,date_paid_in_full,related,is_active,is_archived&limit=500&offset=" + offset); const results = (r.data && r.data.results) || []; all.push(...results); hasMore = results.length === 500; page++; }
