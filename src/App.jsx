@@ -184,9 +184,11 @@ async function deleteFromJN(jnFileId) {
 async function createOSBNote(order) {
   if (!order.jnJobId || !order.osbDesc) return;
   try {
-    const prefix = order.type === "return" ? `Return: ${order.osbQty || 0}` : `${order.osbQty || 0}`;
     const unit = order.osbQty === 1 ? "sheet" : "sheets";
-    const noteText = `${prefix} ${unit} 7/16 OSB — ${order.osbDesc}`;
+    const jobName = order.jobName || "job";
+    const noteText = order.type === "return"
+      ? `Returned ${order.osbQty || 0} ${unit} 7/16 OSB from ${jobName}\nNote: ${order.osbDesc}`
+      : `Brought ${order.osbQty || 0} ${unit} 7/16 OSB to ${jobName}\nNote: ${order.osbDesc}`;
     await fetch("/api/jn-finance?action=create_note", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
