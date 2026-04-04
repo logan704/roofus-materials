@@ -370,6 +370,14 @@ export default function App() {
     })();
   }, []);
 
+  // Set favicon to Roof USA logo
+  useEffect(() => {
+    const link = document.querySelector("link[rel~='icon']") || document.createElement("link");
+    link.rel = "icon"; link.type = "image/png"; link.href = LOGO;
+    document.head.appendChild(link);
+    document.title = "Roofus Portal — Roof USA";
+  }, []);
+
   const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
   const sI = useCallback((i) => { setItems(i); sv("items", i); }, []);
   const sO = useCallback((o) => { setOrders(o); sv("orders", o); }, []);
@@ -389,7 +397,7 @@ export default function App() {
   // Close dropdowns on page change
   useEffect(() => { setMatDrop(false); setSettDrop(false); }, [pg]);
 
-  if (!rdy) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: C.bg }}><style>{CSS}</style><img src={LOGO} alt="" style={{ height: 60 }} /></div>;
+  if (!rdy) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: C.bg }}><style>{CSS}</style><img src={LOGO} alt="" style={{ height: 60, mixBlendMode: "multiply" }} /></div>;
   if (!user) return <><style>{CSS}</style><Auth users={users} sU={sU} login={login} /></>;
 
   const pendCt = orders.filter((o) => o.status === "pending").length;
@@ -400,7 +408,7 @@ export default function App() {
       {/* HEADER */}
       <div style={{ background: "#FFFFFF", borderBottom: `3px solid ${RED}`, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100, flexWrap: "wrap", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setPg("home")}>
-          <img src={LOGO} alt="Roof USA" style={{ height: 36 }} />
+          <img src={LOGO} alt="Roof USA" style={{ height: 36, mixBlendMode: "multiply" }} />
         </div>
         <div className="nav-wrap" style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
           <NavBtn icon={Home} label="Home" active={pg === "home"} onClick={() => setPg("home")} />
