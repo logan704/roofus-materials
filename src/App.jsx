@@ -1173,7 +1173,7 @@ function ItemMgr({ items, sI, orders }) {
                     <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 600, color: (vData.qty || 0) <= 0 ? C.red : C.txt }}>{vData.qty || 0} {it.unit}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 700, color: isLow ? C.red : afterP < (vData.qty||0) ? C.wrn : C.grn }}>{afterP} {it.unit}{pending > 0 ? <span style={{fontSize:9,color:C.t2,marginLeft:4}}>(-{pending})</span> : ""}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN }}>{fmt$(vData.wac)}</td>
-                    <td style={{ padding: "9px 10px", fontFamily: MN, color: C.blu }}>{vi === 0 ? fmt$(it.supplierCost || 0) : ""}</td>
+                    <td style={{ padding: "9px 10px", fontFamily: MN, color: C.blu }}>{fmt$(it.supplierCost || 0)}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN }}>{vi === 0 ? `${it.markup || 0}%` : ""}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 600, color: C.ac }}>{fmt$((vData.wac || 0) * (1 + (it.markup || 0) / 100))}</td>
                     <td style={{ padding: "9px 10px" }}>
