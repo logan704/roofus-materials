@@ -3468,32 +3468,110 @@ function Reports({ orders, items, shrinkLog }) {
       {/* ── AGING ── */}
       {tab === "aging" && (() => {
         const now = Date.now();
-        const agingData = items.filter(filterItem).filter((it) => totalStock(it) > 0).map((it) => {
-          const mv = itemMovement[it.id];
-          const daysSinceSale = mv?.lastUsed ? Math.floor((now - mv.lastUsed) / 86400000) : 999;
-          const bucket = daysSinceSale <= 30 ? "0-30" : daysSinceSale <= 60 ? "31-60" : daysSinceSale <= 90 ? "61-90" : "90+";
-          return { ...it, daysSinceSale, bucket, stock: totalStock(it), value: totalStock(it) * overallWAC(it) };
-        }).sort((a, b) => b.daysSinceSale - a.daysSinceSale);
-        const buckets = { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0 };
-        agingData.forEach((d) => { buckets[d.bucket] += d.value; });
+        const d30 = 30*86400000, d90 = 90*86400000, d180 = 180*86400000;
+        // Build per-variant sales data at WAC for each period
+        const varSales = {}; // key -> { s30, s90, s180 }
+        const varLast = {}; // key -> lastUsed date
+        orders.filter(o => o.status === "approved").forEach(o => {
+          const dt = new Date(o.approvedDate || o.date).getTime();
+          const mult = o.type === "return" ? -1 : 1;
+          if (o.type !== "order" && o.type !== "return") return;
+          o.lines.forEach(l => {
+            const k = l.itemId + ":" + (l.option || "_default");
+            if (!varSales[k]) varSales[k] = { s30: 0, s90: 0, s180: 0 };
+            const cost = l.qty * (l.unitCost || 0) * mult;
+            if (o.type === "order") {
+              if ((now - dt) <= d30) varSales[k].s30 += cost;
+              if ((now - dt) <= d90) varSales[k].s90 += cost;
+              if ((now - dt) <= d180) varSales[k].s180 += cost;
+              if (!varLast[k] || dt > varLast[k]) varLast[k] = dt;
+            }
+          });
+        });
+        // Build per-variant rows
+        const rows = [];
+        items.filter(filterItem).forEach(it => {
+          const v = getVariants(it);
+          Object.entries(v).forEach(([opt, vd]) => {
+            if ((vd.qty || 0) <= 0) return;
+            const k = it.id + ":" + opt;
+            const investment = (vd.qty || 0) * (vd.wac || 0);
+            const sales = varSales[k] || { s30: 0, s90: 0, s180: 0 };
+            const vel30 = investment > 0 ? (sales.s30 / investment) * 100 : 0;
+            const vel90 = investment > 0 ? (sales.s90 / investment) * 100 : 0;
+            const vel180 = investment > 0 ? (sales.s180 / investment) * 100 : 0;
+            const lastDt = varLast[k] || null;
+            const daysSince = lastDt ? Math.floor((now - lastDt) / 86400000) : 999;
+            rows.push({ id: k, name: it.name, category: it.category, option: opt === "_default" ? "—" : opt, unit: it.unit, qty: vd.qty || 0, wac: vd.wac || 0, investment, s30: sales.s30, s90: sales.s90, s180: sales.s180, vel30, vel90, vel180, daysSince });
+          });
+        });
+        // Dead stock = has stock but zero sales in 180 days
+        const deadStock = rows.filter(r => r.s180 === 0).sort((a, b) => b.investment - a.investment);
+        const movers = rows.filter(r => r.s180 > 0);
+        // Worst 5 by velocity (lowest %) for each period
+        const worst30 = [...movers].sort((a, b) => a.vel30 - b.vel30).slice(0, 5);
+        const worst90 = [...movers].sort((a, b) => a.vel90 - b.vel90).slice(0, 5);
+        const worst180 = [...movers].sort((a, b) => a.vel180 - b.vel180).slice(0, 5);
+        const deadTotal = deadStock.reduce((s, r) => s + r.investment, 0);
+        const velCard = (label, items2, period) => (
+          <div style={{flex:"1 1 300px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:18}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>{label} — Slowest Movers</div>
+            {!items2.length&&<div style={{color:C.t2,fontSize:12}}>No sales data yet</div>}
+            {items2.map((r, i) => {
+              const vel = period === 30 ? r.vel30 : period === 90 ? r.vel90 : r.vel180;
+              return (
+              <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${C.brd}`}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:600}}>{r.name}{r.option !== "—" ? <span style={{color:C.blu,marginLeft:6,fontSize:11}}>{r.option}</span> : ""}</div>
+                  <div style={{fontSize:10,color:C.t2}}>Invested: {fmt$(r.investment)} · Sold: {fmt$(period === 30 ? r.s30 : period === 90 ? r.s90 : r.s180)}</div>
+                </div>
+                <div style={{fontFamily:MN,fontWeight:800,fontSize:16,color:vel < 10 ? C.red : vel < 30 ? C.wrn : C.grn,minWidth:60,textAlign:"right"}}>{vel.toFixed(1)}%</div>
+              </div>
+            );})}
+          </div>
+        );
+        // Sort detailed table by worst 90-day velocity
+        const allSorted = [...rows].sort((a, b) => a.vel90 - b.vel90);
         return (
           <div>
-            <Rw g={14}>
-              {Object.entries(buckets).map(([b, v]) => (
-                <Stat key={b} label={`${b} days`} value={fmt$(v)} color={b === "90+" ? C.red : b === "61-90" ? C.wrn : C.grn} />
-              ))}
-            </Rw>
-            <div style={{ ...crd, padding: 0, marginTop: 14 }}><div style={{ overflowX: "auto", maxHeight: 400 }}>
+            {/* DEAD STOCK CALLOUT */}
+            {deadStock.length > 0 && <div style={{background:C.red+"08",borderRadius:14,border:`1px solid ${C.red}22`,padding:18,marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div style={{fontSize:13,fontWeight:800,color:C.red,textTransform:"uppercase",letterSpacing:".08em"}}>Dead Stock — Zero Sales in 180 Days</div>
+                <div style={{fontSize:18,fontWeight:900,fontFamily:MN,color:C.red}}>{fmt$(deadTotal)} tied up</div>
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {deadStock.slice(0, 10).map(r => (
+                  <div key={r.id} style={{background:"#fff",borderRadius:8,padding:"8px 12px",border:`1px solid ${C.brd}`,fontSize:12}}>
+                    <div style={{fontWeight:700}}>{r.name}{r.option !== "—" ? <span style={{color:C.blu,marginLeft:4,fontSize:10}}>{r.option}</span> : ""}</div>
+                    <div style={{color:C.t2,fontSize:11}}>{r.qty} {r.unit} · {fmt$(r.investment)}</div>
+                  </div>
+                ))}
+                {deadStock.length > 10 && <div style={{alignSelf:"center",fontSize:12,color:C.t2}}>+{deadStock.length - 10} more</div>}
+              </div>
+            </div>}
+
+            {/* VELOCITY RANKINGS */}
+            <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20}}>
+              {velCard("30 Days", worst30, 30)}
+              {velCard("90 Days", worst90, 90)}
+              {velCard("180 Days", worst180, 180)}
+            </div>
+
+            {/* DETAILED TABLE */}
+            <div style={{ ...crd, padding: 0 }}><div style={{ overflowX: "auto", maxHeight: 500 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead><tr>{["Item", "Category", "On Hand", "Value", "Days Since Last Sale", "Bucket"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
-                <tbody>{agingData.map((d) => (
-                  <tr key={d.id} style={{ borderBottom: `1px solid ${C.brd}`, background: d.daysSinceSale > 90 ? C.red + "08" : "transparent" }}>
+                <thead><tr>{["Item", "Category", "Color/Style", "On Hand", "Investment", "90d Sales", "90d Velocity", "Days Since Sale"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+                <tbody>{allSorted.map((d) => (
+                  <tr key={d.id} style={{ borderBottom: `1px solid ${C.brd}`, background: d.daysSince >= 999 ? C.red + "06" : d.vel90 < 10 ? C.wrn + "06" : "transparent" }}>
                     <td style={{ ...tdS, fontWeight: 600 }}>{d.name}</td>
                     <td style={{ ...tdS, color: C.t2 }}>{d.category}</td>
-                    <td style={{ ...tdS, fontFamily: MN }}>{d.stock} {d.unit}</td>
-                    <td style={{ ...tdS, fontFamily: MN }}>{fmt$(d.value)}</td>
-                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: d.daysSinceSale > 90 ? C.red : d.daysSinceSale > 60 ? C.wrn : C.grn }}>{d.daysSinceSale >= 999 ? "Never" : d.daysSinceSale}</td>
-                    <td style={{ ...tdS, fontWeight: 600 }}>{d.bucket}</td>
+                    <td style={{ ...tdS, fontWeight: 600, color: d.option === "—" ? C.t2 : C.txt }}>{d.option}</td>
+                    <td style={{ ...tdS, fontFamily: MN }}>{d.qty} {d.unit}</td>
+                    <td style={{ ...tdS, fontFamily: MN }}>{fmt$(d.investment)}</td>
+                    <td style={{ ...tdS, fontFamily: MN, color: d.s90 > 0 ? C.grn : C.t2 }}>{fmt$(d.s90)}</td>
+                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: d.vel90 < 10 ? C.red : d.vel90 < 30 ? C.wrn : C.grn }}>{d.vel90.toFixed(1)}%</td>
+                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: d.daysSince > 90 ? C.red : d.daysSince > 30 ? C.wrn : C.grn }}>{d.daysSince >= 999 ? "Never" : d.daysSince + "d"}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -3512,7 +3590,17 @@ function Reports({ orders, items, shrinkLog }) {
           byItem[k].qty += l.qty; byItem[k].rev += l.qty * (l.markupCost || 0); byItem[k].cost += l.qty * (l.unitCost || 0);
         }));
         const salesData = Object.values(byItem).sort((a, b) => b.qty - a.qty);
-        const noMovement = items.filter(filterItem).filter((it) => !rangeOrders.some((o) => o.lines.some((l) => l.itemId === it.id)));
+        const movedVariants = new Set();
+        rangeOrders.forEach(o => o.lines.forEach(l => { movedVariants.add(l.itemId + ":" + (l.option || "_default")); }));
+        const noMovement = [];
+        items.filter(filterItem).forEach(it => {
+          const v = getVariants(it);
+          Object.entries(v).forEach(([opt, vd]) => {
+            if ((vd.qty || 0) <= 0) return;
+            const k = it.id + ":" + opt;
+            if (!movedVariants.has(k)) noMovement.push({ id: k, name: it.name, option: opt === "_default" ? "" : opt, qty: vd.qty || 0, unit: it.unit, category: it.category });
+          });
+        });
         const tRev = salesData.reduce((s, d) => s + d.rev, 0);
         const tCost2 = salesData.reduce((s, d) => s + d.cost, 0);
         return (
@@ -3540,8 +3628,8 @@ function Reports({ orders, items, shrinkLog }) {
               </div>
               {noMovement.length > 0 && <div style={{ ...crd, flex: "1 1 280px" }}>
                 <div style={{ ...lbl, marginBottom: 10, color: C.wrn }}>No Movement ({noMovement.length})</div>
-                {noMovement.slice(0, 20).map((it) => (
-                  <div key={it.id} style={{ padding: "4px 0", borderBottom: `1px solid ${C.brd}`, fontSize: 12 }}>{it.name} <span style={{ color: C.t2 }}>· {totalStock(it)} {it.unit}</span></div>
+                {noMovement.slice(0, 30).map((d) => (
+                  <div key={d.id} style={{ padding: "4px 0", borderBottom: `1px solid ${C.brd}`, fontSize: 12 }}>{d.name}{d.option ? <span style={{ fontWeight: 600 }}> — {d.option}</span> : ""} <span style={{ color: C.t2 }}>· {d.qty} {d.unit}</span></div>
                 ))}
               </div>}
             </div>
@@ -3551,38 +3639,240 @@ function Reports({ orders, items, shrinkLog }) {
 
       {/* ── REORDER ── */}
       {tab === "reorder" && (() => {
-        // Build per-variant reorder list
-        const reorderRows = [];
-        items.filter(filterItem).forEach((it) => {
-          const v = getVariants(it);
-          Object.entries(v).forEach(([opt, vd]) => {
-            const ms = vd.minStock || 0;
-            if (ms <= 0) return;
-            const need = Math.max(0, ms - (vd.qty || 0));
-            reorderRows.push({ itemId: it.id, name: it.name, category: it.category, unit: it.unit, optName: opt, qty: vd.qty || 0, minStock: ms, need, below: (vd.qty || 0) <= ms, wac: vd.wac || 0 });
+        const now = new Date();
+        const nowMs = now.getTime();
+        const curMonth = now.getMonth();
+        const curYear = now.getFullYear();
+
+        // Build per-variant monthly usage from all approved orders
+        const varMonthly = {};
+        orders.filter(o => o.status === "approved").forEach(o => {
+          const dt = new Date(o.approvedDate || o.date);
+          const ym = dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0");
+          const mult = o.type === "return" ? -1 : 1;
+          if (o.type !== "order" && o.type !== "return") return;
+          o.lines.forEach(l => {
+            const k = l.itemId + ":" + (l.option || "_default");
+            if (!varMonthly[k]) varMonthly[k] = {};
+            varMonthly[k][ym] = (varMonthly[k][ym] || 0) + l.qty * mult;
           });
         });
-        reorderRows.sort((a, b) => (b.below ? 1 : 0) - (a.below ? 1 : 0) || b.need - a.need);
+
+        // Data age
+        const allDates = orders.filter(o => o.status === "approved").map(o => new Date(o.approvedDate || o.date).getTime());
+        const earliestMs = allDates.length ? Math.min(...allDates) : nowMs;
+        const dataMonths = Math.max(1, Math.floor((nowMs - earliestMs) / (30*86400000)));
+
+        // Smart prediction per variant
+        const calcPrediction = (k) => {
+          const monthly = varMonthly[k] || {};
+          const entries = Object.entries(monthly).map(([ym, qty]) => {
+            const [y,m] = ym.split("-").map(Number);
+            return { ym, qty: Math.max(0, qty), month: m-1, year: y, ts: new Date(y, m-1, 15).getTime() };
+          }).sort((a,b) => a.ts - b.ts);
+
+          if (!entries.length) return { rate: 0, trend: 0, seasonalFactors: null, confidence: 0, projections: new Array(12).fill(0) };
+
+          // Outlier cap: months > 2.5x median capped at 1.5x median
+          const sorted = entries.map(e => e.qty).sort((a,b) => a-b);
+          const median = sorted[Math.floor(sorted.length/2)] || 0;
+          const cap = median > 0 ? median * 2.5 : Infinity;
+          const capped = entries.map(e => ({ ...e, qty: e.qty > cap ? median * 1.5 : e.qty }));
+
+          // Exponential weighted average
+          let wSum = 0, vSum = 0;
+          capped.forEach(e => {
+            const monthsAgo = Math.max(0, (nowMs - e.ts) / (30*86400000));
+            const w = Math.pow(0.82, monthsAgo);
+            vSum += e.qty * w; wSum += w;
+          });
+          const baseRate = wSum > 0 ? vSum / wSum : 0;
+
+          // Trend detection (linear regression on last 6 months)
+          const recent = capped.slice(-6);
+          let trend = 0;
+          if (recent.length >= 3) {
+            const n = recent.length;
+            const xs = recent.map((_, i) => i);
+            const ys = recent.map(e => e.qty);
+            const xMean = xs.reduce((s,x) => s+x, 0) / n;
+            const yMean = ys.reduce((s,y) => s+y, 0) / n;
+            let num = 0, den = 0;
+            for (let i = 0; i < n; i++) { num += (xs[i]-xMean)*(ys[i]-yMean); den += (xs[i]-xMean)*(xs[i]-xMean); }
+            trend = den > 0 ? num / den : 0;
+            const maxTrend = baseRate * 0.08;
+            trend = Math.max(-maxTrend, Math.min(maxTrend, trend));
+          }
+
+          // Seasonal factors (need 12+ months)
+          let seasonalFactors = null;
+          if (dataMonths >= 12 && capped.length >= 8) {
+            const byMo = {};
+            capped.forEach(e => { if (!byMo[e.month]) byMo[e.month] = []; byMo[e.month].push(e.qty); });
+            const overallAvg = capped.reduce((s,e) => s+e.qty, 0) / capped.length;
+            if (overallAvg > 0) {
+              seasonalFactors = {};
+              for (let m = 0; m < 12; m++) {
+                if (byMo[m] && byMo[m].length > 0) {
+                  const mAvg = byMo[m].reduce((s,v) => s+v, 0) / byMo[m].length;
+                  seasonalFactors[m] = Math.max(0.2, Math.min(3, mAvg / overallAvg));
+                } else { seasonalFactors[m] = 1; }
+              }
+            }
+          }
+
+          // Project forward 12 months, month by month
+          const projections = [];
+          for (let i = 0; i < 12; i++) {
+            const futureMonth = (curMonth + 1 + i) % 12;
+            let projected = baseRate + (trend * (i + 1));
+            projected = Math.max(0, projected);
+            if (seasonalFactors) projected *= seasonalFactors[futureMonth];
+            projections.push(Math.max(0, projected));
+          }
+
+          const confidence = Math.min(100, Math.floor((capped.length / 12) * 100));
+          return { rate: baseRate, trend, seasonalFactors, confidence, projections };
+        };
+
+        // Build rows
+        const rows = [];
+        items.filter(filterItem).forEach(it => {
+          const v = getVariants(it);
+          Object.entries(v).forEach(([opt, vd]) => {
+            const k = it.id + ":" + opt;
+            const onHand = vd.qty || 0;
+            const pending = getPendingQty(it.id, opt, orders);
+            const afterPending = onHand - pending;
+            const ms = vd.minStock || 0;
+            const isLow = ms > 0 && afterPending <= ms;
+            const pred = calcPrediction(k);
+
+            // Month-by-month stockout
+            let stockLeft = afterPending;
+            let stockoutMonth = 99;
+            for (let i = 0; i < 12; i++) {
+              stockLeft -= pred.projections[i];
+              if (stockLeft <= 0) { stockoutMonth = i + 1; break; }
+            }
+
+            const rec3 = Math.ceil(pred.projections.slice(0,3).reduce((s,v2) => s+v2, 0));
+            const rec6 = Math.ceil(pred.projections.slice(0,6).reduce((s,v2) => s+v2, 0));
+            const rec12 = Math.ceil(pred.projections.reduce((s,v2) => s+v2, 0));
+            const trendDir = pred.trend > 0.5 ? "up" : pred.trend < -0.5 ? "down" : "flat";
+            const wellStocked = pred.rate > 0 && stockoutMonth > 12;
+
+            rows.push({
+              id: k, itemId: it.id, name: it.name, category: it.category, option: opt === "_default" ? "—" : opt, unit: it.unit,
+              onHand, pending, afterPending, minStock: ms, isLow, wac: vd.wac || 0,
+              rate: pred.rate, trend: pred.trend, trendDir, seasonal: !!pred.seasonalFactors, confidence: pred.confidence,
+              stockoutMonth, wellStocked, rec3, rec6, rec12
+            });
+          });
+        });
+
+        // Sort: low stock first, then soonest stockout, then well-stocked last
+        rows.sort((a, b) => {
+          if (a.isLow !== b.isLow) return a.isLow ? -1 : 1;
+          if (a.wellStocked !== b.wellStocked) return a.wellStocked ? 1 : -1;
+          if (a.rate > 0 && b.rate > 0) return a.stockoutMonth - b.stockoutMonth;
+          if (a.rate > 0) return -1;
+          if (b.rate > 0) return 1;
+          return b.onHand - a.onHand;
+        });
+
+        // Category totals for 6-month projection
+        const catTotals = {};
+        rows.forEach(r => {
+          if (!catTotals[r.category]) catTotals[r.category] = { qty6: 0, cost6: 0, items: 0 };
+          catTotals[r.category].qty6 += r.rec6;
+          catTotals[r.category].cost6 += r.rec6 * r.wac;
+          catTotals[r.category].items++;
+        });
+        const catArr = Object.entries(catTotals).filter(([,v]) => v.cost6 > 0).sort((a,b) => b[1].cost6 - a[1].cost6);
+        const total6Cost = catArr.reduce((s,[,v]) => s + v.cost6, 0);
+
+        const urgentRows = rows.filter(r => r.isLow || (r.rate > 0 && r.stockoutMonth <= 2));
+        const wellStockedRows = rows.filter(r => r.wellStocked);
+        const avgConfidence = rows.length ? Math.round(rows.reduce((s, r) => s + r.confidence, 0) / rows.length) : 0;
+        const trendUp = () => <span style={{color:C.grn,fontSize:10,fontWeight:700}}>↑</span>;
+        const trendDown = () => <span style={{color:C.red,fontSize:10,fontWeight:700}}>↓</span>;
+
         return (
           <div>
-            <div style={{ ...crd, padding: 0 }}><div style={{ overflowX: "auto", maxHeight: 500 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead><tr>{["Item", "Color/Style", "Category", "On Hand", "Min Stock", "Need to Order", "Status", "WAC", "Reorder Cost"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
-                <tbody>{reorderRows.map((r, i) => (
-                  <tr key={i} style={{ borderBottom: `1px solid ${C.brd}`, background: r.below ? C.red + "08" : "transparent" }}>
+            {/* CATEGORY PROJECTIONS */}
+            {catArr.length > 0 && <div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>6-Month Projected Spend by Category</div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                {catArr.map(([cat, v]) => (
+                  <div key={cat} style={{flex:"1 1 180px",background:C.card,borderRadius:12,border:`1px solid ${C.brd}`,padding:"14px 16px"}}>
+                    <div style={{fontSize:11,color:C.t2,fontWeight:600,marginBottom:4}}>{cat}</div>
+                    <div style={{fontSize:20,fontWeight:900,fontFamily:MN,color:NAVY}}>{fmt$(v.cost6)}</div>
+                    <div style={{fontSize:10,color:C.t2}}>{v.items} SKUs · {Math.round(v.cost6/total6Cost*100)}% of total</div>
+                  </div>
+                ))}
+                <div style={{flex:"1 1 180px",background:NAVY+"10",borderRadius:12,border:`2px solid ${NAVY}33`,padding:"14px 16px"}}>
+                  <div style={{fontSize:11,color:NAVY,fontWeight:700,marginBottom:4}}>Total 6-Month</div>
+                  <div style={{fontSize:20,fontWeight:900,fontFamily:MN,color:NAVY}}>{fmt$(total6Cost)}</div>
+                  <div style={{fontSize:10,color:C.t2}}>Confidence: {avgConfidence}% · {dataMonths}mo data</div>
+                </div>
+              </div>
+            </div>}
+
+            {/* SUMMARY CARDS */}
+            <Rw g={14}>
+              <Stat label="Total SKUs" value={rows.length} color={C.txt} />
+              <Stat label="Low Stock Alerts" value={rows.filter(r => r.isLow).length} color={rows.some(r => r.isLow) ? C.red : C.grn} />
+              <Stat label="Stockout <2mo" value={urgentRows.filter(r => !r.isLow).length} color={C.wrn} />
+              <Stat label="Well Stocked (12mo+)" value={wellStockedRows.length} color={C.grn} />
+            </Rw>
+
+            {/* URGENT CALLOUT */}
+            {urgentRows.length > 0 && <div style={{background:C.red+"08",borderRadius:14,border:`1px solid ${C.red}22`,padding:18,marginTop:16,marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:800,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>Needs Attention</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {urgentRows.slice(0, 10).map(r => (
+                  <div key={r.id} style={{background:"#fff",borderRadius:8,padding:"8px 12px",border:`1px solid ${r.isLow ? C.red+"44" : C.wrn+"44"}`,fontSize:12}}>
+                    <div style={{fontWeight:700}}>{r.name}{r.option !== "—" ? <span style={{color:C.blu,marginLeft:4,fontSize:10}}>{r.option}</span> : ""}</div>
+                    <div style={{color:C.t2,fontSize:11}}>{r.afterPending} left{r.isLow ? <span style={{color:C.red,fontWeight:700}}> · BELOW MIN ({r.minStock})</span> : ""}{r.rate > 0 ? <span style={{color:C.wrn,fontWeight:700}}> · ~{r.stockoutMonth < 1 ? "<1" : r.stockoutMonth}mo to stockout</span> : ""}</div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* WELL STOCKED */}
+            {wellStockedRows.length > 0 && <div style={{background:C.grn+"08",borderRadius:14,border:`1px solid ${C.grn}22`,padding:14,marginBottom:16}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.grn,textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>Well Stocked — 12+ Months Supply ({wellStockedRows.length})</div>
+              <div style={{fontSize:12,color:C.t2}}>{wellStockedRows.slice(0,8).map(r => r.name + (r.option !== "—" ? " ("+r.option+")" : "")).join(" · ")}{wellStockedRows.length > 8 ? " + "+(wellStockedRows.length-8)+" more" : ""}</div>
+            </div>}
+
+            {/* MAIN TABLE */}
+            <div style={{ ...crd, padding: 0 }}><div style={{ overflowX: "auto", maxHeight: 600 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead><tr>{["Item", "Color/Style", "Stock", "After Pend.", "Min", "Mo. Rate", "Trend", "Stockout", "Order 3mo", "Order 6mo", "Order 12mo"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+                <tbody>{rows.map((r) => (
+                  <tr key={r.id} style={{ borderBottom: `1px solid ${C.brd}`, background: r.isLow ? C.red + "08" : r.stockoutMonth <= 2 && r.rate > 0 ? C.wrn + "06" : r.wellStocked ? C.grn + "04" : "transparent" }}>
                     <td style={{ ...tdS, fontWeight: 600 }}>{r.name}</td>
-                    <td style={{ ...tdS, fontWeight: 600, color: r.optName === "_default" ? C.t2 : C.txt }}>{r.optName === "_default" ? "—" : r.optName}</td>
-                    <td style={{ ...tdS, color: C.t2 }}>{r.category}</td>
-                    <td style={{ ...tdS, fontFamily: MN, color: r.below ? C.red : C.txt, fontWeight: 700 }}>{r.qty} {r.unit}</td>
-                    <td style={{ ...tdS, fontFamily: MN }}>{r.minStock}</td>
-                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: r.need > 0 ? C.ac : C.grn }}>{r.need > 0 ? r.need : "Stocked"}</td>
-                    <td style={tdS}><span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 3, background: r.below ? C.red + "18" : C.grn + "18", color: r.below ? C.red : C.grn }}>{r.below ? "LOW" : "OK"}</span></td>
-                    <td style={{ ...tdS, fontFamily: MN }}>{fmt$(r.wac)}</td>
-                    <td style={{ ...tdS, fontFamily: MN }}>{r.need > 0 ? fmt$(r.need * r.wac) : "—"}</td>
+                    <td style={{ ...tdS, fontWeight: 600, color: r.option === "—" ? C.t2 : C.txt }}>{r.option}</td>
+                    <td style={{ ...tdS, fontFamily: MN }}>{r.onHand}</td>
+                    <td style={{ ...tdS, fontFamily: MN, color: r.isLow ? C.red : r.afterPending < r.onHand ? C.wrn : C.txt, fontWeight: 700 }}>{r.afterPending}{r.pending > 0 ? <span style={{fontSize:9,color:C.t2,marginLeft:2}}>(-{r.pending})</span> : ""}</td>
+                    <td style={{ ...tdS, fontFamily: MN, color: r.isLow ? C.red : C.t2 }}>{r.minStock > 0 ? r.minStock : "—"}{r.isLow ? <span style={{fontSize:8,color:C.red,fontWeight:700,marginLeft:2}}>LOW</span> : ""}</td>
+                    <td style={{ ...tdS, fontFamily: MN }}>{r.rate > 0 ? r.rate.toFixed(1) : <span style={{color:C.t2}}>—</span>}{r.seasonal ? <span style={{fontSize:8,color:C.blu,marginLeft:2}} title="Seasonal adjustment">⚡</span> : ""}</td>
+                    <td style={tdS}>{r.rate > 0 ? (r.trendDir === "up" ? trendUp() : r.trendDir === "down" ? trendDown() : <span style={{color:C.t2,fontSize:10}}>—</span>) : <span style={{color:C.t2,fontSize:10}}>—</span>}</td>
+                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: r.rate === 0 ? C.t2 : r.stockoutMonth <= 2 ? C.red : r.stockoutMonth <= 4 ? C.wrn : C.grn }}>{r.rate === 0 ? "No data" : r.wellStocked ? "12+mo" : r.stockoutMonth < 1 ? "<1mo" : r.stockoutMonth + "mo"}</td>
+                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: r.rec3 > 0 ? C.ac : C.t2 }}>{r.rec3 > 0 ? r.rec3 : "—"}</td>
+                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: r.rec6 > 0 ? NAVY : C.t2 }}>{r.rec6 > 0 ? r.rec6 : "—"}</td>
+                    <td style={{ ...tdS, fontFamily: MN, fontWeight: 700, color: r.rec12 > 0 ? C.txt : C.t2 }}>{r.rec12 > 0 ? r.rec12 : "—"}</td>
                   </tr>
-                ))}{!reorderRows.length && <tr><td colSpan={9} style={{ ...tdS, textAlign: "center", color: C.t2, padding: 20 }}>Set low stock thresholds per color/style when adding items to use this report.</td></tr>}</tbody>
+                ))}</tbody>
               </table>
             </div></div>
+
+            <div style={{ fontSize: 11, color: C.t2, marginTop: 12, fontStyle: "italic" }}>
+              Predictions use weighted history with outlier protection, trend detection, and month-by-month forward projection.
+              {rows.some(r => r.seasonal) ? " ⚡ = seasonal patterns detected (12+ months data)." : ""}
+              {" "}↑↓ = usage trending up/down. Recommendations project forward month-by-month accounting for seasonal patterns and do not subtract current stock. Accuracy improves with each month of data.
+            </div>
           </div>
         );
       })()}
