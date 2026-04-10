@@ -13,7 +13,7 @@ const NAVY = "#1B2A4A";
 const C = { bg: "#F5F6F8", card: "#FFFFFF", sf: "#EEF1F5", brd: "#D5DAE0", brdL: "#C0C8D2", ac: RED, acH: "#CC3344", txt: "#1A1D23", t2: "#6B7280", red: "#B22234", grn: "#1E8449", blu: "#1B2A4A", wrn: "#D4870E", w: "#fff" };
 
 const CSS = `@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800;900&family=Barlow:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}body{background:${C.bg};color:${C.txt};font-family:'Barlow',sans-serif;-webkit-text-size-adjust:100%}
+*{box-sizing:border-box;margin:0;padding:0}body{background:${C.bg};color:${C.txt};font-family:'Barlow',sans-serif;-webkit-text-size-adjust:100%;overflow-x:hidden;max-width:100vw}
 input,select,textarea,button{font-family:'Barlow',sans-serif;font-size:16px}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:${C.brd};border-radius:3px}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}.fu{animation:fadeUp .3s ease-out}
@@ -29,6 +29,7 @@ select option{background:${C.w};color:${C.txt}}
 @media(max-width:480px){
   .nav-wrap button{padding:4px 6px!important;font-size:9px!important}
   .nav-wrap svg{width:12px!important;height:12px!important}
+  .fu{padding-left:4px!important;padding-right:4px!important}
 }`;
 
 const MN = `'IBM Plex Mono',monospace`;
@@ -313,7 +314,8 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.brd}` }}>
                 <div style={{ flex: 2, fontWeight: 600, fontSize: 13 }}>{it.name}{l.option && l.option !== "_default" ? ` — ${l.option}` : ""}</div>
                 <div style={{ flex: 1 }}>
-                  <input type="number" min="1" value={l.qty} onChange={(e) => { const n = [...editLines]; n[i] = { ...n[i], qty: Math.max(1, +e.target.value) }; setEditLines(n); }}
+                  <input type="number" min="1" value={l.qty} onChange={(e) => { const n = [...editLines]; n[i] = { ...n[i], qty: e.target.value === "" ? "" : Math.max(1, +e.target.value) }; setEditLines(n); }}
+                    onBlur={(e) => { if (!e.target.value || +e.target.value < 1) { const n = [...editLines]; n[i] = { ...n[i], qty: 1 }; setEditLines(n); } }}
                     style={{ ...inp, padding: "6px 10px", textAlign: "center", fontSize: 14, width: 80 }} />
                 </div>
                 <div style={{ fontSize: 12, fontFamily: MN, color: C.t2, flex: 1 }}>{fmt$(l.qty * l.markupCost)}</div>
@@ -391,6 +393,10 @@ export default function App() {
     link.rel = "icon"; link.type = "image/png"; link.href = LOGO;
     document.head.appendChild(link);
     document.title = "Roofus Portal — Roof USA";
+    // Ensure viewport meta for mobile
+    let vp = document.querySelector("meta[name='viewport']");
+    if (!vp) { vp = document.createElement("meta"); vp.name = "viewport"; document.head.appendChild(vp); }
+    vp.content = "width=device-width, initial-scale=1, maximum-scale=1";
   }, []);
 
   const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
@@ -982,7 +988,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                   )}
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ fontSize: 11, color: C.t2, fontWeight: 600 }}>QTY ({it.unit || "each"})</div>
-                    <input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", Math.max(1, +e.target.value))} onFocus={(e) => e.target.select()} style={{ ...inp, padding: "8px 10px", fontSize: 14, textAlign: "center", width: 70, borderRadius: 10 }} />
+                    <input type="number" min="1" value={l.qty} onChange={(e) => updLn(i, "qty", e.target.value === "" ? "" : Math.max(1, +e.target.value))} onBlur={(e) => { if (!e.target.value || +e.target.value < 1) updLn(i, "qty", 1); }} onFocus={(e) => e.target.select()} style={{ ...inp, padding: "8px 10px", fontSize: 14, textAlign: "center", width: 70, borderRadius: 10 }} />
                     <div style={{ marginLeft: "auto", fontFamily: MN, fontWeight: 700, fontSize: 15, color: C.ac }}>{fmt$(l.qty * l.markupCost)}</div>
                   </div>
                 </div>
@@ -1870,7 +1876,7 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
                   <button onClick={moveDown} disabled={i === tplItems.length - 1} style={{ background: "none", border: "none", color: i === tplItems.length - 1 ? C.brd : C.t2, cursor: i === tplItems.length - 1 ? "default" : "pointer", padding: 0, lineHeight: 1 }}><ArrowDown size={11} /></button>
                 </div>
                 <div style={{ flex: 1, fontSize: 12, fontWeight: 600 }}>{it.name} <span style={{ fontWeight: 400, color: C.ac, fontSize: 10 }}>({it.unit})</span>{ti.option ? <span style={{ color: C.t2, fontWeight: 400 }}> · {ti.option}</span> : null}</div>
-                <input type="number" min="1" value={ti.qty} onChange={(e) => { const n = [...tplItems]; n[i] = { ...n[i], qty: Math.max(1, +e.target.value) }; setTplItems(n); }} style={{ ...inp, width: 60, padding: "4px 6px", textAlign: "center", fontSize: 12 }} />
+                <input type="number" min="1" value={ti.qty} onChange={(e) => { const n = [...tplItems]; n[i] = { ...n[i], qty: e.target.value === "" ? "" : Math.max(1, +e.target.value) }; setTplItems(n); }} onBlur={(e) => { if (!e.target.value || +e.target.value < 1) { const n = [...tplItems]; n[i] = { ...n[i], qty: 1 }; setTplItems(n); } }} style={{ ...inp, width: 60, padding: "4px 6px", textAlign: "center", fontSize: 12 }} />
                 <button onClick={() => setTplItems(tplItems.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={12} /></button>
               </div>
             );
@@ -2752,7 +2758,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
     const contract = baseContract + addlCharges;
     const costs = (j.costs || []).reduce((s,c) => s + (c.amount||0), 0);
     const linked = orders.filter((o) => o.jnJobId && o.jnJobId === j.jnJobId && o.status === "approved");
-    const matOrd = linked.reduce((s,o) => { const lt = (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.markupCost||l.unitCost||0), 0); return s + (o.type === "return" ? -lt : lt); }, 0);
+    const matOrd = linked.reduce((s,o) => { const lt = (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.unitCost||0), 0); return s + (o.type === "return" ? -lt : lt); }, 0);
     const matSupplier = linked.reduce((s,o) => { const lt = (o.lines||[]).reduce((s2,l) => s2 + l.qty*(l.supplierCost||l.unitCost||0), 0); return s + (o.type === "return" ? -lt : lt); }, 0);
     const total = costs + matOrd;
     const totalSupplier = costs + matSupplier;
@@ -2829,7 +2835,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
             </div>
           </div>
           <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-            {[{l:"Contract",v:fmt$(j.fullContract)+(j.addlTotal>0?" *":""),bg:C.sf,c:C.txt},{l:"Total Costs",v:fmt$(j.totalCosts),bg:C.sf,c:C.red},{l:"Invoiced",v:fmt$(j.invoiced),bg:NAVY+"10",c:NAVY},{l:"Collected",v:fmt$(j.collected),bg:C.grn+"10",c:j.collected>0?C.grn:C.t2},{l:"Actual GP",v:fmt$(j.actGP$)+" ("+j.actGP.toFixed(1)+"%)",bg:j.actGP>=(j.projectedGP||0)?C.grn+"10":C.red+"10",c:j.actGP>=0?C.grn:C.red},{l:"Variance",v:(j.variance>=0?"+":"")+fmt$(j.variance),bg:j.variance>=0?C.grn+"10":C.red+"10",c:j.variance>=0?C.grn:C.red}].map((m,i)=>(
+            {[{l:"Contract",v:fmt$(j.fullContract)+(j.addlTotal>0?" *":""),bg:C.sf,c:C.txt},{l:"Costs (WAC)",v:fmt$(j.totalCosts),bg:C.sf,c:C.red},{l:"Invoiced",v:fmt$(j.invoiced),bg:NAVY+"10",c:NAVY},{l:"Collected",v:fmt$(j.collected),bg:C.grn+"10",c:j.collected>0?C.grn:C.t2},{l:"GP% (WAC)",v:fmt$(j.actGP$)+" ("+j.actGP.toFixed(1)+"%)",bg:j.actGP>=(j.projectedGP||0)?C.grn+"10":C.red+"10",c:j.actGP>=0?C.grn:C.red},{l:"GP% (Supplier)",v:fmt$(j.actGP$Sup)+" ("+j.actGPSup.toFixed(1)+"%)",bg:C.blu+"10",c:C.blu},{l:"Variance",v:(j.variance>=0?"+":"")+fmt$(j.variance),bg:j.variance>=0?C.grn+"10":C.red+"10",c:j.variance>=0?C.grn:C.red}].map((m,i)=>(
               <div key={i} style={{flex:"1 1 120px",textAlign:"center",padding:14,background:m.bg,borderRadius:12}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>{m.l}</div><div style={{fontSize:20,fontWeight:900,fontFamily:MN,color:m.c}}>{m.v}</div></div>
             ))}
           </div>
@@ -2865,7 +2871,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
               </div>
               {!(j.costs||[]).length&&!j.matOrd&&<div style={{padding:20,textAlign:"center",color:C.t2,fontSize:13}}>No costs yet.</div>}
               {(j.costs||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:c.category==="labor"?C.blu+"15":c.category==="material"?RED+"15":C.wrn+"15",color:c.category==="labor"?C.blu:c.category==="material"?RED:C.wrn}}>{c.category}</span><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(c.amount)}</span><button onClick={()=>{deleteCost(j.id,c.id); setEditJob({...editJob,costs:(editJob.costs||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
-              {(j.linkedOrders||[]).map(ord=>{const ordTotal=(ord.lines||[]).reduce((s,l)=>s+l.qty*(l.markupCost||l.unitCost||0),0); const isRet=ord.type==="return"; return (
+              {(j.linkedOrders||[]).map(ord=>{const ordTotal=(ord.lines||[]).reduce((s,l)=>s+l.qty*(l.unitCost||0),0); const isRet=ord.type==="return"; return (
                 <div key={ord.id} onClick={()=>setViewOrder(ord)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,cursor:"pointer",transition:"background .15s",borderRadius:4}} onMouseEnter={(e)=>{e.currentTarget.style.background=C.sf;}} onMouseLeave={(e)=>{e.currentTarget.style.background="transparent";}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,background:isRet?C.grn+"15":RED+"15",color:isRet?C.grn:RED}}>{isRet?"return":"material"}</span>
@@ -3122,7 +3128,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Contract</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN}}>{fmt$(j.fullContract)}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Invoiced</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:NAVY}}>{j.invoiced>0?fmt$(j.invoiced):"—"}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Collected</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.collected>0?C.grn:C.t2}}>{j.collected>0?fmt$(j.collected):"—"}</div></div>
-              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>GP%</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.actGP>=(j.projectedGP||0)?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?j.actGP.toFixed(1)+"%":j.projectedGP+"% proj"}</div></div>
+              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>GP% (WAC)</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.actGP>=(j.projectedGP||0)?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?j.actGP.toFixed(1)+"%":j.projectedGP+"% proj"}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Variance</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.variance>=0?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?(j.variance>=0?"+":"")+fmt$(j.variance):"—"}</div></div>
             </div>
           </div>
