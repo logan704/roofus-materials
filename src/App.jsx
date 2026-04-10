@@ -3151,6 +3151,10 @@ function Reports({ orders, items, shrinkLog }) {
   const [catF, setCatF] = useState("All");
   const [searchF, setSearchF] = useState("");
   const [invLog, setInvLog] = useState([]);
+  const [svaMode, setSvaMode] = useState("preset");
+  const [svaPreset, setSvaPreset] = useState("all");
+  const [svaStart, setSvaStart] = useState("");
+  const [svaEnd, setSvaEnd] = useState("");
 
   useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); })(); }, []);
 
@@ -3204,7 +3208,7 @@ function Reports({ orders, items, shrinkLog }) {
   const tabs = [
     { k: "dash", l: "Dashboard" }, { k: "inv", l: "Inventory" }, { k: "move", l: "Movement" }, { k: "purchases", l: "Purchases" },
     { k: "aging", l: "Aging" }, { k: "sales", l: "Sales" }, { k: "reorder", l: "Reorder" },
-    { k: "margin", l: "Margin" }, { k: "shrink", l: "Shrinkage" }, { k: "savings", l: "Savings vs Supplier" }, { k: "jobs", l: "By Job" },
+    { k: "margin", l: "Margin" }, { k: "shrink", l: "Shrinkage" }, { k: "savings", l: "Savings vs Supplier" }, { k: "sva", l: "Shingles vs Accessories" }, { k: "jobs", l: "By Job" },
   ];
 
   const thS = { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card };
@@ -3753,6 +3757,156 @@ function Reports({ orders, items, shrinkLog }) {
             <div style={{ fontSize: 11, color: C.t2, marginTop: 10, fontStyle: "italic" }}>
               Every number on this page uses the supplier cost that was set at the moment each order was submitted. Changing supplier cost today only affects future orders — past orders are never touched. All comparisons are against your true blended cost (WAC), not markup.
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── SHINGLES VS ACCESSORIES ── */}
+      {tab === "sva" && (() => {
+        const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
+
+        const now2 = Date.now();
+        const ytd2 = new Date(new Date().getFullYear(), 0, 1).getTime();
+        const presetMs = {all:0,"30":30*86400000,"90":90*86400000,"180":180*86400000,"365":365*86400000,"ytd":now2-ytd2};
+
+        const inRange = (o) => {
+          const d = o.approvedDate ? new Date(o.approvedDate) : new Date(o.date);
+          if (svaMode === "custom") {
+            if (svaStart && d < new Date(svaStart)) return false;
+            if (svaEnd) { const end = new Date(svaEnd); end.setHours(23,59,59,999); if (d > end) return false; }
+            return true;
+          }
+          if (svaPreset === "all") return true;
+          return (now2 - d.getTime()) < presetMs[svaPreset];
+        };
+
+        const allApproved = orders.filter(o => o.status === "approved" && inRange(o));
+        const shingle = { qty: 0, wac: 0, supplier: 0, items: {} };
+        const accessory = { qty: 0, wac: 0, supplier: 0, items: {} };
+
+        allApproved.forEach(o => {
+          const mult = o.type === "return" ? -1 : 1;
+          (o.lines || []).forEach(l => {
+            const it = iMap[l.itemId];
+            if (!it) return;
+            const cat = SHINGLE_CATS.includes(it.category) ? shingle : accessory;
+            const q = l.qty * mult;
+            const wacCost = q * (l.unitCost || 0);
+            const supCost = q * (l.supplierCost || 0);
+            cat.qty += q;
+            cat.wac += wacCost;
+            cat.supplier += supCost;
+            const ik = l.itemId;
+            if (!cat.items[ik]) cat.items[ik] = { name: it.name, category: it.category, qty: 0, wac: 0, supplier: 0 };
+            cat.items[ik].qty += q;
+            cat.items[ik].wac += wacCost;
+            cat.items[ik].supplier += supCost;
+          });
+        });
+
+        const shSavings = shingle.supplier - shingle.wac;
+        const acSavings = accessory.supplier - accessory.wac;
+        const totalSavings = shSavings + acSavings;
+        const shPct = shingle.supplier > 0 ? (shSavings / shingle.supplier * 100) : 0;
+        const acPct = accessory.supplier > 0 ? (acSavings / accessory.supplier * 100) : 0;
+        const totalPct = (shingle.supplier + accessory.supplier) > 0 ? (totalSavings / (shingle.supplier + accessory.supplier) * 100) : 0;
+
+        const shItems = Object.values(shingle.items).sort((a,b) => (b.supplier-b.wac) - (a.supplier-a.wac));
+        const acItems = Object.values(accessory.items).sort((a,b) => (b.supplier-b.wac) - (a.supplier-a.wac));
+
+        return (
+          <div>
+            {/* DATE FILTER */}
+            <div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:20,marginBottom:20}}>
+              <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:svaMode==="custom"?12:0}}>
+                <select value={svaMode} onChange={(e)=>setSvaMode(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}><option value="preset">Preset Range</option><option value="custom">Custom Dates</option></select>
+                {svaMode==="preset"&&<select value={svaPreset} onChange={(e)=>setSvaPreset(e.target.value)} style={{...inp,width:"auto",minWidth:140,borderRadius:10,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}><option value="all">All Time</option><option value="30">Last 30 Days</option><option value="90">Last 90 Days</option><option value="180">Last 6 Months</option><option value="365">Last 12 Months</option><option value="ytd">Year to Date</option></select>}
+                {svaMode==="custom"&&<><input type="date" value={svaStart} onChange={(e)=>setSvaStart(e.target.value)} style={{...inp,width:"auto",borderRadius:10,padding:"10px 14px",fontSize:13}}/><span style={{color:C.t2,fontSize:13}}>to</span><input type="date" value={svaEnd} onChange={(e)=>setSvaEnd(e.target.value)} style={{...inp,width:"auto",borderRadius:10,padding:"10px 14px",fontSize:13}}/></>}
+                <span style={{fontSize:12,color:C.t2}}>{allApproved.length} orders in range</span>
+              </div>
+            </div>
+
+            {/* SUMMARY CARDS */}
+            <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20}}>
+              {[{l:"Total Savings",v:fmt$(totalSavings),sub:totalPct.toFixed(1)+"% vs suppliers",c:totalSavings>=0?C.grn:C.red},
+                {l:"Shingles Savings",v:fmt$(shSavings),sub:shPct.toFixed(1)+"% · "+fmt$(shingle.wac)+" WAC vs "+fmt$(shingle.supplier)+" supplier",c:shSavings>=0?C.grn:C.red},
+                {l:"Accessories Savings",v:fmt$(acSavings),sub:acPct.toFixed(1)+"% · "+fmt$(accessory.wac)+" WAC vs "+fmt$(accessory.supplier)+" supplier",c:acSavings>=0?C.grn:C.red}
+              ].map((s,i)=>(
+                <div key={i} style={{flex:"1 1 250px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:20}}>
+                  <div style={{fontSize:11,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>{s.l}</div>
+                  <div style={{fontSize:28,fontWeight:900,color:s.c,fontFamily:MN}}>{s.v}</div>
+                  <div style={{fontSize:11,color:C.t2,marginTop:4}}>{s.sub}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* COMPARISON BAR */}
+            {(shingle.wac>0||accessory.wac>0)&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:20,marginBottom:20}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Where Are We Saving More?</div>
+              <div style={{display:"flex",gap:20,flexWrap:"wrap",alignItems:"center"}}>
+                <div style={{flex:"1 1 200px",textAlign:"center"}}><div style={{fontSize:14,fontWeight:800,color:NAVY,marginBottom:6}}>Shingles</div><div style={{fontSize:28,fontWeight:900,fontFamily:MN,color:shSavings>=0?C.grn:C.red}}>{fmt$(shSavings)}</div><div style={{fontSize:11,color:C.t2,marginTop:2}}>{shPct.toFixed(1)}% savings rate</div></div>
+                <div style={{fontSize:18,color:C.t2,fontWeight:800}}>vs</div>
+                <div style={{flex:"1 1 200px",textAlign:"center"}}><div style={{fontSize:14,fontWeight:800,color:RED,marginBottom:6}}>Accessories</div><div style={{fontSize:28,fontWeight:900,fontFamily:MN,color:acSavings>=0?C.grn:C.red}}>{fmt$(acSavings)}</div><div style={{fontSize:11,color:C.t2,marginTop:2}}>{acPct.toFixed(1)}% savings rate</div></div>
+              </div>
+            </div>}
+
+            {/* SHINGLES BREAKDOWN */}
+            {shItems.length>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:0,marginBottom:16,overflow:"hidden"}}>
+              <div style={{padding:"14px 16px 0"}}><div style={{fontSize:12,fontWeight:700,color:NAVY,textTransform:"uppercase",letterSpacing:".08em"}}>Shingles Breakdown (Shingles + Ridge/Hip + Starter Strip)</div></div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr>{["Item","Category","Qty","Our Cost (WAC)","Supplier Would Charge","Savings $","Savings %"].map(h=><th key={h} style={{padding:"10px 10px",textAlign:["Item","Category"].includes(h)?"left":"right",fontWeight:700,color:C.t2,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.brdL}`}}>{h}</th>)}</tr></thead>
+                  <tbody>{shItems.map((d,i)=>{const sav=d.supplier-d.wac;const pct=d.supplier>0?(sav/d.supplier*100):0;return(
+                    <tr key={i} style={{borderBottom:`1px solid ${C.brd}`}}>
+                      <td style={{padding:"8px 10px",fontWeight:600}}>{d.name}</td>
+                      <td style={{padding:"8px 10px",color:C.t2}}>{d.category}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN}}>{d.qty}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN}}>{fmt$(d.wac)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN,color:C.blu}}>{fmt$(d.supplier)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN,fontWeight:700,color:sav>=0?C.grn:C.red}}>{sav>=0?"+":""}{fmt$(sav)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN,color:sav>=0?C.grn:C.red}}>{pct.toFixed(1)}%</td>
+                    </tr>
+                  );})}</tbody>
+                  <tfoot><tr style={{borderTop:`2px solid ${C.brd}`,fontWeight:800}}>
+                    <td style={{padding:"10px"}} colSpan={3}>Total</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN}}>{fmt$(shingle.wac)}</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN,color:C.blu}}>{fmt$(shingle.supplier)}</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN,color:shSavings>=0?C.grn:C.red}}>{shSavings>=0?"+":""}{fmt$(shSavings)}</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN,color:shSavings>=0?C.grn:C.red}}>{shPct.toFixed(1)}%</td>
+                  </tr></tfoot>
+                </table>
+              </div>
+            </div>}
+
+            {/* ACCESSORIES BREAKDOWN */}
+            {acItems.length>0&&<div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:0,overflow:"hidden"}}>
+              <div style={{padding:"14px 16px 0"}}><div style={{fontSize:12,fontWeight:700,color:RED,textTransform:"uppercase",letterSpacing:".08em"}}>Accessories Breakdown (Everything Else)</div></div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr>{["Item","Category","Qty","Our Cost (WAC)","Supplier Would Charge","Savings $","Savings %"].map(h=><th key={h} style={{padding:"10px 10px",textAlign:["Item","Category"].includes(h)?"left":"right",fontWeight:700,color:C.t2,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.brdL}`}}>{h}</th>)}</tr></thead>
+                  <tbody>{acItems.map((d,i)=>{const sav=d.supplier-d.wac;const pct=d.supplier>0?(sav/d.supplier*100):0;return(
+                    <tr key={i} style={{borderBottom:`1px solid ${C.brd}`}}>
+                      <td style={{padding:"8px 10px",fontWeight:600}}>{d.name}</td>
+                      <td style={{padding:"8px 10px",color:C.t2}}>{d.category}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN}}>{d.qty}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN}}>{fmt$(d.wac)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN,color:C.blu}}>{fmt$(d.supplier)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN,fontWeight:700,color:sav>=0?C.grn:C.red}}>{sav>=0?"+":""}{fmt$(sav)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",fontFamily:MN,color:sav>=0?C.grn:C.red}}>{pct.toFixed(1)}%</td>
+                    </tr>
+                  );})}</tbody>
+                  <tfoot><tr style={{borderTop:`2px solid ${C.brd}`,fontWeight:800}}>
+                    <td style={{padding:"10px"}} colSpan={3}>Total</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN}}>{fmt$(accessory.wac)}</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN,color:C.blu}}>{fmt$(accessory.supplier)}</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN,color:acSavings>=0?C.grn:C.red}}>{acSavings>=0?"+":""}{fmt$(acSavings)}</td>
+                    <td style={{padding:"10px",textAlign:"right",fontFamily:MN,color:acSavings>=0?C.grn:C.red}}>{acPct.toFixed(1)}%</td>
+                  </tr></tfoot>
+                </table>
+              </div>
+            </div>}
+
+            {!shItems.length&&!acItems.length&&<div style={{padding:30,textAlign:"center",color:C.t2,fontSize:14}}>No approved orders in this date range.</div>}
           </div>
         );
       })()}
