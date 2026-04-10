@@ -135,10 +135,10 @@ function generateOrderHTML(order, items) {
 <div style="text-align:right;font-size:11px;color:#666"><div style="font-weight:800;font-size:13px;color:#1B2A4A">${order.type==="return"?"RETURN":"MATERIAL ORDER"}</div><div style="margin-top:3px">PO: <strong style="color:#1a1a1a">${order.poNumber||"—"}</strong></div><div>Date: ${fD(order.date)}</div><div>By: ${order.userName||"—"}</div>
 <div style="margin-top:4px"><span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;background:${order.status==="approved"?"#d4edda":"#fff3cd"};color:${order.status==="approved"?"#155724":"#856404"}">${(order.status||"pending").toUpperCase()}</span></div></div></div>
 ${order.jobName?`<div style="margin-bottom:12px;font-size:12px"><strong>Job:</strong> ${order.jobName}${order.jobAddress?" — "+order.jobAddress:""}</div>`:""}
-<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r" style="background:#FFFF00">Markup Price</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r" style="background:#FFFF00">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r" style="background:#FFFF00">Sell Price</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r" style="background:#FFFF00">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="tot"><div class="tr"><span>Total (Our Cost):</span><span>${fmt$(tCost)}</span></div>
-<div class="tr trb" style="background:#FFFF00;padding:8px;margin:6px -12px 0;border-radius:4px"><span>Total (Markup Price):</span><span>${fmt$(tSell)}</span></div>
-<div class="tr"><span>Markup Margin:</span><span style="color:#1E8449">${fmt$(savingsVsMarkup)} (${marginPct}%)</span></div>
+<div class="tr trb" style="background:#FFFF00;padding:8px;margin:6px -12px 0;border-radius:4px"><span>Total (Sell Price):</span><span>${fmt$(tSell)}</span></div>
+<div class="tr"><span>Gross Margin:</span><span style="color:#1E8449">${fmt$(savingsVsMarkup)} (${marginPct}%)</span></div>
 ${tSupplier > 0 ? `<div class="tr" style="border-top:1px solid #ccc;padding-top:4px;margin-top:4px"><span>Total (Supplier Would Charge):</span><span>${fmt$(tSupplier)}</span></div>
 <div class="tr"><span>Savings vs Supplier:</span><span style="color:${savingsVsSupplier >= 0 ? '#1E8449' : '#B22234'}">${savingsVsSupplier >= 0 ? '+' : ''}${fmt$(savingsVsSupplier)}</span></div>` : ''}
 </div>
@@ -263,7 +263,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
       <div style={{ overflowX: "auto", marginBottom: 14 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-            {["Item", "Color/Style", "Qty", "Our Cost", "Markup", "Supplier $", "Cost Ext", "Sell Ext"].map((h) => (
+            {["Item", "Color/Style", "Qty", "Our Cost", "Margin", "Supplier $", "Cost Ext", "Sell Ext"].map((h) => (
               <th key={h} style={{ padding: "8px", textAlign: ["Item", "Color/Style"].includes(h) ? "left" : "right", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
             ))}
           </tr></thead>
@@ -287,8 +287,8 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
       {/* TOTALS & SAVINGS */}
       <div style={{ background: C.sf, borderRadius: 8, padding: 14, marginBottom: 14, borderLeft: `4px solid ${C.ac}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>Our Cost</span><span style={{ fontFamily: MN }}>{fmt$(tCost)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, borderTop: `2px solid ${C.brdL}`, paddingTop: 8, marginTop: 6 }}><span>Markup Price</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Markup Margin</span><span style={{ fontFamily: MN }}>{fmt$(savingsVsMarkup)} ({marginPct}%)</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, borderTop: `2px solid ${C.brdL}`, paddingTop: 8, marginTop: 6 }}><span>Sell Price</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Gross Margin</span><span style={{ fontFamily: MN }}>{fmt$(savingsVsMarkup)} ({marginPct}%)</span></div>
         {tSupplier > 0 && (
           <>
             <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 8, paddingTop: 8 }}>
@@ -371,6 +371,14 @@ export default function App() {
         setShrinkLog([]);
         await sv("shrinkage", []);
         await sv("v47_shrink_reset", true);
+      }
+      // One-time migration: change markup from 30 to 25 (gross margin)
+      const mgMigrated = await ld("v47_margin_migrate", false);
+      if (!mgMigrated && it.length) {
+        const updated = it.map(i => i.markup === 30 ? { ...i, markup: 25 } : i);
+        setItems(updated);
+        await sv("items", updated);
+        await sv("v47_margin_migrate", true);
       }
       try { const s = await ldL("sess", null); if (s) { const f = u.find((x) => x.id === s.uid); if (f) setUser(f); } } catch {}
       setRdy(true);
@@ -734,7 +742,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
         const it = iMap[ti.itemId];
         if (!it) return null;
         const hasOpts = it.options && it.options.length > 0;
-        return { key: ti.itemId + ":" + uid(), itemId: ti.itemId, qty: ti.qty || 1, option: hasOpts ? "" : "_default", unitCost: it.wacCost || 0, markupCost: (it.wacCost || 0) * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0, needsOption: hasOpts };
+        return { key: ti.itemId + ":" + uid(), itemId: ti.itemId, qty: ti.qty || 1, option: hasOpts ? "" : "_default", unitCost: it.wacCost || 0, markupCost: (it.markup || 0) >= 100 ? (it.wacCost || 0) : (it.wacCost || 0) / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0, needsOption: hasOpts };
       }).filter(Boolean);
       setLines(newLines);
       setStep("build");
@@ -748,7 +756,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
     const v = getVariants(it);
     const vData = v[opt || "_default"] || { wac: it.wacCost || 0 };
     const variantWac = vData.wac || it.wacCost || 0;
-    setLines([...lines, { key, itemId: it.id, qty: 1, option: opt || "", unitCost: variantWac, markupCost: variantWac * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 }]);
+    setLines([...lines, { key, itemId: it.id, qty: 1, option: opt || "", unitCost: variantWac, markupCost: (it.markup || 0) >= 100 ? variantWac : variantWac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 }]);
   };
 
   const loadTemplate = (tpl) => {
@@ -757,7 +765,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
       if (!it) return null;
       const hasOpts = it.options && it.options.length > 0;
       // Don't pre-select option — user picks in summary
-      return { key: ti.itemId + ":" + uid(), itemId: ti.itemId, qty: ti.qty || 1, option: hasOpts ? "" : "_default", unitCost: it.wacCost || 0, markupCost: (it.wacCost || 0) * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0, needsOption: hasOpts };
+      return { key: ti.itemId + ":" + uid(), itemId: ti.itemId, qty: ti.qty || 1, option: hasOpts ? "" : "_default", unitCost: it.wacCost || 0, markupCost: (it.markup || 0) >= 100 ? (it.wacCost || 0) : (it.wacCost || 0) / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0, needsOption: hasOpts };
     }).filter(Boolean);
     setLines(newLines);
     setStep("build");
@@ -962,7 +970,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
                         const opt = e.target.value;
                         const v = getVariants(it);
                         const vd = v[opt] || { wac: it.wacCost || 0 };
-                        const n = [...lines]; n[i] = { ...n[i], key: it.id + ":" + opt, option: opt, unitCost: vd.wac || it.wacCost || 0, markupCost: (vd.wac || it.wacCost || 0) * (1 + (it.markup || 0) / 100) }; setLines(n);
+                        const n = [...lines]; n[i] = { ...n[i], key: it.id + ":" + opt, option: opt, unitCost: vd.wac || it.wacCost || 0, markupCost: (it.markup || 0) >= 100 ? (vd.wac || it.wacCost || 0) : (vd.wac || it.wacCost || 0) / (1 - (it.markup || 0) / 100) }; setLines(n);
                       }} style={{ ...inp, padding: "10px 12px", fontSize: 14, borderColor: C.wrn, cursor: "pointer", borderRadius: 10 }}>
                         <option value="">⚠ Select color/style...</option>
                         {(it.options || []).map((opt) => {
@@ -1018,7 +1026,7 @@ function Approvals({ orders, sO, items, sI, view }) {
       const v = getVariants(it);
       const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 };
       const wac = vd.wac || it.wacCost || 0;
-      return { ...l, unitCost: wac, markupCost: wac * (1 + (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
+      return { ...l, unitCost: wac, markupCost: (it.markup || 0) >= 100 ? wac : wac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
     });
     const approvedOrder = { ...order, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
     // Deduct/add stock at approval time
@@ -1145,7 +1153,7 @@ function ItemMgr({ items, sI, orders }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-              {["Item", "Category", "Color/Style", "On Hand", "After Pending", "WAC", "Supplier $", "Markup", "Sell", ""].map((h) => (
+              {["Item", "Category", "Color/Style", "On Hand", "After Pending", "WAC", "Supplier $", "Margin", "Sell", ""].map((h) => (
                 <th key={h} style={{ padding: "10px 10px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr></thead>
@@ -1175,7 +1183,7 @@ function ItemMgr({ items, sI, orders }) {
                     <td style={{ padding: "9px 10px", fontFamily: MN }}>{fmt$(vData.wac)}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN, color: C.blu }}>{fmt$(it.supplierCost || 0)}</td>
                     <td style={{ padding: "9px 10px", fontFamily: MN }}>{vi === 0 ? `${it.markup || 0}%` : ""}</td>
-                    <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 600, color: C.ac }}>{fmt$((vData.wac || 0) * (1 + (it.markup || 0) / 100))}</td>
+                    <td style={{ padding: "9px 10px", fontFamily: MN, fontWeight: 600, color: C.ac }}>{fmt$((it.markup || 0) >= 100 ? (vData.wac || 0) : (vData.wac || 0) / (1 - (it.markup || 0) / 100))}</td>
                     <td style={{ padding: "9px 10px" }}>
                       {vi === 0 && <div style={{ display: "flex", gap: 5 }}>
                         <button onClick={() => setModal(it)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
@@ -1196,13 +1204,13 @@ function ItemMgr({ items, sI, orders }) {
 
 function ItemModal({ open, onClose, items, sI, ed }) {
   const [name, setName] = useState(""); const [cat, setCat] = useState(CATS[0]); const [unit, setUnit] = useState(UNITS[0]);
-  const [cost, setCost] = useState(""); const [mk, setMk] = useState("30");
+  const [cost, setCost] = useState(""); const [mk, setMk] = useState("25");
   const [optStr, setOptStr] = useState("");
   const [variantMinStocks, setVariantMinStocks] = useState({}); // { optionName: minStockValue }
 
   useEffect(() => {
     if (ed) {
-      setName(ed.name); setCat(ed.category); setUnit(ed.unit); setCost(ed.wacCost || ""); setMk(ed.markup ?? "30");
+      setName(ed.name); setCat(ed.category); setUnit(ed.unit); setCost(ed.wacCost || ""); setMk(ed.markup ?? "25");
       setOptStr((ed.options || []).join(", "));
       // Load per-variant minStocks from existing variants
       const vms = {};
@@ -1215,7 +1223,7 @@ function ItemModal({ open, onClose, items, sI, ed }) {
       }
       setVariantMinStocks(vms);
     } else {
-      setName(""); setCat(CATS[0]); setUnit(UNITS[0]); setCost(""); setMk("30"); setOptStr(""); setVariantMinStocks({});
+      setName(""); setCat(CATS[0]); setUnit(UNITS[0]); setCost(""); setMk("25"); setOptStr(""); setVariantMinStocks({});
     }
   }, [ed, open]);
 
@@ -1262,7 +1270,7 @@ function ItemModal({ open, onClose, items, sI, ed }) {
       </Fld>
       <Rw>
         <Cl><Fld label="Our Cost ($)"><input type="number" step=".01" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0.00" style={inp} /></Fld></Cl>
-        <Cl><Fld label="Markup %"><input type="number" value={mk} onChange={(e) => setMk(e.target.value)} placeholder="30" style={inp} /></Fld></Cl>
+        <Cl><Fld label="Gross Margin %"><input type="number" value={mk} onChange={(e) => setMk(e.target.value)} placeholder="25" style={inp} /></Fld></Cl>
         <Cl><Fld label="Sell Price"><div style={{ ...inp, background: C.brd, fontFamily: MN, fontWeight: 700, color: C.ac }}>{fmt$(sell)}</div></Fld></Cl>
       </Rw>
 
@@ -1516,7 +1524,7 @@ function InvMgr({ items, sI }) {
                     <td style={{ padding: "7px 8px", fontWeight: 600, color: optName === "_default" ? C.t2 : C.txt }}>{optName === "_default" ? "—" : optName}</td>
                     <td style={{ padding: "7px 8px", fontFamily: MN, fontWeight: 600, color: (vData.qty || 0) <= 0 ? C.red : C.txt }}>{vData.qty || 0} {item.unit}</td>
                     <td style={{ padding: "7px 8px", fontFamily: MN }}>{fmt$(vData.wac)}</td>
-                    <td style={{ padding: "7px 8px", fontFamily: MN, color: C.ac }}>{fmt$((vData.wac || 0) * (1 + (item.markup || 0) / 100))}</td>
+                    <td style={{ padding: "7px 8px", fontFamily: MN, color: C.ac }}>{fmt$((item.markup || 0) >= 100 ? (vData.wac || 0) : (vData.wac || 0) / (1 - (item.markup || 0) / 100))}</td>
                     <td style={{ padding: "7px 8px", fontFamily: MN }}>{fmt$((vData.qty || 0) * (vData.wac || 0))}</td>
                   </tr>
                 ));
@@ -2669,7 +2677,7 @@ function SupplierCost({ items, sI }) {
 
       <div style={{ fontSize: 11, color: C.t2, marginTop: 12, fontStyle: "italic" }}>
         Positive delta (green) = supplier costs more than us — we're saving money. Negative (red) = we're overpaying compared to supplier.
-        All comparisons use our true blended cost (WAC), not markup price. Changes to supplier cost only affect future reporting.
+        All comparisons use our true blended cost (WAC), not sell price. Changes to supplier cost only affect future reporting.
       </div>
     </div>
   );
@@ -3755,7 +3763,7 @@ function Reports({ orders, items, shrinkLog }) {
             </div>
 
             <div style={{ fontSize: 11, color: C.t2, marginTop: 10, fontStyle: "italic" }}>
-              Every number on this page uses the supplier cost that was set at the moment each order was submitted. Changing supplier cost today only affects future orders — past orders are never touched. All comparisons are against your true blended cost (WAC), not markup.
+              Every number on this page uses the supplier cost that was set at the moment each order was approved. Changing supplier cost today only affects future orders — past orders are never touched. All comparisons are against your true blended cost (WAC), not sell price.
             </div>
           </div>
         );
