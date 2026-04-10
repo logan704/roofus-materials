@@ -3169,6 +3169,8 @@ function Reports({ orders, items, shrinkLog }) {
   const [svaPreset, setSvaPreset] = useState("all");
   const [svaStart, setSvaStart] = useState("");
   const [svaEnd, setSvaEnd] = useState("");
+  const [deadExpand, setDeadExpand] = useState(false);
+  const [velExpand, setVelExpand] = useState({ 30: false, 90: false, 180: false });
 
   useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); })(); }, []);
 
@@ -3509,15 +3511,19 @@ function Reports({ orders, items, shrinkLog }) {
         const deadStock = rows.filter(r => r.s180 === 0).sort((a, b) => b.investment - a.investment);
         const movers = rows.filter(r => r.s180 > 0);
         // Worst 5 by velocity (lowest %) for each period
-        const worst30 = [...movers].sort((a, b) => a.vel30 - b.vel30).slice(0, 5);
-        const worst90 = [...movers].sort((a, b) => a.vel90 - b.vel90).slice(0, 5);
-        const worst180 = [...movers].sort((a, b) => a.vel180 - b.vel180).slice(0, 5);
+        const worst30 = [...movers].sort((a, b) => a.vel30 - b.vel30).slice(0, 10);
+        const worst90 = [...movers].sort((a, b) => a.vel90 - b.vel90).slice(0, 10);
+        const worst180 = [...movers].sort((a, b) => a.vel180 - b.vel180).slice(0, 10);
         const deadTotal = deadStock.reduce((s, r) => s + r.investment, 0);
-        const velCard = (label, items2, period) => (
+        const velCard = (label, items2, period) => {
+          const expanded = velExpand[period];
+          const shown = expanded ? items2 : items2.slice(0, 5);
+          const hasMore = items2.length > 5;
+          return (
           <div style={{flex:"1 1 300px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:18}}>
             <div style={{fontSize:11,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>{label} — Slowest Movers</div>
             {!items2.length&&<div style={{color:C.t2,fontSize:12}}>No sales data yet</div>}
-            {items2.map((r, i) => {
+            {shown.map((r, i) => {
               const vel = period === 30 ? r.vel30 : period === 90 ? r.vel90 : r.vel180;
               return (
               <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${C.brd}`}}>
@@ -3528,8 +3534,9 @@ function Reports({ orders, items, shrinkLog }) {
                 <div style={{fontFamily:MN,fontWeight:800,fontSize:16,color:vel < 10 ? C.red : vel < 30 ? C.wrn : C.grn,minWidth:60,textAlign:"right"}}>{vel.toFixed(1)}%</div>
               </div>
             );})}
+            {hasMore && <button onClick={() => setVelExpand({...velExpand, [period]: !expanded})} style={{background:"none",border:"none",color:C.blu,cursor:"pointer",fontSize:12,fontWeight:700,padding:"8px 0",width:"100%",textAlign:"center"}}>{expanded ? "Show less" : `+ ${items2.length - 5} more`}</button>}
           </div>
-        );
+        );}
         // Sort detailed table by worst 90-day velocity
         const allSorted = [...rows].sort((a, b) => a.vel90 - b.vel90);
         return (
@@ -3541,13 +3548,13 @@ function Reports({ orders, items, shrinkLog }) {
                 <div style={{fontSize:18,fontWeight:900,fontFamily:MN,color:C.red}}>{fmt$(deadTotal)} tied up</div>
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                {deadStock.slice(0, 10).map(r => (
+                {(deadExpand ? deadStock : deadStock.slice(0, 10)).map(r => (
                   <div key={r.id} style={{background:"#fff",borderRadius:8,padding:"8px 12px",border:`1px solid ${C.brd}`,fontSize:12}}>
                     <div style={{fontWeight:700}}>{r.name}{r.option !== "—" ? <span style={{color:C.blu,marginLeft:4,fontSize:10}}>{r.option}</span> : ""}</div>
                     <div style={{color:C.t2,fontSize:11}}>{r.qty} {r.unit} · {fmt$(r.investment)}</div>
                   </div>
                 ))}
-                {deadStock.length > 10 && <div style={{alignSelf:"center",fontSize:12,color:C.t2}}>+{deadStock.length - 10} more</div>}
+                {deadStock.length > 10 && <button onClick={() => setDeadExpand(!deadExpand)} style={{alignSelf:"center",background:"none",border:"none",color:C.blu,cursor:"pointer",fontSize:12,fontWeight:700}}>{deadExpand ? "Show less" : `+${deadStock.length - 10} more`}</button>}
               </div>
             </div>}
 
@@ -3800,25 +3807,6 @@ function Reports({ orders, items, shrinkLog }) {
 
         return (
           <div>
-            {/* CATEGORY PROJECTIONS */}
-            {catArr.length > 0 && <div style={{marginBottom:16}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>6-Month Projected Spend by Category</div>
-              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                {catArr.map(([cat, v]) => (
-                  <div key={cat} style={{flex:"1 1 180px",background:C.card,borderRadius:12,border:`1px solid ${C.brd}`,padding:"14px 16px"}}>
-                    <div style={{fontSize:11,color:C.t2,fontWeight:600,marginBottom:4}}>{cat}</div>
-                    <div style={{fontSize:20,fontWeight:900,fontFamily:MN,color:NAVY}}>{fmt$(v.cost6)}</div>
-                    <div style={{fontSize:10,color:C.t2}}>{v.items} SKUs · {Math.round(v.cost6/total6Cost*100)}% of total</div>
-                  </div>
-                ))}
-                <div style={{flex:"1 1 180px",background:NAVY+"10",borderRadius:12,border:`2px solid ${NAVY}33`,padding:"14px 16px"}}>
-                  <div style={{fontSize:11,color:NAVY,fontWeight:700,marginBottom:4}}>Total 6-Month</div>
-                  <div style={{fontSize:20,fontWeight:900,fontFamily:MN,color:NAVY}}>{fmt$(total6Cost)}</div>
-                  <div style={{fontSize:10,color:C.t2}}>Confidence: {avgConfidence}% · {dataMonths}mo data</div>
-                </div>
-              </div>
-            </div>}
-
             {/* SUMMARY CARDS */}
             <Rw g={14}>
               <Stat label="Total SKUs" value={rows.length} color={C.txt} />
@@ -3829,9 +3817,9 @@ function Reports({ orders, items, shrinkLog }) {
 
             {/* URGENT CALLOUT */}
             {urgentRows.length > 0 && <div style={{background:C.red+"08",borderRadius:14,border:`1px solid ${C.red}22`,padding:18,marginTop:16,marginBottom:16}}>
-              <div style={{fontSize:13,fontWeight:800,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>Needs Attention</div>
+              <div style={{fontSize:13,fontWeight:800,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>Needs Attention ({urgentRows.length})</div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                {urgentRows.slice(0, 10).map(r => (
+                {urgentRows.map(r => (
                   <div key={r.id} style={{background:"#fff",borderRadius:8,padding:"8px 12px",border:`1px solid ${r.isLow ? C.red+"44" : C.wrn+"44"}`,fontSize:12}}>
                     <div style={{fontWeight:700}}>{r.name}{r.option !== "—" ? <span style={{color:C.blu,marginLeft:4,fontSize:10}}>{r.option}</span> : ""}</div>
                     <div style={{color:C.t2,fontSize:11}}>{r.afterPending} left{r.isLow ? <span style={{color:C.red,fontWeight:700}}> · BELOW MIN ({r.minStock})</span> : ""}{r.rate > 0 ? <span style={{color:C.wrn,fontWeight:700}}> · ~{r.stockoutMonth < 1 ? "<1" : r.stockoutMonth}mo to stockout</span> : ""}</div>
