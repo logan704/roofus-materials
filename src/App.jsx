@@ -2882,9 +2882,24 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const totInvoiced = allCalc.reduce((s,j)=>s+j.invoiced,0);
 
   const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:+nGP||0, isInsurance:nInsurance, status:"in_progress", costs:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
-  const addCost = (jid) => { if (!cDesc.trim()||!cAmt) return; sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cCat,description:cDesc.trim(),amount:+cAmt||0,date:new Date().toISOString()}]}:j)); setCDesc(""); setCAmt(""); setCCat("labor"); };
+  const [closedExpenseConfirm, setClosedExpenseConfirm] = useState(null); // {type, jid}
+  const addCost = (jid) => {
+    if (!cDesc.trim()||!cAmt) return;
+    const job = jobs.find(j=>j.id===jid);
+    if (job && job.status === "closed" && !closedExpenseConfirm) {
+      setClosedExpenseConfirm({ type: "cost", jid }); return;
+    }
+    sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cCat,description:cDesc.trim(),amount:+cAmt||0,date:new Date().toISOString()}]}:j)); setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
+  };
   const deleteCost = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
-  const addAddlCharge = (jid) => { if (!acDesc.trim()||!acAmt) return; sJ(jobs.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)); setAcDesc(""); setAcAmt(""); };
+  const addAddlCharge = (jid) => {
+    if (!acDesc.trim()||!acAmt) return;
+    const job = jobs.find(j=>j.id===jid);
+    if (job && job.status === "closed" && !closedExpenseConfirm) {
+      setClosedExpenseConfirm({ type: "charge", jid }); return;
+    }
+    sJ(jobs.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)); setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null);
+  };
   const deleteAddlCharge = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j)); };
   const updateJob = (jid,upd) => { sJ(jobs.map(j=>j.id===jid?{...j,...upd}:j)); };
 
@@ -2902,7 +2917,18 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
             <div><h1 style={{fontSize:24,fontWeight:900,fontFamily:BC}}>{j.name}</h1>{j.address&&<div style={{fontSize:14,color:C.t2,marginTop:4}}>{j.address}</div>}</div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               {j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"4px 10px",borderRadius:6,background:C.blu+"15",color:C.blu}}>INSURANCE</span>}
-              <select value={j.status} onChange={(e)=>{updateJob(j.id,{status:e.target.value,completedDate:e.target.value==="closed"?new Date().toISOString():j.completedDate}); if(e.target.value==="closed"){setEditJob(null);}else{setEditJob({...editJob,status:e.target.value});}}} style={{...inp,padding:"8px 12px",fontSize:12,width:"auto",borderRadius:10,fontWeight:700,background:sc.bg,color:sc.c,cursor:"pointer"}}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
+              <select value={j.status} onChange={async (e)=>{
+                const newStatus = e.target.value;
+                const upd = { status: newStatus, completedDate: newStatus === "closed" ? new Date().toISOString() : j.completedDate };
+                if (newStatus === "closed" && j.jnJobId) {
+                  try {
+                    const jnJob = jnAll.find(jj => jj.id === j.jnJobId);
+                    if (jnJob) upd.leadSource = jnJob.lead_source || jnJob.source || "";
+                  } catch(e2) {}
+                }
+                updateJob(j.id, upd);
+                if (newStatus === "closed") { setEditJob(null); } else { setEditJob({...editJob, status: newStatus}); }
+              }} style={{...inp,padding:"8px 12px",fontSize:12,width:"auto",borderRadius:10,fontWeight:700,background:sc.bg,color:sc.c,cursor:"pointer"}}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
             </div>
           </div>
           <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
@@ -2912,7 +2938,8 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           </div>
           <div style={{display:"flex",gap:12,marginTop:16,flexWrap:"wrap"}}>
             <div style={{flex:"1 1 150px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Contract $</div><input type="number" value={j.contractAmount||""} onChange={(e)=>{updateJob(j.id,{contractAmount:+e.target.value||0}); setEditJob({...editJob,contractAmount:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN}}/></div>
-            <div style={{flex:"1 1 100px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Proj GP %</div><input type="number" value={j.projectedGP||""} onChange={(e)=>{updateJob(j.id,{projectedGP:+e.target.value||0}); setEditJob({...editJob,projectedGP:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN}}/></div>
+            <div style={{flex:"1 1 100px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Proj GP %</div><input type="number" value={j.gpUnknown?"":j.projectedGP||""} disabled={j.gpUnknown} onChange={(e)=>{updateJob(j.id,{projectedGP:+e.target.value||0}); setEditJob({...editJob,projectedGP:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN,opacity:j.gpUnknown?0.4:1}}/></div>
+            <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:600,color:j.gpUnknown?C.wrn:C.t2}}><input type="checkbox" checked={j.gpUnknown||false} onChange={(e)=>{updateJob(j.id,{gpUnknown:e.target.checked}); setEditJob({...editJob,gpUnknown:e.target.checked});}} style={{width:16,height:16}}/> GP Unknown</label></div>
             <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={j.isInsurance||false} onChange={(e)=>{updateJob(j.id,{isInsurance:e.target.checked}); setEditJob({...editJob,isInsurance:e.target.checked});}} style={{width:18,height:18}}/> Insurance</label></div>
           </div>
           {/* ADDITIONAL CHARGES */}
@@ -3061,9 +3088,58 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const rRetGP = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGP,0)/rRetail.length : 0;
   const rInsAvgContract = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.fullContract,0)/rInsurance.length : 0;
   const rRetAvgContract = rRetail.length ? rRetail.reduce((s,j)=>s+j.fullContract,0)/rRetail.length : 0;
-  const fade = rClosed.filter(j=>j.variance<-500).sort((a,b)=>a.variance-b.variance);
-  const wins = rClosed.filter(j=>j.variance>500).sort((a,b)=>b.variance-a.variance);
+  const fade = rClosed.filter(j=>!j.gpUnknown&&j.variance<-500).sort((a,b)=>a.variance-b.variance);
+  const wins = rClosed.filter(j=>!j.gpUnknown&&j.variance>500).sort((a,b)=>b.variance-a.variance);
   const unbilled = rAll.filter(j=>j.jnJobId&&j.fullContract>0&&j.unbilled>500);
+
+  // ── NEW REPORT DATA ──
+  // GP by Lead Source
+  const leadMap = {};
+  rClosed.forEach(j => {
+    const ls = j.leadSource || "Unknown";
+    if (!leadMap[ls]) leadMap[ls] = { count: 0, totalContract: 0, totalGP$: 0, totalGP$Sup: 0, totalGPPct: 0, totalGPPctSup: 0, totalRev: 0 };
+    leadMap[ls].count++; leadMap[ls].totalContract += j.fullContract; leadMap[ls].totalGP$ += j.actGP$; leadMap[ls].totalGP$Sup += j.actGP$Sup;
+    leadMap[ls].totalGPPct += j.actGP; leadMap[ls].totalGPPctSup += j.actGPSup; leadMap[ls].totalRev += j.invoiced || j.fullContract;
+  });
+  const leadStats = Object.entries(leadMap).map(([ls, d]) => ({
+    source: ls, count: d.count, avgContract: d.totalContract / d.count, avgGP: d.totalGPPct / d.count, avgGPSup: d.totalGPPctSup / d.count,
+    totalGP$: d.totalGP$, totalGP$Sup: d.totalGP$Sup, totalRev: d.totalRev
+  })).sort((a, b) => b.totalRev - a.totalRev);
+
+  // Insurance vs Retail expanded (dual GP)
+  const rInsGPSup = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.actGPSup,0)/rInsurance.length : 0;
+  const rRetGPSup = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGPSup,0)/rRetail.length : 0;
+  const rInsRevenue = rInsurance.reduce((s,j)=>s+j.fullContract,0);
+  const rRetRevenue = rRetail.reduce((s,j)=>s+j.fullContract,0);
+  const rInsAvgGP$ = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.actGP$,0)/rInsurance.length : 0;
+  const rRetAvgGP$ = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGP$,0)/rRetail.length : 0;
+
+  // Monthly Revenue & GP Trend + Material % Trend
+  const monthTrend = {};
+  rClosed.forEach(j => {
+    const d = new Date(j.completedDate||j.createdDate);
+    const k = d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+    if (!monthTrend[k]) monthTrend[k] = { month: k, revenue: 0, costs: 0, matCost: 0, count: 0, totalGP: 0, totalGPSup: 0 };
+    monthTrend[k].revenue += j.fullContract; monthTrend[k].costs += j.totalCosts; monthTrend[k].matCost += j.mat;
+    monthTrend[k].count++; monthTrend[k].totalGP += j.actGP; monthTrend[k].totalGPSup += j.actGPSup;
+  });
+  const trendData = Object.values(monthTrend).map(m => ({
+    month: m.month, revenue: m.revenue, costs: m.costs, profit: m.revenue - m.costs,
+    gp: +(m.totalGP / m.count).toFixed(1), gpSup: +(m.totalGPSup / m.count).toFixed(1),
+    matPct: m.revenue > 0 ? +(m.matCost / m.revenue * 100).toFixed(1) : 0
+  })).sort((a, b) => a.month.localeCompare(b.month)).slice(-12);
+
+  // Top 5 / Bottom 5 by GP$
+  const top5 = [...rClosed].sort((a,b) => b.actGP$ - a.actGP$).slice(0, 5);
+  const bottom5 = [...rClosed].sort((a,b) => a.actGP$ - b.actGP$).slice(0, 5);
+
+  // Projected vs Actual per-job (exclude gpUnknown jobs)
+  const projVsActual = rClosed.filter(j => !j.gpUnknown).map(j => ({ name: j.name, proj: j.projectedGP || 0, actual: j.actGP, actualSup: j.actGPSup, diff: j.actGP - (j.projectedGP || 0) }));
+  const avgDiff = projVsActual.length ? projVsActual.reduce((s,j)=>s+j.diff, 0) / projVsActual.length : 0;
+
+  // Recalculate avg projected GP excluding unknown
+  const knownGPJobs = rClosed.filter(j => !j.gpUnknown);
+  const rAvgProjGPKnown = knownGPJobs.length ? knownGPJobs.reduce((s,j)=>s+(j.projectedGP||0),0)/knownGPJobs.length : 0;
   // GP trend by month
   const monthMap = {};
   rClosed.forEach(j => { const d = new Date(j.completedDate||j.createdDate); const k = d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); if(!monthMap[k]) monthMap[k]={month:k,count:0,totalGP:0}; monthMap[k].count++; monthMap[k].totalGP+=j.actGP; });
@@ -3111,13 +3187,28 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
 
         {/* PROJECTED VS ACTUAL */}
         <div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
-          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Projected vs Actual GP%</div>
-          <div style={{display:"flex",gap:20,flexWrap:"wrap",alignItems:"center"}}>
-            <div style={{flex:"1 1 150px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Projected</div><div style={{fontSize:32,fontWeight:900,color:C.blu,fontFamily:MN}}>{rAvgProjGP.toFixed(1)}%</div></div>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Projected vs Actual GP%{rClosed.length !== projVsActual.length ? <span style={{fontWeight:500,textTransform:"none",marginLeft:8}}>({rClosed.length - projVsActual.length} jobs excluded — GP unknown)</span> : ""}</div>
+          <div style={{display:"flex",gap:20,flexWrap:"wrap",alignItems:"center",marginBottom:16}}>
+            <div style={{flex:"1 1 120px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Projected</div><div style={{fontSize:32,fontWeight:900,color:C.blu,fontFamily:MN}}>{rAvgProjGPKnown.toFixed(1)}%</div></div>
             <div style={{fontSize:24,color:C.t2}}>→</div>
-            <div style={{flex:"1 1 150px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Actual</div><div style={{fontSize:32,fontWeight:900,color:rAvgGP>=rAvgProjGP?C.grn:C.red,fontFamily:MN}}>{rAvgGP.toFixed(1)}%</div></div>
-            <div style={{flex:"1 1 150px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Difference</div><div style={{fontSize:32,fontWeight:900,color:(rAvgGP-rAvgProjGP)>=0?C.grn:C.red,fontFamily:MN}}>{(rAvgGP-rAvgProjGP)>=0?"+":""}{(rAvgGP-rAvgProjGP).toFixed(1)}%</div></div>
+            <div style={{flex:"1 1 120px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Actual (WAC)</div><div style={{fontSize:32,fontWeight:900,color:rAvgGP>=rAvgProjGPKnown?C.grn:C.red,fontFamily:MN}}>{rAvgGP.toFixed(1)}%</div></div>
+            <div style={{flex:"1 1 120px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Actual (Supplier)</div><div style={{fontSize:32,fontWeight:900,color:C.blu,fontFamily:MN}}>{rAvgGPSup.toFixed(1)}%</div></div>
+            <div style={{flex:"1 1 120px",textAlign:"center"}}><div style={{fontSize:12,color:C.t2,marginBottom:4}}>Avg Difference</div><div style={{fontSize:32,fontWeight:900,color:avgDiff>=0?C.grn:C.red,fontFamily:MN}}>{avgDiff>=0?"+":""}{avgDiff.toFixed(1)}%</div></div>
           </div>
+          {projVsActual.length>0&&<div style={{overflowX:"auto",maxHeight:250}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr>{["Job","Projected","Actual (WAC)","Actual (Supplier)","Difference"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+              <tbody>{projVsActual.sort((a,b)=>a.diff-b.diff).map((j,i)=>(
+                <tr key={i} style={{borderBottom:`1px solid ${C.brd}`}}>
+                  <td style={{...tdS,fontWeight:600}}>{j.name}</td>
+                  <td style={{...tdS,fontFamily:MN}}>{j.proj.toFixed(1)}%</td>
+                  <td style={{...tdS,fontFamily:MN,color:j.actual>=j.proj?C.grn:C.red,fontWeight:700}}>{j.actual.toFixed(1)}%</td>
+                  <td style={{...tdS,fontFamily:MN,color:C.blu}}>{j.actualSup.toFixed(1)}%</td>
+                  <td style={{...tdS,fontFamily:MN,fontWeight:700,color:j.diff>=0?C.grn:C.red}}>{j.diff>=0?"+":""}{j.diff.toFixed(1)}%</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>}
         </div>
 
         {/* COST AS % OF CONTRACT */}
@@ -3135,26 +3226,89 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           <div style={{textAlign:"center",marginTop:12,fontSize:13,fontWeight:700,color:C.t2}}>Total Cost: {fmt$(rTotCosts)} of {fmt$(rTotContract)} ({rTotContract>0?(rTotCosts/rTotContract*100).toFixed(1):0}%)</div>
         </div>}
 
-        {/* INSURANCE VS RETAIL */}
-        {(rInsurance.length>0||rRetail.length>0)&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
-          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Insurance vs Retail</div>
-          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
-            {[{l:"Insurance",count:rInsurance.length,gp:rInsGP,contract:rInsAvgContract,c:C.blu},{l:"Retail",count:rRetail.length,gp:rRetGP,contract:rRetAvgContract,c:C.wrn}].map(t=>(
-              <div key={t.l} style={{flex:"1 1 200px",background:"#fff",borderRadius:12,padding:16,border:`1px solid ${C.brd}`}}>
-                <div style={{fontSize:14,fontWeight:800,color:t.c,marginBottom:10}}>{t.l} ({t.count} jobs)</div>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}}><span style={{color:C.t2}}>Avg GP%</span><span style={{fontWeight:700,fontFamily:MN}}>{t.gp.toFixed(1)}%</span></div>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}><span style={{color:C.t2}}>Avg Contract</span><span style={{fontWeight:700,fontFamily:MN}}>{fmt$(t.contract)}</span></div>
+        {/* LEAD SOURCE DEEP COMPARISON */}
+        {leadStats.length>0&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Lead Source — Deep Comparison</div>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+            {leadStats.map((ls,i)=>(
+              <div key={i} style={{flex:"1 1 220px",background:"#fff",borderRadius:12,padding:16,border:`1px solid ${C.brd}`}}>
+                <div style={{fontSize:14,fontWeight:800,color:i===0?C.ac:i===1?C.blu:i===2?C.wrn:NAVY,marginBottom:12}}>{ls.source} ({ls.count} jobs)</div>
+                {[{k:"Avg Contract",v:fmt$(ls.avgContract)},{k:"Total Revenue",v:fmt$(ls.totalRev)},{k:"GP% (WAC)",v:ls.avgGP.toFixed(1)+"%",clr:ls.avgGP>=30?C.grn:C.red},{k:"GP% (Supplier)",v:ls.avgGPSup.toFixed(1)+"%",clr:C.blu},{k:"Total GP$ (WAC)",v:fmt$(ls.totalGP$),clr:ls.totalGP$>=0?C.grn:C.red},{k:"Total GP$ (Supplier)",v:fmt$(ls.totalGP$Sup),clr:C.blu}].map(r=>(
+                  <div key={r.k} style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:5}}><span style={{color:C.t2}}>{r.k}</span><span style={{fontWeight:700,fontFamily:MN,color:r.clr||C.txt}}>{r.v}</span></div>
+                ))}
               </div>
             ))}
           </div>
         </div>}
 
-        {/* GP TREND BY MONTH */}
-        {gpTrend.length>1&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
-          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>GP% Trend by Month</div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={gpTrend}><CartesianGrid strokeDasharray="3 3" stroke={C.brd}/><XAxis dataKey="month" tick={{fontSize:10}} stroke={C.t2}/><YAxis tick={{fontSize:10}} stroke={C.t2} unit="%"/><Tooltip formatter={(v)=>v+"%"}/><Bar dataKey="gp" fill={NAVY} radius={[4,4,0,0]}/></BarChart>
+        {/* MONTHLY REVENUE & GP TREND */}
+        {trendData.length>1&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Monthly Revenue & GP% Trend</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={trendData}><CartesianGrid strokeDasharray="3 3" stroke={C.brd}/>
+              <XAxis dataKey="month" tick={{fontSize:10}} stroke={C.t2}/>
+              <YAxis yAxisId="left" tick={{fontSize:10}} stroke={C.t2} tickFormatter={(v)=>"$"+Math.round(v/1000)+"k"}/>
+              <YAxis yAxisId="right" orientation="right" tick={{fontSize:10}} stroke={C.t2} unit="%"/>
+              <Tooltip formatter={(v,name)=>name.includes("%")?v+"%":fmt$(v)}/>
+              <Bar yAxisId="left" dataKey="revenue" name="Revenue" fill={NAVY} radius={[4,4,0,0]} opacity={0.7}/>
+              <Bar yAxisId="left" dataKey="profit" name="Profit" fill={C.grn} radius={[4,4,0,0]}/>
+              <Bar yAxisId="right" dataKey="gp" name="GP% WAC" fill={C.ac} radius={[4,4,0,0]} opacity={0.5}/>
+            </BarChart>
           </ResponsiveContainer>
+        </div>}
+
+        {/* MATERIAL COST AS % OF CONTRACT TREND */}
+        {trendData.length>1&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>Material Cost as % of Contract — Monthly Trend</div>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={trendData}><CartesianGrid strokeDasharray="3 3" stroke={C.brd}/>
+              <XAxis dataKey="month" tick={{fontSize:10}} stroke={C.t2}/>
+              <YAxis tick={{fontSize:10}} stroke={C.t2} unit="%"/>
+              <Tooltip formatter={(v)=>v+"%"}/>
+              <Bar dataKey="matPct" name="Material %" fill={RED} radius={[4,4,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{fontSize:11,color:C.t2,marginTop:8,fontStyle:"italic"}}>If this creeps up over time, your material costs are eating into your margins.</div>
+        </div>}
+
+        {/* GP% BY LEAD SOURCE */}
+        {leadStats.length>1&&<div style={{background:C.sf,borderRadius:14,padding:20,marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:14}}>GP% by Lead Source</div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr>{["Lead Source","Jobs","Avg Contract","Total Revenue","GP% (WAC)","GP% (Supplier)","Total GP$ (WAC)","Total GP$ (Supplier)"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+              <tbody>{leadStats.map((ls,i)=>(
+                <tr key={i} style={{borderBottom:`1px solid ${C.brd}`}}>
+                  <td style={{...tdS,fontWeight:700}}>{ls.source}</td>
+                  <td style={{...tdS,fontFamily:MN}}>{ls.count}</td>
+                  <td style={{...tdS,fontFamily:MN}}>{fmt$(ls.avgContract)}</td>
+                  <td style={{...tdS,fontFamily:MN}}>{fmt$(ls.totalRev)}</td>
+                  <td style={{...tdS,fontFamily:MN,fontWeight:700,color:ls.avgGP>=30?C.grn:C.red}}>{ls.avgGP.toFixed(1)}%</td>
+                  <td style={{...tdS,fontFamily:MN,color:C.blu}}>{ls.avgGPSup.toFixed(1)}%</td>
+                  <td style={{...tdS,fontFamily:MN,color:ls.totalGP$>=0?C.grn:C.red}}>{fmt$(ls.totalGP$)}</td>
+                  <td style={{...tdS,fontFamily:MN,color:C.blu}}>{fmt$(ls.totalGP$Sup)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>}
+
+        {/* TOP 5 MOST PROFITABLE / BOTTOM 5 LEAST */}
+        {rClosed.length>=3&&<div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:16}}>
+          <div style={{flex:"1 1 300px",background:"#fff",borderRadius:14,border:`1px solid ${C.brd}`,padding:20}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.grn,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Top 5 Most Profitable</div>
+            {top5.map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}>
+              <div><div style={{fontWeight:700,fontSize:13}}>{j.name}</div><div style={{fontSize:10,color:C.t2}}>WAC: {j.actGP.toFixed(1)}% · Supplier: {j.actGPSup.toFixed(1)}%</div></div>
+              <div style={{textAlign:"right"}}><div style={{fontWeight:800,color:C.grn,fontFamily:MN}}>{fmt$(j.actGP$)}</div><div style={{fontSize:10,color:C.blu,fontFamily:MN}}>{fmt$(j.actGP$Sup)}</div></div>
+            </div>))}
+          </div>
+          <div style={{flex:"1 1 300px",background:"#fff",borderRadius:14,border:`1px solid ${C.brd}`,padding:20}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:".08em",marginBottom:12}}>Bottom 5 Least Profitable</div>
+            {bottom5.map(j=>(<div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center"}}>
+              <div><div style={{fontWeight:700,fontSize:13}}>{j.name}</div><div style={{fontSize:10,color:C.t2}}>WAC: {j.actGP.toFixed(1)}% · Supplier: {j.actGPSup.toFixed(1)}%</div></div>
+              <div style={{textAlign:"right"}}><div style={{fontWeight:800,color:j.actGP$>=0?C.wrn:C.red,fontFamily:MN}}>{fmt$(j.actGP$)}</div><div style={{fontSize:10,color:C.blu,fontFamily:MN}}>{fmt$(j.actGP$Sup)}</div></div>
+            </div>))}
+          </div>
         </div>}
 
         {/* PROFIT FADE */}
@@ -3223,6 +3377,17 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:8}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={nInsurance} onChange={(e)=>setNInsurance(e.target.checked)} style={{width:18,height:18}}/> Insurance</label></div>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setAddModal(false)} style={{...bS,borderRadius:10}}>Cancel</button><button onClick={addJob} disabled={!nName.trim()} style={{...bP,borderRadius:10,opacity:nName.trim()?1:0.5}}><Check size={14}/> Add Job</button></div>
+      </Modal>}
+      {closedExpenseConfirm && <Modal open onClose={() => setClosedExpenseConfirm(null)} title="Job is Closed">
+        <div style={{textAlign:"center",padding:"10px 0 20px"}}>
+          <AlertTriangle size={40} color={C.wrn} style={{marginBottom:12}}/>
+          <p style={{fontSize:15,fontWeight:600,marginBottom:8}}>This job is closed.</p>
+          <p style={{color:C.t2,fontSize:13,marginBottom:20}}>Adding {closedExpenseConfirm.type === "cost" ? "a cost" : "an additional charge"} will change the profitability of a closed job. Are you sure?</p>
+          <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+            <button onClick={() => setClosedExpenseConfirm(null)} style={{...bS,borderRadius:10,padding:"12px 24px"}}>Cancel</button>
+            <button onClick={() => { if (closedExpenseConfirm.type === "cost") addCost(closedExpenseConfirm.jid); else addAddlCharge(closedExpenseConfirm.jid); }} style={{...bP,borderRadius:10,padding:"12px 24px",background:C.wrn}}>Yes, Add It</button>
+          </div>
+        </div>
       </Modal>}
       {viewOrder&&<OrderPDF order={viewOrder} items={items} onClose={()=>setViewOrder(null)} />}
     </div>
