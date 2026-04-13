@@ -65,6 +65,33 @@ const fmt$ = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFracti
 const fD = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const hP = (p) => { let h = 0; for (let i = 0; i < p.length; i++) { h = ((h << 5) - h) + p.charCodeAt(i); h |= 0; } return "h" + Math.abs(h).toString(36); };
 
+// ─── GRANULAR PERMISSIONS ───
+const PERMS = [
+  { key: "approve_orders", label: "Approve / Reject Orders" },
+  { key: "view_all_history", label: "View All Order History" },
+  { key: "edit_orders", label: "Edit Orders" },
+  { key: "delete_orders", label: "Delete Orders" },
+  { key: "manage_items", label: "Manage Items & Inventory" },
+  { key: "receive_inventory", label: "Receive Inventory" },
+  { key: "physical_count", label: "Physical Count / Shrinkage" },
+  { key: "damage_gallery", label: "View Reported Damage" },
+  { key: "supplier_cost", label: "Supplier Cost" },
+  { key: "templates", label: "Manage Templates" },
+  { key: "reports", label: "Material Reports" },
+  { key: "jobs", label: "Job Profit Tracker" },
+  { key: "settings", label: "User Management & Settings" },
+];
+const ALL_PERMS_ON = Object.fromEntries(PERMS.map(p => [p.key, true]));
+const DEFAULT_PERMS = Object.fromEntries(PERMS.map(p => [p.key, false]));
+const hasPerm = (u, k) => { if (!u) return false; if (u.role === "admin") return true; return !!(u.perms && u.perms[k]); };
+// Migrate old role-based users to granular perms (one-time per user)
+const migratePerms = (u) => {
+  if (u.role === "admin" || u.perms) return u;
+  const p = { ...DEFAULT_PERMS, edit_orders: true };
+  if (u.role === "manager") { p.view_all_history = true; p.delete_orders = true; p.jobs = true; }
+  return { ...u, perms: p };
+};
+
 const inp = { background: C.sf, border: `1px solid ${C.brd}`, color: C.txt, borderRadius: 6, padding: "10px 14px", fontSize: 14, width: "100%", outline: "none" };
 const bP = { background: C.ac, color: C.w, border: "none", borderRadius: 8, padding: "12px 24px", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, transition: "all .15s" };
 const bS = { ...bP, background: "transparent", border: `1px solid ${C.brd}`, color: C.txt };
@@ -366,6 +393,9 @@ export default function App() {
         u.push(a);
         await sv("users", u);
       }
+      // Migrate users to granular permissions
+      const migU = u.map(migratePerms);
+      if (JSON.stringify(migU) !== JSON.stringify(u)) { u = migU; await sv("users", u); }
       setUsers(u); setItems(it); setOrders(o); setTemplates(t); setShrinkLog(sh); setTrackedJobs(tj);
       // One-time shrinkage reset for v47
       const migrated = await ld("v47_shrink_reset", false);
@@ -447,10 +477,20 @@ export default function App() {
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
   const logout = useCallback(async () => { setUser(null); setPg("home"); try { localStorage.removeItem("roofus_sess"); } catch {} }, []);
   const isA = user?.role === "admin";
-  const isM = user?.role === "manager";
-  const canApprove = isA;
-  const canEditOrders = true; // everyone can edit
-  const canDeleteOrders = isA || isM;
+  const canApprove = hasPerm(user, "approve_orders");
+  const canEditOrders = hasPerm(user, "edit_orders");
+  const canDeleteOrders = hasPerm(user, "delete_orders");
+  const canViewAllHistory = hasPerm(user, "view_all_history");
+  const canJobs = hasPerm(user, "jobs");
+  const canItems = hasPerm(user, "manage_items");
+  const canInventory = hasPerm(user, "receive_inventory");
+  const canShrinkage = hasPerm(user, "physical_count");
+  const canGallery = hasPerm(user, "damage_gallery");
+  const canSupplier = hasPerm(user, "supplier_cost");
+  const canTemplates = hasPerm(user, "templates");
+  const canReports = hasPerm(user, "reports");
+  const canSettings = hasPerm(user, "settings");
+  const canMaterials = canItems || canInventory || canShrinkage || canGallery || canSupplier || canTemplates;
   const [matDrop, setMatDrop] = useState(false);
   const [settDrop, setSettDrop] = useState(false);
 
@@ -509,8 +549,8 @@ export default function App() {
           {canApprove && <NavBtn icon={Clock} label="Approvals" active={pg === "approvals"} onClick={() => setPg("approvals")} badge={pendCt} />}
           <NavBtn icon={Camera} label="Report Damage" active={pg === "damage"} onClick={() => setPg("damage")} />
 
-          {/* Materials Dropdown - admin only */}
-          {isA && <div style={{ position: "relative" }}>
+          {/* Materials Dropdown - permission-based */}
+          {canMaterials && <div style={{ position: "relative" }}>
             <button onClick={() => { setMatDrop(!matDrop); setSettDrop(false); }}
               style={{ background: ["items","inventory","shrinkage","supplier","templates","gallery"].includes(pg) ? C.sf : "transparent", border: "none",
                 color: ["items","inventory","shrinkage","supplier","templates","gallery"].includes(pg) ? C.ac : C.t2,
@@ -518,7 +558,7 @@ export default function App() {
               <Package size={14} /> Materials <ChevronDown size={12} style={{ transform: matDrop ? "rotate(180deg)" : "rotate(0)", transition: "transform .2s" }} />
             </button>
             {matDrop && <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 180, zIndex: 200, overflow: "hidden" }}>
-              {[{ pg: "items", icon: Layers, l: "Items" }, { pg: "inventory", icon: Archive, l: "Receive Inventory" }, { pg: "shrinkage", icon: AlertTriangle, l: "Physical Count" }, { pg: "gallery", icon: Image, l: "Reported Damage" }, { pg: "supplier", icon: DollarSign, l: "Supplier Cost" }, { pg: "templates", icon: Copy, l: "Templates" }].map((m) => (
+              {[{ pg: "items", icon: Layers, l: "Items", perm: "manage_items" }, { pg: "inventory", icon: Archive, l: "Receive Inventory", perm: "receive_inventory" }, { pg: "shrinkage", icon: AlertTriangle, l: "Physical Count", perm: "physical_count" }, { pg: "gallery", icon: Image, l: "Reported Damage", perm: "damage_gallery" }, { pg: "supplier", icon: DollarSign, l: "Supplier Cost", perm: "supplier_cost" }, { pg: "templates", icon: Copy, l: "Templates", perm: "templates" }].filter(m => hasPerm(user, m.perm)).map((m) => (
                 <button key={m.pg} onClick={() => setPg(m.pg)}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px", border: "none", background: pg === m.pg ? C.sf : "transparent",
                     color: pg === m.pg ? C.ac : C.txt, fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "left" }}>
@@ -529,8 +569,8 @@ export default function App() {
           </div>}
 
           <NavBtn icon={FileText} label="History" active={pg === "history"} onClick={() => setPg("history")} />
-          {(isA || isM) && <NavBtn icon={DollarSign} label="Jobs" active={pg === "jobs"} onClick={() => setPg("jobs")} />}
-          {isA && <NavBtn icon={BarChart2} label="Material Reports" active={pg === "reports"} onClick={() => setPg("reports")} />}
+          {canJobs && <NavBtn icon={DollarSign} label="Jobs" active={pg === "jobs"} onClick={() => setPg("jobs")} />}
+          {canReports && <NavBtn icon={BarChart2} label="Material Reports" active={pg === "reports"} onClick={() => setPg("reports")} />}
 
           {/* Settings Dropdown */}
           <div style={{ position: "relative" }}>
@@ -542,7 +582,7 @@ export default function App() {
             </button>
             {settDrop && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 180, zIndex: 200, overflow: "hidden" }}>
               <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.brd}`, fontSize: 11, color: C.t2, fontWeight: 700 }}>{user.name} · {user.role}</div>
-              {isA && <button onClick={() => setPg("settings")}
+              {canSettings && <button onClick={() => setPg("settings")}
                 style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px", border: "none", background: pg === "settings" ? C.sf : "transparent",
                   color: C.txt, fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "left" }}>
                 <Users size={14} /> Manage Users
@@ -558,20 +598,20 @@ export default function App() {
       </div>
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
-        {pg === "home" && <HomePage isA={isA} isM={isM} go={(page, tpl) => { setStartTpl(tpl || null); setPg(page); }} pendCt={pendCt} templates={templates} />}
+        {pg === "home" && <HomePage canApprove={canApprove} canJobs={canJobs} go={(page, tpl) => { setStartTpl(tpl || null); setPg(page); }} pendCt={pendCt} templates={templates} />}
         {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} sO={sO} sI={sI} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
         {pg === "approvals" && canApprove && <Approvals orders={orders} sO={sO} items={items} sI={sI} view={setVOrd} />}
-        {pg === "items" && isA && <ItemMgr items={items} sI={sI} orders={orders} />}
-        {pg === "inventory" && isA && <InvMgr items={items} sI={sI} />}
-        {pg === "shrinkage" && isA && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
+        {pg === "items" && canItems && <ItemMgr items={items} sI={sI} orders={orders} />}
+        {pg === "inventory" && canInventory && <InvMgr items={items} sI={sI} />}
+        {pg === "shrinkage" && canShrinkage && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
         {pg === "damage" && <DamageReport items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} user={user} />}
-        {pg === "gallery" && isA && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
-        {pg === "supplier" && isA && <SupplierCost items={items} sI={sI} />}
-        {pg === "templates" && isA && <TplMgr templates={templates} sT={sT} items={items} />}
-        {pg === "history" && <History orders={orders} items={items} user={user} isA={isA} isM={isM} view={setVOrd} sO={sO} />}
-        {pg === "jobs" && (isA || isM) && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} nav={setPg} />}
-        {pg === "reports" && isA && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
-        {pg === "settings" && isA && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
+        {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
+        {pg === "supplier" && canSupplier && <SupplierCost items={items} sI={sI} />}
+        {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} items={items} />}
+        {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} view={setVOrd} sO={sO} />}
+        {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} nav={setPg} />}
+        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
+        {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
         onDelete={canDeleteOrders ? (id) => {
@@ -724,7 +764,7 @@ function Auth({ users, sU, login }) {
 }
 
 // ═══ HOME ═══
-function HomePage({ isA, isM, go, pendCt, templates }) {
+function HomePage({ canApprove, canJobs, go, pendCt, templates }) {
   return (
     <div className="fu">
       <div style={{ textAlign: "center", paddingTop: 40, paddingBottom: 30 }}>
@@ -735,7 +775,7 @@ function HomePage({ isA, isM, go, pendCt, templates }) {
         <BigBtn icon={<FileText size={40} />} label="Start Order" sub="Build a new material order" color={RED} onClick={() => go("order")} />
         <BigBtn icon={<RotateCcw size={40} />} label="Start Return" sub="Return materials to inventory" color={C.blu} onClick={() => go("return")} />
       </div>
-      {(isA || isM) && pendCt > 0 && (
+      {canApprove && pendCt > 0 && (
         <div style={{ ...crd, maxWidth: 700, margin: "30px auto 0", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => go("approvals")}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ background: "#E6A81722", borderRadius: 8, padding: 10, display: "flex" }}><Clock size={20} color={C.wrn} /></div>
@@ -1965,9 +2005,9 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
 }
 
 // ═══ ORDER HISTORY ═══
-function History({ orders, items, user, isA, isM, view, sO }) {
+function History({ orders, items, user, canViewAll, view, sO }) {
   const [search, setSearch] = useState(""); const [stF, setStF] = useState("All"); const [tyF, setTyF] = useState("All");
-  const vis = (isA || isM) ? orders : orders.filter((o) => o.userId === user.id);
+  const vis = canViewAll ? orders : orders.filter((o) => o.userId === user.id);
   const filt = vis.filter((o) => {
     if (stF !== "All" && o.status !== stF) return false;
     if (tyF !== "All" && o.type !== tyF) return false;
@@ -4484,12 +4524,11 @@ function Reports({ orders, items, shrinkLog }) {
 
 // ═══ SETTINGS PAGE ═══
 function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
-  const ROLES = ["admin", "manager", "user"];
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [editUser, setEditUser] = useState(null);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
-  const [editRole, setEditRole] = useState("user");
+  const [editPerms, setEditPerms] = useState({});
   const [resetPw, setResetPw] = useState("");
   const [exporting, setExporting] = useState(false);
 
@@ -4519,53 +4558,66 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
     setExporting(false);
   };
 
-  const cycleRole = (u) => {
-    if (u.id === me.id) return;
-    const idx = ROLES.indexOf(u.role);
-    const next = ROLES[(idx + 1) % ROLES.length];
-    sU(users.map((x) => x.id === u.id ? { ...x, role: next } : x));
-  };
-
   const deleteUser = (u) => {
     sU(users.filter((x) => x.id !== u.id));
     setDeleteConfirm(null);
   };
 
   const startEdit = (u) => {
-    setEditUser(u); setEditName(u.name); setEditEmail(u.email); setEditRole(u.role); setResetPw("");
+    setEditUser(u);
+    setEditName(u.name);
+    setEditEmail(u.email);
+    setEditPerms(u.role === "admin" ? { ...ALL_PERMS_ON } : { ...DEFAULT_PERMS, ...(u.perms || {}) });
+    setResetPw("");
   };
+
   const saveEdit = () => {
     if (!editName.trim() || !editEmail.trim()) return;
     sU(users.map((x) => {
       if (x.id !== editUser.id) return x;
-      const updated = { ...x, name: editName.trim(), email: editEmail.trim().toLowerCase(), role: editRole };
+      const updated = { ...x, name: editName.trim(), email: editEmail.trim().toLowerCase() };
+      if (x.role !== "admin") updated.perms = { ...editPerms };
       if (resetPw.trim().length >= 4) updated.pw = hP(resetPw);
       return updated;
     }));
     setEditUser(null);
   };
 
-  const roleColors = { admin: { bg: RED + "15", c: RED, border: RED + "44" }, manager: { bg: NAVY + "15", c: NAVY, border: NAVY + "44" }, user: { bg: C.sf, c: C.t2, border: C.brd }, pending: { bg: C.wrn + "15", c: C.wrn, border: C.wrn + "44" } };
+  const togglePerm = (key) => {
+    if (editUser?.role === "admin") return;
+    setEditPerms(p => ({ ...p, [key]: !p[key] }));
+  };
+  const setAllPerms = (val) => {
+    if (editUser?.role === "admin") return;
+    setEditPerms(Object.fromEntries(PERMS.map(p => [p.key, val])));
+  };
+
   const pendingUsers = users.filter((u) => u.role === "pending");
   const activeUsers = users.filter((u) => u.role !== "pending");
 
-  const approveUser = (u, role) => {
-    sU(users.map((x) => x.id === u.id ? { ...x, role } : x));
+  const approveUser = (u) => {
+    sU(users.map((x) => x.id === u.id ? { ...x, role: "user", perms: { ...DEFAULT_PERMS, edit_orders: true } } : x));
   };
   const rejectUser = (u) => {
     sU(users.filter((x) => x.id !== u.id));
   };
 
+  const permCount = (u) => {
+    if (u.role === "admin") return PERMS.length;
+    if (!u.perms) return 0;
+    return PERMS.filter(p => u.perms[p.key]).length;
+  };
+
   return (
     <div className="fu">
       <h1 style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, fontFamily: BC }}>SETTINGS</h1>
-      <p style={{ color: C.t2, fontSize: 13, marginBottom: 24 }}>Manage users, roles, and system settings.</p>
+      <p style={{ color: C.t2, fontSize: 13, marginBottom: 24 }}>Manage users, permissions, and system settings.</p>
 
       {/* PENDING APPROVALS */}
       {pendingUsers.length > 0 && (
         <div style={{ ...crd, marginBottom: 20, borderLeft: `4px solid ${C.wrn}` }}>
           <div style={{ ...lbl, marginBottom: 10, color: C.wrn }}>Pending Approval ({pendingUsers.length})</div>
-          <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>These people signed up and are waiting for your approval before they can log in.</p>
+          <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>These people signed up and are waiting for your approval. Once approved, click Edit to customize what they can see and do.</p>
           {pendingUsers.map((u) => (
             <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${C.brd}`, flexWrap: "wrap", gap: 8 }}>
               <div>
@@ -4573,8 +4625,7 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
                 <div style={{ fontSize: 12, color: C.t2 }}>{u.email} · signed up {fD(u.created)}</div>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => approveUser(u, "user")} style={{ ...bP, padding: "6px 14px", fontSize: 12, background: C.grn }}><Check size={12} /> Approve as User</button>
-                <button onClick={() => approveUser(u, "manager")} style={{ ...bP, padding: "6px 14px", fontSize: 12, background: NAVY }}><Check size={12} /> Approve as Manager</button>
+                <button onClick={() => approveUser(u)} style={{ ...bP, padding: "6px 14px", fontSize: 12, background: C.grn }}><Check size={12} /> Approve</button>
                 <button onClick={() => rejectUser(u)} style={{ ...bD, padding: "6px 14px", fontSize: 12 }}><X size={12} /> Reject</button>
               </div>
             </div>
@@ -4586,19 +4637,18 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
       <div style={{ ...crd, marginBottom: 20 }}>
         <div style={{ ...lbl, marginBottom: 14 }}>User Management</div>
         <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>
-          <strong>Admin</strong> — full access to everything including reports, items, inventory, and settings.
-          <strong style={{ marginLeft: 12 }}>Manager</strong> — can access home, approvals, history, and edit/delete orders. No reports or inventory management.
-          <strong style={{ marginLeft: 12 }}>User</strong> — can submit orders and view their own history only.
+          Click <strong>Edit</strong> on any user to customize exactly which features they can access. Admin always has full access.
         </p>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-              {["Name", "Email", "Role (click to change)", "Joined", "Actions"].map((h) => (
+              {["Name", "Email", "Permissions", "Joined", "Actions"].map((h) => (
                 <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>{activeUsers.map((u) => {
-              const rc = roleColors[u.role] || roleColors.user;
+              const pc = permCount(u);
+              const isAdmin = u.role === "admin";
               return (
                 <tr key={u.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
                   <td style={{ padding: "10px 12px", fontWeight: 600 }}>
@@ -4607,11 +4657,15 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
                   </td>
                   <td style={{ padding: "10px 12px", color: C.t2 }}>{u.email}</td>
                   <td style={{ padding: "10px 12px" }}>
-                    <button onClick={() => cycleRole(u)} disabled={u.id === me.id}
-                      style={{ background: rc.bg, color: rc.c, border: `1px solid ${rc.border}`, borderRadius: 4, padding: "4px 14px", fontSize: 11, fontWeight: 800, cursor: u.id === me.id ? "default" : "pointer", textTransform: "uppercase", letterSpacing: ".04em" }}>
-                      {u.role}
-                    </button>
-                    {u.id !== me.id && <span style={{ fontSize: 10, color: C.t2, marginLeft: 8 }}>click to change</span>}
+                    {isAdmin ? (
+                      <span style={{ background: RED + "15", color: RED, border: `1px solid ${RED}44`, borderRadius: 4, padding: "4px 14px", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em" }}>
+                        ADMIN — ALL ACCESS
+                      </span>
+                    ) : (
+                      <span style={{ background: pc > 0 ? C.grn + "15" : C.sf, color: pc > 0 ? C.grn : C.t2, border: `1px solid ${pc > 0 ? C.grn + "44" : C.brd}`, borderRadius: 4, padding: "4px 14px", fontSize: 11, fontWeight: 800 }}>
+                        {pc} of {PERMS.length} enabled
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: "10px 12px", color: C.t2, fontSize: 12 }}>{fD(u.created)}</td>
                   <td style={{ padding: "10px 12px" }}>
@@ -4631,40 +4685,6 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
                 </tr>
               );
             })}</tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ROLE INFO */}
-      <div style={{ ...crd, marginBottom: 20 }}>
-        <div style={{ ...lbl, marginBottom: 14 }}>Role Permissions</div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-              {["Feature", "Admin", "Manager", "User"].map((h) => (
-                <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {[
-                ["Submit Orders / Returns", true, true, true],
-                ["View All Order History", true, true, false],
-                ["Approve / Reject Orders", true, true, false],
-                ["Edit / Delete Orders", true, true, false],
-                ["Manage Items & Inventory", true, false, false],
-                ["Physical Count / Shrinkage", true, false, false],
-                ["Supplier Cost", true, false, false],
-                ["Reports & Analytics", true, false, false],
-                ["User Management & Settings", true, false, false],
-              ].map(([feature, admin, mgr, usr], i) => (
-                <tr key={i} style={{ borderBottom: `1px solid ${C.brd}` }}>
-                  <td style={{ padding: "8px 12px", fontWeight: 600 }}>{feature}</td>
-                  <td style={{ padding: "8px 12px", color: admin ? C.grn : C.red }}>{admin ? "✓" : "✗"}</td>
-                  <td style={{ padding: "8px 12px", color: mgr ? C.grn : C.red }}>{mgr ? "✓" : "✗"}</td>
-                  <td style={{ padding: "8px 12px", color: usr ? C.grn : C.red }}>{usr ? "✓" : "✗"}</td>
-                </tr>
-              ))}
-            </tbody>
           </table>
         </div>
       </div>
@@ -4706,29 +4726,57 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
       </Modal>
 
       {/* EDIT USER MODAL */}
-      <Modal open={!!editUser} onClose={() => setEditUser(null)} title={`Edit User — ${editUser?.name || ""}`}>
+      <Modal open={!!editUser} onClose={() => setEditUser(null)} title={`Edit User — ${editUser?.name || ""}`} wide>
         {editUser && (
           <>
-            <Fld label="Name"><input value={editName} onChange={(e) => setEditName(e.target.value)} style={inp} /></Fld>
-            <Fld label="Email"><input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={inp} type="email" /></Fld>
-            <Fld label="Role">
-              <div style={{ display: "flex", gap: 8 }}>
-                {ROLES.map((r) => {
-                  const rc = roleColors[r];
-                  return (
-                    <button key={r} onClick={() => setEditRole(r)}
-                      style={{ flex: 1, padding: "10px", borderRadius: 6, border: `2px solid ${editRole === r ? rc.c : C.brd}`,
-                        background: editRole === r ? rc.bg : "transparent", cursor: "pointer", textAlign: "center" }}>
-                      <div style={{ fontSize: 13, fontWeight: 800, textTransform: "uppercase", color: rc.c }}>{r}</div>
-                      <div style={{ fontSize: 10, color: C.t2, marginTop: 2 }}>{r === "admin" ? "Full access" : r === "manager" ? "Approvals + history" : "Orders only"}</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </Fld>
+            <Rw g={12}>
+              <Cl><Fld label="Name"><input value={editName} onChange={(e) => setEditName(e.target.value)} style={inp} /></Fld></Cl>
+              <Cl><Fld label="Email"><input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={inp} type="email" /></Fld></Cl>
+            </Rw>
             <Fld label="Reset Password (leave blank to keep current)">
               <input value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="New password (4+ chars)..." style={inp} type="text" />
             </Fld>
+
+            {/* PERMISSIONS GRID */}
+            <div style={{ marginTop: 8, marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <label style={lbl}>Permissions</label>
+                {editUser.role !== "admin" && (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setAllPerms(true)} style={{ background: C.grn + "15", color: C.grn, border: `1px solid ${C.grn}44`, borderRadius: 4, padding: "3px 10px", fontSize: 10, fontWeight: 800, cursor: "pointer" }}>Enable All</button>
+                    <button onClick={() => setAllPerms(false)} style={{ background: C.red + "15", color: C.red, border: `1px solid ${C.red}44`, borderRadius: 4, padding: "3px 10px", fontSize: 10, fontWeight: 800, cursor: "pointer" }}>Disable All</button>
+                  </div>
+                )}
+              </div>
+              {editUser.role === "admin" && (
+                <p style={{ fontSize: 12, color: C.t2, marginBottom: 10, fontStyle: "italic" }}>Admin always has full access to everything. Permissions cannot be changed.</p>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 6 }}>
+                {PERMS.map((p) => {
+                  const on = editUser.role === "admin" ? true : !!editPerms[p.key];
+                  const locked = editUser.role === "admin";
+                  return (
+                    <div key={p.key}
+                      onClick={() => !locked && togglePerm(p.key)}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                        background: on ? C.grn + "08" : C.sf, border: `1.5px solid ${on ? C.grn + "55" : C.brd}`,
+                        borderRadius: 8, cursor: locked ? "default" : "pointer", transition: "all .15s",
+                        opacity: locked ? 0.6 : 1
+                      }}>
+                      <div style={{
+                        width: 22, height: 22, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center",
+                        background: on ? C.grn : "transparent", border: `2px solid ${on ? C.grn : C.brdL}`, transition: "all .15s", flexShrink: 0
+                      }}>
+                        {on && <Check size={14} color="#fff" strokeWidth={3} />}
+                      </div>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: on ? C.txt : C.t2 }}>{p.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
               <button onClick={() => setEditUser(null)} style={bS}>Cancel</button>
               <button onClick={saveEdit} style={bP}><Check size={14} /> Save Changes</button>
