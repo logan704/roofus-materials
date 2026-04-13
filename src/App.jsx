@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49b - granular permissions rebuild
+// v49c - live pending costs + granular permissions
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -249,7 +249,18 @@ async function updateOSBNote(noteId, order, newOsbQty) {
 // ─── PDF VIEWER MODAL ───
 function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
   const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
-  const ls = order.lines || [];
+  // For pending orders, recalculate from current item data; approved orders keep locked costs
+  const ls = (order.lines || []).map(l => {
+    if (order.status !== "pending") return l;
+    const it = iMap[l.itemId];
+    if (!it) return l;
+    const v = getVariants(it);
+    const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 };
+    const wac = vd.wac || it.wacCost || 0;
+    const m = it.markup || 0;
+    const sell = m >= 100 ? wac : wac / (1 - m / 100);
+    return { ...l, unitCost: wac, markupCost: sell, supplierCost: it.supplierCost || 0 };
+  });
   const tCost = ls.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
   const tSell = ls.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
   const tSupplier = ls.reduce((s, l) => s + l.qty * (l.supplierCost || 0), 0);
@@ -1199,8 +1210,9 @@ function Approvals({ orders, sO, items, sI, view }) {
       <p style={{ color: C.t2, fontSize: 13, marginBottom: 20 }}>{pend.length} order{pend.length !== 1 ? "s" : ""} to review</p>
       {!pend.length && <Empty msg="All caught up — nothing pending." />}
       {pend.map((o) => {
-        const tot = o.lines.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
-        const cost = o.lines.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
+        // Recalculate from current item data so pending orders show live costs
+        const liveCost = o.lines.reduce((s, l) => { const it = items.find(i => i.id === l.itemId); if (!it) return s + l.qty * (l.unitCost || 0); const v = getVariants(it); const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 }; return s + l.qty * (vd.wac || it.wacCost || 0); }, 0);
+        const liveSell = o.lines.reduce((s, l) => { const it = items.find(i => i.id === l.itemId); if (!it) return s + l.qty * (l.markupCost || 0); const v = getVariants(it); const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 }; const wac = vd.wac || it.wacCost || 0; const m = it.markup || 0; const sell = m >= 100 ? wac : wac / (1 - m / 100); return s + l.qty * sell; }, 0);
         return (
           <div key={o.id} style={{ ...crd, marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
@@ -1211,7 +1223,7 @@ function Approvals({ orders, sO, items, sI, view }) {
                   {o.poNumber && <span style={{ fontSize: 12, fontFamily: MN, color: C.t2 }}>PO: {o.poNumber}</span>}
                 </div>
                 <div style={{ fontSize: 12, color: C.t2 }}>By {o.userName} · {fD(o.date)}{o.jobName ? ` · ${o.jobName}` : ""}</div>
-                <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{o.lines.length} items · Cost: {fmt$(cost)} · Sell: <strong style={{ color: C.ac }}>{fmt$(tot)}</strong></div>
+                <div style={{ fontSize: 12, color: C.t2, marginTop: 2 }}>{o.lines.length} items · Cost: {fmt$(liveCost)} · Sell: <strong style={{ color: C.ac }}>{fmt$(liveSell)}</strong></div>
                 {o.osbDesc&&<div style={{fontSize:12,marginTop:4,padding:"6px 10px",background:C.wrn+"12",borderRadius:6,border:`1px solid ${C.wrn}33`}}><strong style={{color:C.wrn}}>OSB Note:</strong> <span style={{color:C.txt}}>{o.osbQty} {o.osbQty===1?"sheet":"sheets"} — {o.osbDesc}</span></div>}
               </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
