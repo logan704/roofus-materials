@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49g - locked contract, cost edit, cost confirm, auto PO, permissions
+// v49i - no insurance, shingle colors tab, locked contract+GP, editable costs, auto PO, permissions
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -447,7 +447,6 @@ export default function App() {
   const [newJobsQueue, setNewJobsQueue] = useState([]);
   const [newJobGPs, setNewJobGPs] = useState({});
   const [newJobContracts, setNewJobContracts] = useState({});
-  const [newJobInsurance, setNewJobInsurance] = useState({});
   const [newJobGPUnknown, setNewJobGPUnknown] = useState({});
 
   // Auto-add JN jobs with status "Signed Contract - Replacement"
@@ -466,9 +465,9 @@ export default function App() {
         if (newJobs.length) {
           const queue = newJobs.map(jj => ({ tempId: uid(), jnJobId: jj.id, name: jj.name || "", address: jj.address || "" }));
           setNewJobsQueue(queue);
-          const gps = {}; const contracts = {}; const ins = {}; const gpUnk = {};
-          queue.forEach(q => { gps[q.tempId] = "35"; contracts[q.tempId] = ""; ins[q.tempId] = false; gpUnk[q.tempId] = false; });
-          setNewJobGPs(gps); setNewJobContracts(contracts); setNewJobInsurance(ins); setNewJobGPUnknown(gpUnk);
+          const gps = {}; const contracts = {}; const gpUnk = {};
+          queue.forEach(q => { gps[q.tempId] = "35"; contracts[q.tempId] = ""; gpUnk[q.tempId] = false; });
+          setNewJobGPs(gps); setNewJobContracts(contracts); setNewJobGPUnknown(gpUnk);
         }
       } catch(e) {}
     })();
@@ -477,7 +476,7 @@ export default function App() {
   const confirmNewJobs = () => {
     const added = newJobsQueue.map(q => ({
       id: q.tempId, jnJobId: q.jnJobId, name: q.name, address: q.address,
-      contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: newJobGPUnknown[q.tempId] ? 0 : (+newJobGPs[q.tempId] || 35), gpUnknown: newJobGPUnknown[q.tempId] || false, isInsurance: newJobInsurance[q.tempId] || false,
+      contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: newJobGPUnknown[q.tempId] ? 0 : (+newJobGPs[q.tempId] || 35), gpUnknown: newJobGPUnknown[q.tempId] || false,
       status: "in_progress", costs: [], additionalCharges: [], notes: "", createdDate: new Date().toISOString(), completedDate: ""
     }));
     sTJ([...trackedJobs, ...added]);
@@ -538,7 +537,6 @@ export default function App() {
                 </div>
                 <div style={{ flex: "0 0 auto", paddingTop: 18, display: "flex", gap: 12 }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, fontWeight: 600, color: newJobGPUnknown[q.tempId] ? C.wrn : C.t2 }}><input type="checkbox" checked={newJobGPUnknown[q.tempId] || false} onChange={(e) => setNewJobGPUnknown({ ...newJobGPUnknown, [q.tempId]: e.target.checked })} style={{ width: 16, height: 16 }} /> GP Unknown</label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}><input type="checkbox" checked={newJobInsurance[q.tempId] || false} onChange={(e) => setNewJobInsurance({ ...newJobInsurance, [q.tempId]: e.target.checked })} style={{ width: 18, height: 18 }} /> Insurance</label>
                 </div>
               </div>
             </div>
@@ -2822,14 +2820,13 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const [view, setView] = useState("list"); // list, detail, reports, history
   const [editJob, setEditJob] = useState(null);
   const [filterStatus, setFilterStatus] = useState("all");
-  const [filterType, setFilterType] = useState("all");
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("date");
   const [addModal, setAddModal] = useState(false);
   const [jnAll, setJnAll] = useState([]);
   const [jnSearch, setJnSearch] = useState("");
   const [showJnDrop, setShowJnDrop] = useState(false);
-  const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nInsurance, setNInsurance] = useState(false); const [nJnId, setNJnId] = useState(""); const [nGPUnknown, setNGPUnknown] = useState(false);
+  const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nJnId, setNJnId] = useState(""); const [nGPUnknown, setNGPUnknown] = useState(false);
   const [cCat, setCCat] = useState("labor"); const [cDesc, setCDesc] = useState(""); const [cAmt, setCAmt] = useState("");
   const [acDesc, setAcDesc] = useState(""); const [acAmt, setAcAmt] = useState("");
   const [editingContract, setEditingContract] = useState(false);
@@ -2918,8 +2915,6 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const uniqueLeads = [...new Set(allCalc.map(j=>j.leadSource).filter(Boolean))].sort();
   const filtered = allCalc.filter((j) => {
     if (filterStatus !== "all" && j.status !== filterStatus) return false;
-    if (filterType === "insurance" && !j.isInsurance) return false;
-    if (filterType === "retail" && j.isInsurance) return false;
     if (filterLead !== "all" && j.leadSource !== filterLead) return false;
     if (search) { const s = search.toLowerCase(); if (!(j.name||"").toLowerCase().includes(s) && !(j.address||"").toLowerCase().includes(s)) return false; }
     return true;
@@ -2944,7 +2939,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const knownBidJobs = allCalc.filter(j=>!j.gpUnknown && (j.projectedGP||0) > 0);
   const avgBidGP = knownBidJobs.length ? knownBidJobs.reduce((s,j)=>s+(j.projectedGP||0),0)/knownBidJobs.length : 0;
 
-  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, isInsurance:nInsurance, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
+  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
   const [closedExpenseConfirm, setClosedExpenseConfirm] = useState(null); // {type, jid}
   const addCost = (jid) => {
     if (!cDesc.trim()||!cAmt) return;
@@ -2992,7 +2987,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:16}}>
             <div><h1 style={{fontSize:24,fontWeight:900,fontFamily:BC}}>{j.name}</h1>{j.address&&<div style={{fontSize:14,color:C.t2,marginTop:4}}>{j.address}</div>}</div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              {j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"4px 10px",borderRadius:6,background:C.blu+"15",color:C.blu}}>INSURANCE</span>}
+              
               <select value={j.status} onChange={async (e)=>{
                 const newStatus = e.target.value;
                 const upd = { status: newStatus, completedDate: newStatus === "closed" ? new Date().toISOString() : j.completedDate };
@@ -3017,9 +3012,11 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
               {editingContract ? <div style={{display:"flex",gap:6}}><input type="number" value={j.contractAmount||""} onChange={(e)=>{updateJob(j.id,{contractAmount:+e.target.value||0}); setEditJob({...editJob,contractAmount:+e.target.value||0});}} onFocus={(e)=>e.target.select()} autoFocus style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN,flex:1}}/><button onClick={()=>setEditingContract(false)} style={{...bP,borderRadius:10,padding:"10px 14px",fontSize:12}}><Check size={14}/></button></div>
               : <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:20,fontWeight:900,fontFamily:MN}}>{fmt$(j.contractAmount||0)}</span><button onClick={()=>setEditingContract(true)} style={{background:"none",border:`1px solid ${C.brd}`,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer",color:C.t2,display:"flex",alignItems:"center",gap:4}}><Edit3 size={11}/> Edit</button></div>}
             </div>
-            <div style={{flex:"1 1 100px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Proj GP %</div><input type="number" value={j.gpUnknown?"":j.projectedGP||""} disabled={j.gpUnknown} onChange={(e)=>{updateJob(j.id,{projectedGP:+e.target.value||0}); setEditJob({...editJob,projectedGP:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN,opacity:j.gpUnknown?0.4:1}}/></div>
+            <div style={{flex:"1 1 100px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Proj GP %</div>
+              {editingContract ? <input type="number" value={j.gpUnknown?"":j.projectedGP||""} disabled={j.gpUnknown} onChange={(e)=>{updateJob(j.id,{projectedGP:+e.target.value||0}); setEditJob({...editJob,projectedGP:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN,opacity:j.gpUnknown?0.4:1}}/>
+              : <span style={{fontSize:20,fontWeight:900,fontFamily:MN,color:j.gpUnknown?C.wrn:C.txt}}>{j.gpUnknown?"Unknown":(j.projectedGP||0)+"%"}</span>}
+            </div>
             <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:600,color:j.gpUnknown?C.wrn:C.t2}}><input type="checkbox" checked={j.gpUnknown||false} onChange={(e)=>{updateJob(j.id,{gpUnknown:e.target.checked}); setEditJob({...editJob,gpUnknown:e.target.checked});}} style={{width:16,height:16}}/> GP Unknown</label></div>
-            <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={j.isInsurance||false} onChange={(e)=>{updateJob(j.id,{isInsurance:e.target.checked}); setEditJob({...editJob,isInsurance:e.target.checked});}} style={{width:18,height:18}}/> Insurance</label></div>
           </div>
           {/* ADDITIONAL CHARGES */}
           <div style={{marginTop:14}}>
@@ -3180,12 +3177,6 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const rTotInvoiced = rAll.reduce((s,j)=>s+j.invoiced,0);
   const rTotCollected = rAll.reduce((s,j)=>s+j.collected,0);
   const rCollectionRate = rTotInvoiced>0 ? (rTotCollected/rTotInvoiced*100) : 0;
-  const rInsurance = rClosed.filter(j=>j.isInsurance);
-  const rRetail = rClosed.filter(j=>!j.isInsurance);
-  const rInsGP = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.actGP,0)/rInsurance.length : 0;
-  const rRetGP = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGP,0)/rRetail.length : 0;
-  const rInsAvgContract = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.fullContract,0)/rInsurance.length : 0;
-  const rRetAvgContract = rRetail.length ? rRetail.reduce((s,j)=>s+j.fullContract,0)/rRetail.length : 0;
   const fade = rClosed.filter(j=>!j.gpUnknown&&j.variance<-500).sort((a,b)=>a.variance-b.variance);
   const wins = rClosed.filter(j=>!j.gpUnknown&&j.variance>500).sort((a,b)=>b.variance-a.variance);
   const unbilled = rAll.filter(j=>j.jnJobId&&j.fullContract>0&&j.unbilled>500);
@@ -3205,12 +3196,6 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   })).sort((a, b) => b.totalRev - a.totalRev);
 
   // Insurance vs Retail expanded (dual GP)
-  const rInsGPSup = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.actGPSup,0)/rInsurance.length : 0;
-  const rRetGPSup = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGPSup,0)/rRetail.length : 0;
-  const rInsRevenue = rInsurance.reduce((s,j)=>s+j.fullContract,0);
-  const rRetRevenue = rRetail.reduce((s,j)=>s+j.fullContract,0);
-  const rInsAvgGP$ = rInsurance.length ? rInsurance.reduce((s,j)=>s+j.actGP$,0)/rInsurance.length : 0;
-  const rRetAvgGP$ = rRetail.length ? rRetail.reduce((s,j)=>s+j.actGP$,0)/rRetail.length : 0;
 
   // Monthly Revenue & GP Trend + Material % Trend
   const monthTrend = {};
@@ -3438,7 +3423,6 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
         <div style={{flex:"2 1 200px",position:"relative"}}><Search size={14} style={{position:"absolute",left:12,top:13,color:C.t2}}/><input value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Search jobs..." style={{...inp,paddingLeft:34,borderRadius:10,padding:"12px 14px 12px 34px"}}/></div>
         {!isHistory && <select value={filterStatus} onChange={(e)=>setFilterStatus(e.target.value)} style={{...inp,width:"auto",minWidth:140,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Status</option>{activeStatuses.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>}
-        <select value={filterType} onChange={(e)=>setFilterType(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Types</option><option value="insurance">Insurance</option><option value="retail">Retail</option></select>
         {uniqueLeads.length>0&&<select value={filterLead} onChange={(e)=>setFilterLead(e.target.value)} style={{...inp,width:"auto",minWidth:120,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="all">All Sources</option>{uniqueLeads.map(l=><option key={l} value={l}>{l}</option>)}</select>}
         <select value={sortBy} onChange={(e)=>setSortBy(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"12px 14px",cursor:"pointer"}}><option value="date">Newest</option><option value="name">Name</option><option value="gp">Best GP%</option><option value="variance">Worst Variance</option><option value="contract">Largest</option></select>
       </div>
@@ -3446,7 +3430,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
       {listJobs.map(j=>{const sc=SC[j.status]||SC.in_progress; return (
         <div key={j.id} onClick={()=>setEditJob(jobs.find(x=>x.id===j.id))} style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"18px 22px",marginBottom:10,cursor:"pointer",transition:"border-color .2s,box-shadow .2s",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}} onMouseEnter={(e)=>{e.currentTarget.style.borderColor=C.ac;e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.08)";}} onMouseLeave={(e)=>{e.currentTarget.style.borderColor=C.brd;e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,0.04)";}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
-            <div style={{flex:"1 1 200px"}}><div style={{fontWeight:700,fontSize:16}}>{j.name}</div>{j.address&&<div style={{fontSize:12,color:C.t2,marginTop:2}}>{j.address}</div>}<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:sc.bg,color:sc.c}}>{SL[j.status]}</span>{j.isInsurance&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:C.blu+"15",color:C.blu}}>Insurance</span>}{j.leadSource&&<span style={{fontSize:10,fontWeight:600,padding:"3px 8px",borderRadius:5,background:"#f0f0f0",color:C.t2}}>{j.leadSource}</span>}{j.totalCosts>0&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:j.actGP>=0?C.grn+"15":C.red+"15",color:j.actGP>=0?C.grn:C.red}}>WAC: {j.actGP.toFixed(1)}% / {fmt$(j.actGP$)}</span>}{j.totalCosts>0&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:C.blu+"15",color:C.blu}}>Supplier: {j.actGPSup.toFixed(1)}% / {fmt$(j.actGP$Sup)}</span>}</div></div>
+            <div style={{flex:"1 1 200px"}}><div style={{fontWeight:700,fontSize:16}}>{j.name}</div>{j.address&&<div style={{fontSize:12,color:C.t2,marginTop:2}}>{j.address}</div>}<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:sc.bg,color:sc.c}}>{SL[j.status]}</span>{j.leadSource&&<span style={{fontSize:10,fontWeight:600,padding:"3px 8px",borderRadius:5,background:"#f0f0f0",color:C.t2}}>{j.leadSource}</span>}{j.totalCosts>0&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:j.actGP>=0?C.grn+"15":C.red+"15",color:j.actGP>=0?C.grn:C.red}}>WAC: {j.actGP.toFixed(1)}% / {fmt$(j.actGP$)}</span>}{j.totalCosts>0&&<span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:C.blu+"15",color:C.blu}}>Supplier: {j.actGPSup.toFixed(1)}% / {fmt$(j.actGP$Sup)}</span>}</div></div>
             <div style={{display:"flex",gap:20,alignItems:"center",flexWrap:"wrap"}}>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Contract</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN}}>{fmt$(j.fullContract)}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Invoiced</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:NAVY}}>{j.invoiced>0?fmt$(j.invoiced):"—"}</div></div>
@@ -3474,7 +3458,6 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           <div style={{flex:"1 1 100px"}}><Fld label="Proj GP %"><input type="number" value={nGPUnknown?"":nGP} disabled={nGPUnknown} onChange={(e)=>setNGP(e.target.value)} placeholder="35" onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,fontFamily:MN,opacity:nGPUnknown?0.4:1}}/></Fld></div>
           <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:8,gap:14}}>
             <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:600,color:nGPUnknown?C.wrn:C.t2}}><input type="checkbox" checked={nGPUnknown} onChange={(e)=>setNGPUnknown(e.target.checked)} style={{width:16,height:16}}/> GP Unknown</label>
-            <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={nInsurance} onChange={(e)=>setNInsurance(e.target.checked)} style={{width:18,height:18}}/> Insurance</label>
           </div>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setAddModal(false)} style={{...bS,borderRadius:10}}>Cancel</button><button onClick={addJob} disabled={!nName.trim()} style={{...bP,borderRadius:10,opacity:nName.trim()?1:0.5}}><Check size={14}/> Add Job</button></div>
@@ -3508,6 +3491,9 @@ function Reports({ orders, items, shrinkLog }) {
   const [svaEnd, setSvaEnd] = useState("");
   const [deadExpand, setDeadExpand] = useState(false);
   const [velExpand, setVelExpand] = useState({ 30: false, 90: false, 180: false });
+  const [scRange, setScRange] = useState("90");
+  const [scStart, setScStart] = useState("");
+  const [scEnd, setScEnd] = useState("");
 
   useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); })(); }, []);
 
@@ -3561,7 +3547,7 @@ function Reports({ orders, items, shrinkLog }) {
   const tabs = [
     { k: "dash", l: "Dashboard" }, { k: "inv", l: "Inventory" }, { k: "move", l: "Movement" }, { k: "purchases", l: "Purchases" },
     { k: "aging", l: "Aging" }, { k: "sales", l: "Sales" }, { k: "reorder", l: "Reorder" },
-    { k: "margin", l: "Margin" }, { k: "shrink", l: "Shrinkage" }, { k: "savings", l: "Savings vs Supplier" }, { k: "sva", l: "Shingles vs Accessories" }, { k: "jobs", l: "By Job" },
+    { k: "margin", l: "Margin" }, { k: "shrink", l: "Shrinkage" }, { k: "savings", l: "Savings vs Supplier" }, { k: "sva", l: "Shingles vs Accessories" }, { k: "shingleColors", l: "Shingle Colors" }, { k: "jobs", l: "By Job" },
   ];
 
   const thS = { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card };
@@ -4536,6 +4522,142 @@ function Reports({ orders, items, shrinkLog }) {
             </div>}
 
             {!shItems.length&&!acItems.length&&<div style={{padding:30,textAlign:"center",color:C.t2,fontSize:14}}>No approved orders in this date range.</div>}
+          </div>
+        );
+      })()}
+
+      {/* ── SHINGLE COLORS ── */}
+      {tab === "shingleColors" && (() => {
+        const now = new Date();
+        const nowMs = now.getTime();
+
+        // Date filter
+        let scCut = new Date(0);
+        if (scRange === "custom" && scStart) scCut = new Date(scStart);
+        else if (scRange === "ytd") scCut = new Date(now.getFullYear(), 0, 1);
+        else if (scRange !== "all") scCut = new Date(nowMs - (+scRange) * 86400000);
+        const scEndDt = (scRange === "custom" && scEnd) ? new Date(scEnd + "T23:59:59") : now;
+
+        const inRange = (d) => { const dt = new Date(d); return dt >= scCut && dt <= scEndDt; };
+
+        // Get shingle orders only (category "Shingles")
+        const shingleOrders = orders.filter(o => o.status === "approved" && inRange(o.approvedDate || o.date));
+        const shingleItems = items.filter(it => it.category === "Shingles");
+        const shingleIds = new Set(shingleItems.map(it => it.id));
+
+        // Build per-color data
+        const colorData = {};
+        let totalBundles = 0;
+
+        shingleOrders.forEach(o => {
+          const mult = o.type === "return" ? -1 : 1;
+          if (o.type !== "order" && o.type !== "return") return;
+          // Track per-PO bundle count for replacement detection
+          const poColorQty = {};
+          o.lines.forEach(l => {
+            if (!shingleIds.has(l.itemId)) return;
+            const it = shingleItems.find(i => i.id === l.itemId);
+            const color = (l.option && l.option !== "_default") ? l.option : (it?.name || "Unknown");
+            const qty = l.qty * mult;
+            const wacRev = l.qty * (l.unitCost || 0) * mult;
+            const sellRev = l.qty * (l.markupCost || 0) * mult;
+            if (!colorData[color]) colorData[color] = { color, bundles: 0, wacRev: 0, sellRev: 0, replacementPOs: 0, replacementBundles: 0 };
+            colorData[color].bundles += qty;
+            colorData[color].wacRev += wacRev;
+            colorData[color].sellRev += sellRev;
+            totalBundles += qty;
+            if (!poColorQty[color]) poColorQty[color] = 0;
+            poColorQty[color] += qty;
+          });
+          // Check replacement threshold per color per PO
+          Object.entries(poColorQty).forEach(([color, qty]) => {
+            if (qty > 25 && colorData[color]) {
+              colorData[color].replacementPOs++;
+              colorData[color].replacementBundles += qty;
+            }
+          });
+        });
+
+        // 90d trend: current 90d % vs prior 90d %
+        const d90 = 90 * 86400000;
+        const cur90Start = new Date(nowMs - d90);
+        const prev90Start = new Date(nowMs - d90 * 2);
+        const calcPeriodPct = (startDt, endDt) => {
+          const periodOrders = orders.filter(o => o.status === "approved" && o.type === "order" && new Date(o.approvedDate || o.date) >= startDt && new Date(o.approvedDate || o.date) < endDt);
+          const pctMap = {};
+          let pTotal = 0;
+          periodOrders.forEach(o => o.lines.forEach(l => {
+            if (!shingleIds.has(l.itemId)) return;
+            const it = shingleItems.find(i => i.id === l.itemId);
+            const color = (l.option && l.option !== "_default") ? l.option : (it?.name || "Unknown");
+            if (!pctMap[color]) pctMap[color] = 0;
+            pctMap[color] += l.qty;
+            pTotal += l.qty;
+          }));
+          const result = {};
+          Object.entries(pctMap).forEach(([c, q]) => { result[c] = pTotal > 0 ? (q / pTotal * 100) : 0; });
+          return result;
+        };
+        const cur90Pct = calcPeriodPct(cur90Start, now);
+        const prev90Pct = calcPeriodPct(prev90Start, cur90Start);
+
+        const rows = Object.values(colorData).filter(r => r.bundles > 0).sort((a, b) => b.bundles - a.bundles);
+
+        return (
+          <div>
+            {/* DATE FILTER */}
+            <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+              {[{l:"30d",v:"30"},{l:"60d",v:"60"},{l:"90d",v:"90"},{l:"180d",v:"180"},{l:"1yr",v:"365"},{l:"YTD",v:"ytd"},{l:"All",v:"all"},{l:"Custom",v:"custom"}].map(f=>(
+                <button key={f.v} onClick={()=>setScRange(f.v)} style={{padding:"6px 14px",borderRadius:8,border:`1px solid ${scRange===f.v?C.ac:C.brd}`,background:scRange===f.v?C.ac:C.card,color:scRange===f.v?"#fff":C.txt,fontSize:12,fontWeight:700,cursor:"pointer"}}>{f.l}</button>
+              ))}
+              {scRange==="custom"&&<><input type="date" value={scStart} onChange={(e)=>setScStart(e.target.value)} style={{...inp,width:"auto",borderRadius:8,padding:"6px 10px",fontSize:12}}/><span style={{color:C.t2}}>to</span><input type="date" value={scEnd} onChange={(e)=>setScEnd(e.target.value)} style={{...inp,width:"auto",borderRadius:8,padding:"6px 10px",fontSize:12}}/></>}
+            </div>
+
+            {/* SUMMARY */}
+            <Rw g={14}>
+              <Stat label="Total Shingle Bundles" value={totalBundles.toLocaleString()} color={C.txt} />
+              <Stat label="Colors Sold" value={rows.length} color={C.blu} />
+              <Stat label="Roof Replacements" value={rows.reduce((s,r)=>s+r.replacementPOs,0)} sub=">25 bundles per PO" color={NAVY} />
+              <Stat label="Total Revenue (Sell)" value={fmt$(rows.reduce((s,r)=>s+r.sellRev,0))} color={C.grn} />
+            </Rw>
+
+            {/* TABLE */}
+            <div style={{...crd,padding:0,marginTop:16}}><div style={{overflowX:"auto",maxHeight:600}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr>{["Color","Bundles","% of Sales","Replacements",`Avg Bndl/Repl`,"Revenue (WAC)","Revenue (Sell)","90d Trend"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+                <tbody>{rows.map(r=>{
+                  const pct = totalBundles > 0 ? (r.bundles / totalBundles * 100) : 0;
+                  const avgPerRepl = r.replacementPOs > 0 ? Math.round(r.replacementBundles / r.replacementPOs) : 0;
+                  const curPct = cur90Pct[r.color] || 0;
+                  const prevPct = prev90Pct[r.color] || 0;
+                  const trendDiff = curPct - prevPct;
+                  return (
+                  <tr key={r.color} style={{borderBottom:`1px solid ${C.brd}`}}>
+                    <td style={{...tdS,fontWeight:700}}>{r.color}</td>
+                    <td style={{...tdS,fontFamily:MN,fontWeight:700}}>{r.bundles.toLocaleString()}</td>
+                    <td style={{...tdS,fontFamily:MN}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span>{pct.toFixed(1)}%</span>
+                        <div style={{flex:1,height:8,background:C.brd,borderRadius:4,maxWidth:80}}><div style={{height:8,background:C.ac,borderRadius:4,width:Math.min(pct,100)+"%"}}/></div>
+                      </div>
+                    </td>
+                    <td style={{...tdS,fontFamily:MN,fontWeight:700,color:NAVY}}>{r.replacementPOs}</td>
+                    <td style={{...tdS,fontFamily:MN}}>{avgPerRepl > 0 ? avgPerRepl : "—"}</td>
+                    <td style={{...tdS,fontFamily:MN}}>{fmt$(r.wacRev)}</td>
+                    <td style={{...tdS,fontFamily:MN,color:C.grn}}>{fmt$(r.sellRev)}</td>
+                    <td style={{...tdS,fontFamily:MN,fontWeight:700,color:trendDiff>1?C.grn:trendDiff<-1?C.red:C.t2}}>
+                      {prevPct > 0 || curPct > 0 ? <>{curPct.toFixed(1)}% {trendDiff > 0 ? "↑" : trendDiff < 0 ? "↓" : "—"} <span style={{fontSize:10,color:C.t2}}>was {prevPct.toFixed(1)}%</span></> : "—"}
+                    </td>
+                  </tr>
+                );})}
+                {!rows.length&&<tr><td colSpan={8} style={{...tdS,textAlign:"center",color:C.t2,padding:30}}>No shingle orders in this time range.</td></tr>}
+                </tbody>
+              </table>
+            </div></div>
+
+            <div style={{fontSize:11,color:C.t2,marginTop:12,fontStyle:"italic"}}>
+              Roof replacement = PO with &gt;25 bundles of a single color. 90d Trend compares current 90-day % of sales vs prior 90-day % of sales.
+            </div>
           </div>
         );
       })()}
