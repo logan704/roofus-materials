@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49d - live costs, job summary cards, permissions
+// v49g - locked contract, cost edit, cost confirm, auto PO, permissions
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -918,7 +918,11 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
   const submit = () => {
     if (!lines.length || !allOptionsSet) return;
     if (hasOSB && !osbDesc.trim()) { setOsbPrompt(true); return; }
-    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: "", jobName: job.trim(), jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
+    const jobTrim = job.trim();
+    const existingCount = orders.filter(o => o.jobName === jobTrim && o.type === type).length;
+    const poLabel = type === "return" ? "Return" : "Materials";
+    const autoPoNumber = jobTrim ? `${jobTrim} ${poLabel} #${existingCount + 1}` : "";
+    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     // Stock is NOT deducted at submit — only at approval
     sO([...orders, ord]); setDone(true);
   };
@@ -2828,6 +2832,9 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nInsurance, setNInsurance] = useState(false); const [nJnId, setNJnId] = useState(""); const [nGPUnknown, setNGPUnknown] = useState(false);
   const [cCat, setCCat] = useState("labor"); const [cDesc, setCDesc] = useState(""); const [cAmt, setCAmt] = useState("");
   const [acDesc, setAcDesc] = useState(""); const [acAmt, setAcAmt] = useState("");
+  const [editingContract, setEditingContract] = useState(false);
+  const [costConfirm, setCostConfirm] = useState(null);
+  const [editingCost, setEditingCost] = useState(null); // {jid, cid, category, description, amount}
   const [jnFinance, setJnFinance] = useState({});
   const [finLoading, setFinLoading] = useState(false);
   const [viewOrder, setViewOrder] = useState(null);
@@ -2945,9 +2952,22 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
     if (job && job.status === "closed" && !closedExpenseConfirm) {
       setClosedExpenseConfirm({ type: "cost", jid }); return;
     }
-    sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cCat,description:cDesc.trim(),amount:+cAmt||0,date:new Date().toISOString()}]}:j)); setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
+    const amt = +cAmt||0;
+    const cat = cCat;
+    const desc = cDesc.trim();
+    sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()}]}:j));
+    setCostConfirm({ category: cat, amount: amt, jobName: job?.name || "" });
+    setTimeout(() => setCostConfirm(null), 3000);
+    setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
   };
   const deleteCost = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
+  const startEditCost = (jid, c) => { setEditingCost({ jid, cid: c.id, category: c.category, description: c.description, amount: c.amount }); };
+  const saveEditCost = () => {
+    if (!editingCost) return;
+    const { jid, cid, category, description, amount } = editingCost;
+    sJ(jobs.map(j => j.id === jid ? { ...j, costs: (j.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c) } : j));
+    setEditingCost(null);
+  };
   const addAddlCharge = (jid) => {
     if (!acDesc.trim()||!acAmt) return;
     const job = jobs.find(j=>j.id===jid);
@@ -2993,7 +3013,10 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
             ))}
           </div>
           <div style={{display:"flex",gap:12,marginTop:16,flexWrap:"wrap"}}>
-            <div style={{flex:"1 1 150px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Contract $</div><input type="number" value={j.contractAmount||""} onChange={(e)=>{updateJob(j.id,{contractAmount:+e.target.value||0}); setEditJob({...editJob,contractAmount:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN}}/></div>
+            <div style={{flex:"1 1 150px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Contract $</div>
+              {editingContract ? <div style={{display:"flex",gap:6}}><input type="number" value={j.contractAmount||""} onChange={(e)=>{updateJob(j.id,{contractAmount:+e.target.value||0}); setEditJob({...editJob,contractAmount:+e.target.value||0});}} onFocus={(e)=>e.target.select()} autoFocus style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN,flex:1}}/><button onClick={()=>setEditingContract(false)} style={{...bP,borderRadius:10,padding:"10px 14px",fontSize:12}}><Check size={14}/></button></div>
+              : <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:20,fontWeight:900,fontFamily:MN}}>{fmt$(j.contractAmount||0)}</span><button onClick={()=>setEditingContract(true)} style={{background:"none",border:`1px solid ${C.brd}`,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer",color:C.t2,display:"flex",alignItems:"center",gap:4}}><Edit3 size={11}/> Edit</button></div>}
+            </div>
             <div style={{flex:"1 1 100px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Proj GP %</div><input type="number" value={j.gpUnknown?"":j.projectedGP||""} disabled={j.gpUnknown} onChange={(e)=>{updateJob(j.id,{projectedGP:+e.target.value||0}); setEditJob({...editJob,projectedGP:+e.target.value||0});}} onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,padding:"10px 14px",fontSize:15,fontFamily:MN,opacity:j.gpUnknown?0.4:1}}/></div>
             <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:600,color:j.gpUnknown?C.wrn:C.t2}}><input type="checkbox" checked={j.gpUnknown||false} onChange={(e)=>{updateJob(j.id,{gpUnknown:e.target.checked}); setEditJob({...editJob,gpUnknown:e.target.checked});}} style={{width:16,height:16}}/> GP Unknown</label></div>
             <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:4}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={j.isInsurance||false} onChange={(e)=>{updateJob(j.id,{isInsurance:e.target.checked}); setEditJob({...editJob,isInsurance:e.target.checked});}} style={{width:18,height:18}}/> Insurance</label></div>
@@ -3011,6 +3034,10 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
             </div>
             {(j.additionalCharges||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14,color:C.grn}}>+{fmt$(c.amount)}</span><button onClick={()=>{deleteAddlCharge(j.id,c.id); setEditJob({...editJob,additionalCharges:(editJob.additionalCharges||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
             {j.addlTotal>0&&<div style={{fontSize:12,color:C.t2,marginTop:6}}>Total Contract: {fmt$(j.contractAmount||0)} + {fmt$(j.addlTotal)} = <strong style={{color:C.txt}}>{fmt$(j.fullContract)}</strong></div>}
+            <div style={{marginTop:10,padding:"12px 16px",background:NAVY+"08",borderRadius:10,border:`1px solid ${NAVY}22`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:12,fontWeight:700,color:NAVY,textTransform:"uppercase",letterSpacing:".06em"}}>Full Contract Value</span>
+              <span style={{fontSize:22,fontWeight:900,fontFamily:MN,color:NAVY}}>{fmt$(j.fullContract)}</span>
+            </div>
           </div>
         </div>
         <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
@@ -3023,8 +3050,23 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
                 <input type="number" value={cAmt} onChange={(e)=>setCAmt(e.target.value)} placeholder="$" onFocus={(e)=>e.target.select()} style={{...inp,width:100,borderRadius:10,padding:"10px 12px",fontSize:13,fontFamily:MN}}/>
                 <button onClick={()=>addCost(j.id)} style={{...bP,borderRadius:10,padding:"10px 16px",fontSize:13}}><Plus size={14}/></button>
               </div>
+              {/* COST CONFIRMATION TOAST */}
+              {costConfirm && <div style={{background:C.grn+"12",border:`1px solid ${C.grn}33`,borderRadius:10,padding:"10px 16px",marginBottom:12,display:"flex",alignItems:"center",gap:8}}><CheckCircle size={16} color={C.grn}/><span style={{fontSize:13,fontWeight:600}}>Submitted <strong style={{textTransform:"capitalize"}}>{costConfirm.category}</strong> for <strong>{fmt$(costConfirm.amount)}</strong> to {costConfirm.jobName}</span></div>}
               {!(j.costs||[]).length&&!j.matOrd&&<div style={{padding:20,textAlign:"center",color:C.t2,fontSize:13}}>No costs yet.</div>}
-              {(j.costs||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:c.category==="labor"?C.blu+"15":c.category==="material"?RED+"15":C.wrn+"15",color:c.category==="labor"?C.blu:c.category==="material"?RED:C.wrn}}>{c.category}</span><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(c.amount)}</span><button onClick={()=>{deleteCost(j.id,c.id); setEditJob({...editJob,costs:(editJob.costs||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
+              {(j.costs||[]).map(c=>{
+                const isEditing = editingCost && editingCost.cid === c.id;
+                if (isEditing) return (
+                  <div key={c.id} style={{display:"flex",gap:6,padding:"8px 0",borderBottom:`1px solid ${C.brd}`,alignItems:"center",flexWrap:"wrap"}}>
+                    <select value={editingCost.category} onChange={(e)=>setEditingCost({...editingCost,category:e.target.value})} style={{...inp,width:"auto",minWidth:80,borderRadius:8,padding:"8px 10px",fontSize:12}}><option value="labor">Labor</option><option value="material">Material</option><option value="other">Other</option></select>
+                    <input value={editingCost.description} onChange={(e)=>setEditingCost({...editingCost,description:e.target.value})} style={{...inp,flex:2,borderRadius:8,padding:"8px 10px",fontSize:12}}/>
+                    <input type="number" value={editingCost.amount} onChange={(e)=>setEditingCost({...editingCost,amount:e.target.value})} onFocus={(e)=>e.target.select()} style={{...inp,width:90,borderRadius:8,padding:"8px 10px",fontSize:12,fontFamily:MN}}/>
+                    <button onClick={saveEditCost} style={{...bP,borderRadius:8,padding:"8px 12px",fontSize:11}}><Check size={12}/></button>
+                    <button onClick={()=>setEditingCost(null)} style={{...bS,borderRadius:8,padding:"8px 12px",fontSize:11}}><X size={12}/></button>
+                  </div>
+                );
+                return (
+                <div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:4,marginRight:8,background:c.category==="labor"?C.blu+"15":c.category==="material"?RED+"15":C.wrn+"15",color:c.category==="labor"?C.blu:c.category==="material"?RED:C.wrn}}>{c.category}</span><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14}}>{fmt$(c.amount)}</span><button onClick={()=>startEditCost(j.id,c)} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Edit3 size={12}/></button><button onClick={()=>{deleteCost(j.id,c.id); setEditJob({...editJob,costs:(editJob.costs||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>
+              );})}
               {(j.linkedOrders||[]).map(ord=>{const ordTotal=(ord.lines||[]).reduce((s,l)=>s+l.qty*(l.unitCost||0),0); const isRet=ord.type==="return"; return (
                 <div key={ord.id} onClick={()=>setViewOrder(ord)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.brd}`,cursor:"pointer",transition:"background .15s",borderRadius:4}} onMouseEnter={(e)=>{e.currentTarget.style.background=C.sf;}} onMouseLeave={(e)=>{e.currentTarget.style.background="transparent";}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -3389,7 +3431,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
       </div>}
 
       <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
-        {[{l:"Active",v:activeJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Total Contract",v:fmt$(totContractRevenue),c:NAVY},{l:"Avg Actual GP%",v:closedJ.length?avgActGP.toFixed(1)+"%":"No closed jobs",c:closedJ.length?C.grn:C.t2},{l:"Avg Bid GP%",v:knownBidJobs.length?avgBidGP.toFixed(1)+"%":"—",c:NAVY},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
+        {[{l:"Contract",v:fmt$(totContractRevenue),c:NAVY},{l:"Collected $",v:fmt$(totCollected),c:C.grn},{l:"Projected GP%",v:knownBidJobs.length?avgBidGP.toFixed(1)+"%":"—",c:C.blu},{l:"Projected GP$",v:fmt$(totProjProfit),c:C.blu}].map((s,i)=>(
           <div key={i} style={{flex:"1 1 160px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"16px 20px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>{s.l}</div><div style={{fontSize:22,fontWeight:900,color:s.c,fontFamily:MN,marginTop:4}}>{s.v}</div></div>
         ))}
       </div>
