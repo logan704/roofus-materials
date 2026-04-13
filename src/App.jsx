@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49j - job cards show bid GP
+// v49k - filter draft invoices, bid GP cards
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -2899,8 +2899,9 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
     const labor = (j.costs||[]).filter(c=>c.category==="labor").reduce((s,c)=>s+(c.amount||0),0);
     const mat = (j.costs||[]).filter(c=>c.category==="material").reduce((s,c)=>s+(c.amount||0),0) + matOrd;
     const other = (j.costs||[]).filter(c=>c.category==="other").reduce((s,c)=>s+(c.amount||0),0);
-    // JN invoice data
-    const invoices = (j.jnJobId && jnFinance[j.jnJobId]) || [];
+    // JN invoice data — exclude drafts
+    const allInvoices = (j.jnJobId && jnFinance[j.jnJobId]) || [];
+    const invoices = allInvoices.filter(i => (i.status||"").toLowerCase() !== "draft");
     const invoiced = invoices.reduce((s,i) => s + (i.total||0), 0);
     const collected = invoices.reduce((s,i) => s + (i.paid||0), 0);
     const balance = invoiced - collected;
