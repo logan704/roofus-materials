@@ -409,6 +409,7 @@ export default function App() {
   const [newJobGPs, setNewJobGPs] = useState({});
   const [newJobContracts, setNewJobContracts] = useState({});
   const [newJobInsurance, setNewJobInsurance] = useState({});
+  const [newJobGPUnknown, setNewJobGPUnknown] = useState({});
 
   // Auto-add JN jobs with status "Signed Contract - Replacement"
   useEffect(() => {
@@ -426,9 +427,9 @@ export default function App() {
         if (newJobs.length) {
           const queue = newJobs.map(jj => ({ tempId: uid(), jnJobId: jj.id, name: jj.name || "", address: jj.address || "" }));
           setNewJobsQueue(queue);
-          const gps = {}; const contracts = {}; const ins = {};
-          queue.forEach(q => { gps[q.tempId] = "35"; contracts[q.tempId] = ""; ins[q.tempId] = false; });
-          setNewJobGPs(gps); setNewJobContracts(contracts); setNewJobInsurance(ins);
+          const gps = {}; const contracts = {}; const ins = {}; const gpUnk = {};
+          queue.forEach(q => { gps[q.tempId] = "35"; contracts[q.tempId] = ""; ins[q.tempId] = false; gpUnk[q.tempId] = false; });
+          setNewJobGPs(gps); setNewJobContracts(contracts); setNewJobInsurance(ins); setNewJobGPUnknown(gpUnk);
         }
       } catch(e) {}
     })();
@@ -437,7 +438,7 @@ export default function App() {
   const confirmNewJobs = () => {
     const added = newJobsQueue.map(q => ({
       id: q.tempId, jnJobId: q.jnJobId, name: q.name, address: q.address,
-      contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: +newJobGPs[q.tempId] || 35, isInsurance: newJobInsurance[q.tempId] || false,
+      contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: newJobGPUnknown[q.tempId] ? 0 : (+newJobGPs[q.tempId] || 35), gpUnknown: newJobGPUnknown[q.tempId] || false, isInsurance: newJobInsurance[q.tempId] || false,
       status: "in_progress", costs: [], additionalCharges: [], notes: "", createdDate: new Date().toISOString(), completedDate: ""
     }));
     sTJ([...trackedJobs, ...added]);
@@ -479,13 +480,14 @@ export default function App() {
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <div style={{ flex: "1 1 120px" }}>
                   <div style={{ fontSize: 10, color: C.t2, fontWeight: 700, textTransform: "uppercase", marginBottom: 3 }}>Projected GP %</div>
-                  <input type="number" value={newJobGPs[q.tempId] || ""} onChange={(e) => setNewJobGPs({ ...newJobGPs, [q.tempId]: e.target.value })} onFocus={(e) => e.target.select()} placeholder="35" style={{ ...inp, borderRadius: 10, padding: "10px 14px", fontSize: 15, fontFamily: MN }} />
+                  <input type="number" value={newJobGPUnknown[q.tempId] ? "" : (newJobGPs[q.tempId] || "")} disabled={newJobGPUnknown[q.tempId]} onChange={(e) => setNewJobGPs({ ...newJobGPs, [q.tempId]: e.target.value })} onFocus={(e) => e.target.select()} placeholder="35" style={{ ...inp, borderRadius: 10, padding: "10px 14px", fontSize: 15, fontFamily: MN, opacity: newJobGPUnknown[q.tempId] ? 0.4 : 1 }} />
                 </div>
                 <div style={{ flex: "1 1 150px" }}>
                   <div style={{ fontSize: 10, color: C.t2, fontWeight: 700, textTransform: "uppercase", marginBottom: 3 }}>Contract $</div>
                   <input type="number" value={newJobContracts[q.tempId] || ""} onChange={(e) => setNewJobContracts({ ...newJobContracts, [q.tempId]: e.target.value })} onFocus={(e) => e.target.select()} placeholder="0" style={{ ...inp, borderRadius: 10, padding: "10px 14px", fontSize: 15, fontFamily: MN }} />
                 </div>
-                <div style={{ flex: "0 0 auto", paddingTop: 18 }}>
+                <div style={{ flex: "0 0 auto", paddingTop: 18, display: "flex", gap: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, fontWeight: 600, color: newJobGPUnknown[q.tempId] ? C.wrn : C.t2 }}><input type="checkbox" checked={newJobGPUnknown[q.tempId] || false} onChange={(e) => setNewJobGPUnknown({ ...newJobGPUnknown, [q.tempId]: e.target.checked })} style={{ width: 16, height: 16 }} /> GP Unknown</label>
                   <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}><input type="checkbox" checked={newJobInsurance[q.tempId] || false} onChange={(e) => setNewJobInsurance({ ...newJobInsurance, [q.tempId]: e.target.checked })} style={{ width: 18, height: 18 }} /> Insurance</label>
                 </div>
               </div>
@@ -2772,7 +2774,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const [jnAll, setJnAll] = useState([]);
   const [jnSearch, setJnSearch] = useState("");
   const [showJnDrop, setShowJnDrop] = useState(false);
-  const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nInsurance, setNInsurance] = useState(false); const [nJnId, setNJnId] = useState("");
+  const [nName, setNName] = useState(""); const [nAddr, setNAddr] = useState(""); const [nContract, setNContract] = useState(""); const [nGP, setNGP] = useState("35"); const [nInsurance, setNInsurance] = useState(false); const [nJnId, setNJnId] = useState(""); const [nGPUnknown, setNGPUnknown] = useState(false);
   const [cCat, setCCat] = useState("labor"); const [cDesc, setCDesc] = useState(""); const [cAmt, setCAmt] = useState("");
   const [acDesc, setAcDesc] = useState(""); const [acAmt, setAcAmt] = useState("");
   const [jnFinance, setJnFinance] = useState({});
@@ -2881,7 +2883,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const totCollected = allCalc.reduce((s,j)=>s+j.collected,0);
   const totInvoiced = allCalc.reduce((s,j)=>s+j.invoiced,0);
 
-  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:+nGP||0, isInsurance:nInsurance, status:"in_progress", costs:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
+  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, isInsurance:nInsurance, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
   const [closedExpenseConfirm, setClosedExpenseConfirm] = useState(null); // {type, jid}
   const addCost = (jid) => {
     if (!cDesc.trim()||!cAmt) return;
@@ -3025,7 +3027,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           <div style={{flex:"0 0 280px"}}>
             <div style={{background:C.card,borderRadius:16,border:`1px solid ${C.brd}`,padding:24,boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
               <div style={{fontSize:13,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".08em",marginBottom:16}}>Profit Summary</div>
-              <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Projected</div><div style={{fontSize:20,fontWeight:800,fontFamily:MN}}>{fmt$(j.projGP$)} <span style={{fontSize:13,color:C.t2,fontWeight:600}}>({j.projectedGP}%)</span></div></div>
+              <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Projected</div><div style={{fontSize:20,fontWeight:800,fontFamily:MN}}>{j.gpUnknown?<span style={{color:C.wrn}}>Unknown</span>:<>{fmt$(j.projGP$)} <span style={{fontSize:13,color:C.t2,fontWeight:600}}>({j.projectedGP}%)</span></>}</div></div>
               <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Actual</div><div style={{fontSize:20,fontWeight:800,fontFamily:MN,color:j.actGP$>=0?C.grn:C.red}}>{fmt$(j.actGP$)} <span style={{fontSize:13,fontWeight:600}}>({j.actGP.toFixed(1)}%)</span></div></div>
               <div style={{paddingTop:12,borderTop:`2px solid ${C.brd}`}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Variance</div><div style={{fontSize:24,fontWeight:900,fontFamily:MN,color:j.variance>=0?C.grn:C.red}}>{j.variance>=0?"+":""}{fmt$(j.variance)}</div></div>
             </div>
@@ -3353,7 +3355,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Contract</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN}}>{fmt$(j.fullContract)}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Invoiced</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:NAVY}}>{j.invoiced>0?fmt$(j.invoiced):"—"}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Collected</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.collected>0?C.grn:C.t2}}>{j.collected>0?fmt$(j.collected):"—"}</div></div>
-              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>GP% (WAC)</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.actGP>=(j.projectedGP||0)?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?j.actGP.toFixed(1)+"%":j.projectedGP+"% proj"}</div></div>
+              <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>GP% (WAC)</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.gpUnknown?C.wrn:j.actGP>=(j.projectedGP||0)?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.gpUnknown?(j.totalCosts>0?j.actGP.toFixed(1)+"%":"Unknown"):j.totalCosts>0?j.actGP.toFixed(1)+"%":j.projectedGP+"% proj"}</div></div>
               <div style={{textAlign:"center",minWidth:80}}><div style={{fontSize:10,color:C.t2,fontWeight:600,marginBottom:2}}>Variance</div><div style={{fontSize:16,fontWeight:800,fontFamily:MN,color:j.variance>=0?C.grn:j.totalCosts>0?C.red:C.t2}}>{j.totalCosts>0?(j.variance>=0?"+":"")+fmt$(j.variance):"—"}</div></div>
             </div>
           </div>
@@ -3373,8 +3375,11 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
         </div>
         <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
           <div style={{flex:"1 1 150px"}}><Fld label="Contract ($)"><input type="number" value={nContract} onChange={(e)=>setNContract(e.target.value)} placeholder="0" onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,fontFamily:MN}}/></Fld></div>
-          <div style={{flex:"1 1 100px"}}><Fld label="Proj GP %"><input type="number" value={nGP} onChange={(e)=>setNGP(e.target.value)} placeholder="35" onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,fontFamily:MN}}/></Fld></div>
-          <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:8}}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={nInsurance} onChange={(e)=>setNInsurance(e.target.checked)} style={{width:18,height:18}}/> Insurance</label></div>
+          <div style={{flex:"1 1 100px"}}><Fld label="Proj GP %"><input type="number" value={nGPUnknown?"":nGP} disabled={nGPUnknown} onChange={(e)=>setNGP(e.target.value)} placeholder="35" onFocus={(e)=>e.target.select()} style={{...inp,borderRadius:10,fontFamily:MN,opacity:nGPUnknown?0.4:1}}/></Fld></div>
+          <div style={{flex:"0 0 auto",display:"flex",alignItems:"flex-end",paddingBottom:8,gap:14}}>
+            <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:600,color:nGPUnknown?C.wrn:C.t2}}><input type="checkbox" checked={nGPUnknown} onChange={(e)=>setNGPUnknown(e.target.checked)} style={{width:16,height:16}}/> GP Unknown</label>
+            <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600}}><input type="checkbox" checked={nInsurance} onChange={(e)=>setNInsurance(e.target.checked)} style={{width:18,height:18}}/> Insurance</label>
+          </div>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setAddModal(false)} style={{...bS,borderRadius:10}}>Cancel</button><button onClick={addJob} disabled={!nName.trim()} style={{...bP,borderRadius:10,opacity:nName.trim()?1:0.5}}><Check size={14}/> Add Job</button></div>
       </Modal>}

@@ -10,7 +10,18 @@ module.exports = async (req, res) => {
   const url = new URL(req.url, "https://" + req.headers.host);
   const action = url.searchParams.get("action");
   try {
-    if (action === "ping") return res.status(200).json({ ok: true, version: "jn-finance-v9" });
+    if (action === "ping") return res.status(200).json({ ok: true, version: "jn-finance-v10" });
+    if (action === "test_job") {
+      var jobId = url.searchParams.get("id");
+      if (!jobId) return res.status(400).json({ error: "add ?id=JOBNIMBUS_JOB_ID to the URL" });
+      var results = {};
+      try { results.job = await jnReq("GET", "/jobs/" + jobId); } catch(e) { results.job = { error: e.message }; }
+      try { results.costs = await jnReq("GET", "/costs?job_id=" + jobId); } catch(e) { results.costs = { error: e.message }; }
+      try { results.financials = await jnReq("GET", "/financials?job_id=" + jobId); } catch(e) { results.financials = { error: e.message }; }
+      try { results.profit_tracker = await jnReq("GET", "/profit-trackers?related=" + jobId); } catch(e) { results.profit_tracker = { error: e.message }; }
+      try { results.activities = await jnReq("GET", "/activities?primary_id=" + jobId + "&limit=5"); } catch(e) { results.activities = { error: e.message }; }
+      return res.status(200).json({ ok: true, results: results });
+    }
     if (action === "invoices") {
       const all = []; let page = 0; let hasMore = true;
       while (hasMore && page < 10) { const offset = page * 500; const r = await jnReq("GET", "/invoices?select=jnid,number,status_name,total,total_paid,date_created,date_due,date_paid_in_full,related,is_active,is_archived&limit=500&offset=" + offset); const results = (r.data && r.data.results) || []; all.push(...results); hasMore = results.length === 500; page++; }
