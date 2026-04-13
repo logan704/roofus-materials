@@ -3,8 +3,33 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
+// v49b - granular permissions rebuild
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
+const PERMS = [
+  { key: "approve_orders", label: "Approve / Reject Orders" },
+  { key: "view_all_history", label: "View All Order History" },
+  { key: "edit_orders", label: "Edit Orders" },
+  { key: "delete_orders", label: "Delete Orders" },
+  { key: "manage_items", label: "Manage Items & Inventory" },
+  { key: "receive_inventory", label: "Receive Inventory" },
+  { key: "physical_count", label: "Physical Count / Shrinkage" },
+  { key: "damage_gallery", label: "View Reported Damage" },
+  { key: "supplier_cost", label: "Supplier Cost" },
+  { key: "templates", label: "Manage Templates" },
+  { key: "reports", label: "Material Reports" },
+  { key: "jobs", label: "Job Profit Tracker" },
+  { key: "settings", label: "User Management & Settings" },
+];
+const ALL_PERMS_ON = Object.fromEntries(PERMS.map(p => [p.key, true]));
+const DEFAULT_PERMS = Object.fromEntries(PERMS.map(p => [p.key, false]));
+const hasPerm = (u, k) => { if (!u) return false; if (u.role === "admin") return true; return !!(u.perms && u.perms[k]); };
+const migratePerms = (u) => {
+  if (u.role === "admin" || u.perms) return u;
+  const p = { ...DEFAULT_PERMS, edit_orders: true };
+  if (u.role === "manager") { p.approve_orders = true; p.view_all_history = true; p.delete_orders = true; p.jobs = true; }
+  return { ...u, perms: p };
+};
 const LOGO = "data:image/png;base64,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";
 
 // Colors — clean white with Roof USA red/blue
@@ -64,33 +89,6 @@ function compressPhoto(file) {
 const fmt$ = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fD = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const hP = (p) => { let h = 0; for (let i = 0; i < p.length; i++) { h = ((h << 5) - h) + p.charCodeAt(i); h |= 0; } return "h" + Math.abs(h).toString(36); };
-
-// ─── GRANULAR PERMISSIONS ───
-const PERMS = [
-  { key: "approve_orders", label: "Approve / Reject Orders" },
-  { key: "view_all_history", label: "View All Order History" },
-  { key: "edit_orders", label: "Edit Orders" },
-  { key: "delete_orders", label: "Delete Orders" },
-  { key: "manage_items", label: "Manage Items & Inventory" },
-  { key: "receive_inventory", label: "Receive Inventory" },
-  { key: "physical_count", label: "Physical Count / Shrinkage" },
-  { key: "damage_gallery", label: "View Reported Damage" },
-  { key: "supplier_cost", label: "Supplier Cost" },
-  { key: "templates", label: "Manage Templates" },
-  { key: "reports", label: "Material Reports" },
-  { key: "jobs", label: "Job Profit Tracker" },
-  { key: "settings", label: "User Management & Settings" },
-];
-const ALL_PERMS_ON = Object.fromEntries(PERMS.map(p => [p.key, true]));
-const DEFAULT_PERMS = Object.fromEntries(PERMS.map(p => [p.key, false]));
-const hasPerm = (u, k) => { if (!u) return false; if (u.role === "admin") return true; return !!(u.perms && u.perms[k]); };
-// Migrate old role-based users to granular perms (one-time per user)
-const migratePerms = (u) => {
-  if (u.role === "admin" || u.perms) return u;
-  const p = { ...DEFAULT_PERMS, edit_orders: true };
-  if (u.role === "manager") { p.view_all_history = true; p.delete_orders = true; p.jobs = true; }
-  return { ...u, perms: p };
-};
 
 const inp = { background: C.sf, border: `1px solid ${C.brd}`, color: C.txt, borderRadius: 6, padding: "10px 14px", fontSize: 14, width: "100%", outline: "none" };
 const bP = { background: C.ac, color: C.w, border: "none", borderRadius: 8, padding: "12px 24px", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, transition: "all .15s" };
@@ -393,10 +391,10 @@ export default function App() {
         u.push(a);
         await sv("users", u);
       }
-      // Migrate users to granular permissions
-      const migU = u.map(migratePerms);
-      if (JSON.stringify(migU) !== JSON.stringify(u)) { u = migU; await sv("users", u); }
       setUsers(u); setItems(it); setOrders(o); setTemplates(t); setShrinkLog(sh); setTrackedJobs(tj);
+      // Migrate users to granular permissions
+      const migrated2 = u.map(migratePerms);
+      if (JSON.stringify(migrated2) !== JSON.stringify(u)) { setUsers(migrated2); await sv("users", migrated2); }
       // One-time shrinkage reset for v47
       const migrated = await ld("v47_shrink_reset", false);
       if (!migrated) {
@@ -477,20 +475,21 @@ export default function App() {
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
   const logout = useCallback(async () => { setUser(null); setPg("home"); try { localStorage.removeItem("roofus_sess"); } catch {} }, []);
   const isA = user?.role === "admin";
+  const isM = user?.role === "manager";
   const canApprove = hasPerm(user, "approve_orders");
   const canEditOrders = hasPerm(user, "edit_orders");
   const canDeleteOrders = hasPerm(user, "delete_orders");
   const canViewAllHistory = hasPerm(user, "view_all_history");
   const canJobs = hasPerm(user, "jobs");
+  const canReports = hasPerm(user, "reports");
+  const canSettings = hasPerm(user, "settings");
   const canItems = hasPerm(user, "manage_items");
   const canInventory = hasPerm(user, "receive_inventory");
   const canShrinkage = hasPerm(user, "physical_count");
   const canGallery = hasPerm(user, "damage_gallery");
   const canSupplier = hasPerm(user, "supplier_cost");
   const canTemplates = hasPerm(user, "templates");
-  const canReports = hasPerm(user, "reports");
-  const canSettings = hasPerm(user, "settings");
-  const canMaterials = canItems || canInventory || canShrinkage || canGallery || canSupplier || canTemplates;
+  const hasAnyMaterialPerm = canItems || canInventory || canShrinkage || canGallery || canSupplier || canTemplates;
   const [matDrop, setMatDrop] = useState(false);
   const [settDrop, setSettDrop] = useState(false);
 
@@ -550,7 +549,7 @@ export default function App() {
           <NavBtn icon={Camera} label="Report Damage" active={pg === "damage"} onClick={() => setPg("damage")} />
 
           {/* Materials Dropdown - permission-based */}
-          {canMaterials && <div style={{ position: "relative" }}>
+          {hasAnyMaterialPerm && <div style={{ position: "relative" }}>
             <button onClick={() => { setMatDrop(!matDrop); setSettDrop(false); }}
               style={{ background: ["items","inventory","shrinkage","supplier","templates","gallery"].includes(pg) ? C.sf : "transparent", border: "none",
                 color: ["items","inventory","shrinkage","supplier","templates","gallery"].includes(pg) ? C.ac : C.t2,
@@ -608,7 +607,7 @@ export default function App() {
         {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
         {pg === "supplier" && canSupplier && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} items={items} />}
-        {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} view={setVOrd} sO={sO} />}
+        {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} sO={sO} />}
         {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} nav={setPg} />}
         {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
@@ -2005,7 +2004,7 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
 }
 
 // ═══ ORDER HISTORY ═══
-function History({ orders, items, user, canViewAll, view, sO }) {
+function History({ orders, items, user, canViewAll, canEdit, canDelete, view, sO }) {
   const [search, setSearch] = useState(""); const [stF, setStF] = useState("All"); const [tyF, setTyF] = useState("All");
   const vis = canViewAll ? orders : orders.filter((o) => o.userId === user.id);
   const filt = vis.filter((o) => {
@@ -4524,10 +4523,12 @@ function Reports({ orders, items, shrinkLog }) {
 
 // ═══ SETTINGS PAGE ═══
 function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
+  const ROLES = ["admin", "manager", "user"];
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [editUser, setEditUser] = useState(null);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
+  const [editRole, setEditRole] = useState("user");
   const [editPerms, setEditPerms] = useState({});
   const [resetPw, setResetPw] = useState("");
   const [exporting, setExporting] = useState(false);
@@ -4564,34 +4565,30 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
   };
 
   const startEdit = (u) => {
-    setEditUser(u);
-    setEditName(u.name);
-    setEditEmail(u.email);
+    setEditUser(u); setEditName(u.name); setEditEmail(u.email); setEditRole(u.role); setResetPw("");
     setEditPerms(u.role === "admin" ? { ...ALL_PERMS_ON } : { ...DEFAULT_PERMS, ...(u.perms || {}) });
-    setResetPw("");
   };
-
   const saveEdit = () => {
     if (!editName.trim() || !editEmail.trim()) return;
     sU(users.map((x) => {
       if (x.id !== editUser.id) return x;
-      const updated = { ...x, name: editName.trim(), email: editEmail.trim().toLowerCase() };
-      if (x.role !== "admin") updated.perms = { ...editPerms };
+      const updated = { ...x, name: editName.trim(), email: editEmail.trim().toLowerCase(), role: editRole };
+      if (editRole !== "admin") updated.perms = { ...editPerms };
       if (resetPw.trim().length >= 4) updated.pw = hP(resetPw);
       return updated;
     }));
     setEditUser(null);
   };
-
   const togglePerm = (key) => {
-    if (editUser?.role === "admin") return;
-    setEditPerms(p => ({ ...p, [key]: !p[key] }));
+    if (editRole === "admin") return;
+    setEditPerms({ ...editPerms, [key]: !editPerms[key] });
   };
-  const setAllPerms = (val) => {
-    if (editUser?.role === "admin") return;
-    setEditPerms(Object.fromEntries(PERMS.map(p => [p.key, val])));
+  const toggleAll = (on) => {
+    if (editRole === "admin") return;
+    setEditPerms(on ? { ...ALL_PERMS_ON } : { ...DEFAULT_PERMS });
   };
 
+  const roleColors = { admin: { bg: RED + "15", c: RED, border: RED + "44" }, manager: { bg: NAVY + "15", c: NAVY, border: NAVY + "44" }, user: { bg: C.sf, c: C.t2, border: C.brd }, pending: { bg: C.wrn + "15", c: C.wrn, border: C.wrn + "44" } };
   const pendingUsers = users.filter((u) => u.role === "pending");
   const activeUsers = users.filter((u) => u.role !== "pending");
 
@@ -4604,20 +4601,19 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
 
   const permCount = (u) => {
     if (u.role === "admin") return PERMS.length;
-    if (!u.perms) return 0;
-    return PERMS.filter(p => u.perms[p.key]).length;
+    return PERMS.filter(p => u.perms && u.perms[p.key]).length;
   };
 
   return (
     <div className="fu">
       <h1 style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, fontFamily: BC }}>SETTINGS</h1>
-      <p style={{ color: C.t2, fontSize: 13, marginBottom: 24 }}>Manage users, permissions, and system settings.</p>
+      <p style={{ color: C.t2, fontSize: 13, marginBottom: 24 }}>Manage users and permissions. Click Edit to toggle individual permissions per user.</p>
 
       {/* PENDING APPROVALS */}
       {pendingUsers.length > 0 && (
         <div style={{ ...crd, marginBottom: 20, borderLeft: `4px solid ${C.wrn}` }}>
           <div style={{ ...lbl, marginBottom: 10, color: C.wrn }}>Pending Approval ({pendingUsers.length})</div>
-          <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>These people signed up and are waiting for your approval. Once approved, click Edit to customize what they can see and do.</p>
+          <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>These people signed up and are waiting for your approval before they can log in.</p>
           {pendingUsers.map((u) => (
             <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${C.brd}`, flexWrap: "wrap", gap: 8 }}>
               <div>
@@ -4637,48 +4633,38 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
       <div style={{ ...crd, marginBottom: 20 }}>
         <div style={{ ...lbl, marginBottom: 14 }}>User Management</div>
         <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>
-          Click <strong>Edit</strong> on any user to customize exactly which features they can access. Admin always has full access.
+          <strong>Admin</strong> — full access to everything (all permissions always on).
+          <strong style={{ marginLeft: 12 }}>Manager / User</strong> — permissions are fully customizable. Click Edit to toggle each one.
         </p>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-              {["Name", "Email", "Permissions", "Joined", "Actions"].map((h) => (
+              {["Name", "Role", "Permissions", "Joined", "Actions"].map((h) => (
                 <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>{activeUsers.map((u) => {
+              const rc = roleColors[u.role] || roleColors.user;
               const pc = permCount(u);
-              const isAdmin = u.role === "admin";
               return (
                 <tr key={u.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
-                  <td style={{ padding: "10px 12px", fontWeight: 600 }}>
-                    {u.name}
-                    {u.id === me.id && <span style={{ fontSize: 10, color: C.ac, marginLeft: 8, fontWeight: 800 }}>YOU</span>}
-                  </td>
-                  <td style={{ padding: "10px 12px", color: C.t2 }}>{u.email}</td>
                   <td style={{ padding: "10px 12px" }}>
-                    {isAdmin ? (
-                      <span style={{ background: RED + "15", color: RED, border: `1px solid ${RED}44`, borderRadius: 4, padding: "4px 14px", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em" }}>
-                        ADMIN — ALL ACCESS
-                      </span>
-                    ) : (
-                      <span style={{ background: pc > 0 ? C.grn + "15" : C.sf, color: pc > 0 ? C.grn : C.t2, border: `1px solid ${pc > 0 ? C.grn + "44" : C.brd}`, borderRadius: 4, padding: "4px 14px", fontSize: 11, fontWeight: 800 }}>
-                        {pc} of {PERMS.length} enabled
-                      </span>
-                    )}
+                    <div style={{ fontWeight: 600 }}>{u.name}{u.id === me.id && <span style={{ fontSize: 10, color: C.ac, marginLeft: 6, fontWeight: 800 }}>YOU</span>}</div>
+                    <div style={{ fontSize: 11, color: C.t2 }}>{u.email}</div>
+                  </td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <span style={{ background: rc.bg, color: rc.c, border: `1px solid ${rc.border}`, borderRadius: 4, padding: "3px 10px", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em" }}>{u.role}</span>
+                  </td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: pc === PERMS.length ? C.grn : pc > 0 ? C.blu : C.t2 }}>{pc}/{PERMS.length}</span>
+                    <span style={{ fontSize: 10, color: C.t2, marginLeft: 6 }}>{u.role === "admin" ? "all (admin)" : pc === 0 ? "none" : ""}</span>
                   </td>
                   <td style={{ padding: "10px 12px", color: C.t2, fontSize: 12 }}>{fD(u.created)}</td>
                   <td style={{ padding: "10px 12px" }}>
                     {u.id !== me.id && (
                       <div style={{ display: "flex", gap: 6 }}>
-                        <button onClick={() => startEdit(u)}
-                          style={{ background: "none", border: `1px solid ${C.brd}`, color: C.txt, cursor: "pointer", borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
-                          <Edit3 size={12} /> Edit
-                        </button>
-                        <button onClick={() => setDeleteConfirm(u)}
-                          style={{ background: "none", border: `1px solid ${C.red}33`, color: C.red, cursor: "pointer", borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
-                          <Trash2 size={12} /> Delete
-                        </button>
+                        <button onClick={() => startEdit(u)} style={{ background: "none", border: `1px solid ${C.brd}`, color: C.txt, cursor: "pointer", borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}><Edit3 size={12} /> Edit</button>
+                        <button onClick={() => setDeleteConfirm(u)} style={{ background: "none", border: `1px solid ${C.red}33`, color: C.red, cursor: "pointer", borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}><Trash2 size={12} /> Delete</button>
                       </div>
                     )}
                   </td>
@@ -4692,14 +4678,12 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
       {/* DATABASE BACKUP */}
       <div style={{ ...crd, marginBottom: 20, borderLeft: `4px solid ${NAVY}` }}>
         <div style={{ ...lbl, marginBottom: 10 }}>Database Backup</div>
-        <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>Download a complete backup of all your data — items, inventory, orders, receipts, shrinkage logs, templates, and users. Use this to move to a hosted version or keep as a safety backup.</p>
+        <p style={{ fontSize: 12, color: C.t2, marginBottom: 14 }}>Download a complete backup of all your data.</p>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <button onClick={exportDatabase} disabled={exporting} style={{ ...bP, background: NAVY }}>
             <Download size={14} /> {exporting ? "Exporting..." : "Export Full Database (.json)"}
           </button>
-          <span style={{ fontSize: 11, color: C.t2 }}>
-            {items.length} items · {orders.length} orders · {(shrinkLog || []).length} adjustments
-          </span>
+          <span style={{ fontSize: 11, color: C.t2 }}>{items.length} items · {orders.length} orders · {(shrinkLog || []).length} adjustments</span>
         </div>
       </div>
 
@@ -4707,16 +4691,10 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
       <Modal open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)} title="">
         {deleteConfirm && (
           <div style={{ textAlign: "center", padding: "10px 0" }}>
-            <div style={{ background: C.red + "15", borderRadius: 16, padding: 20, display: "inline-flex", marginBottom: 16 }}>
-              <AlertTriangle size={48} color={C.red} />
-            </div>
+            <div style={{ background: C.red + "15", borderRadius: 16, padding: 20, display: "inline-flex", marginBottom: 16 }}><AlertTriangle size={48} color={C.red} /></div>
             <h2 style={{ fontSize: 20, fontWeight: 900, color: C.red, marginBottom: 8 }}>DELETE USER?</h2>
-            <p style={{ fontSize: 14, marginBottom: 6 }}>
-              <strong>{deleteConfirm.name}</strong> ({deleteConfirm.email})
-            </p>
-            <p style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>
-              This will permanently remove their account. Their past orders will remain in history.
-            </p>
+            <p style={{ fontSize: 14, marginBottom: 6 }}><strong>{deleteConfirm.name}</strong> ({deleteConfirm.email})</p>
+            <p style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>This will permanently remove their account. Their past orders will remain in history.</p>
             <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
               <button onClick={() => setDeleteConfirm(null)} style={{ ...bS, padding: "12px 28px", fontSize: 14 }}>Cancel</button>
               <button onClick={() => deleteUser(deleteConfirm)} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete User</button>
@@ -4725,58 +4703,59 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
         )}
       </Modal>
 
-      {/* EDIT USER MODAL */}
+      {/* EDIT USER + PERMISSIONS MODAL */}
       <Modal open={!!editUser} onClose={() => setEditUser(null)} title={`Edit User — ${editUser?.name || ""}`} wide>
         {editUser && (
           <>
-            <Rw g={12}>
-              <Cl><Fld label="Name"><input value={editName} onChange={(e) => setEditName(e.target.value)} style={inp} /></Fld></Cl>
-              <Cl><Fld label="Email"><input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={inp} type="email" /></Fld></Cl>
-            </Rw>
-            <Fld label="Reset Password (leave blank to keep current)">
-              <input value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="New password (4+ chars)..." style={inp} type="text" />
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+              <div style={{ flex: "1 1 200px" }}><Fld label="Name"><input value={editName} onChange={(e) => setEditName(e.target.value)} style={inp} /></Fld></div>
+              <div style={{ flex: "1 1 200px" }}><Fld label="Email"><input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={inp} type="email" /></Fld></div>
+            </div>
+            <Fld label="Role">
+              <div style={{ display: "flex", gap: 8 }}>
+                {ROLES.map((r) => {
+                  const rc = roleColors[r];
+                  return (
+                    <button key={r} onClick={() => { setEditRole(r); if (r === "admin") setEditPerms({ ...ALL_PERMS_ON }); }}
+                      style={{ flex: 1, padding: "10px", borderRadius: 6, border: `2px solid ${editRole === r ? rc.c : C.brd}`,
+                        background: editRole === r ? rc.bg : "transparent", cursor: "pointer", textAlign: "center" }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, textTransform: "uppercase", color: rc.c }}>{r}</div>
+                      <div style={{ fontSize: 10, color: C.t2, marginTop: 2 }}>{r === "admin" ? "All permissions" : r === "manager" ? "Customizable" : "Customizable"}</div>
+                    </button>
+                  );
+                })}
+              </div>
             </Fld>
 
-            {/* PERMISSIONS GRID */}
-            <div style={{ marginTop: 8, marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <label style={lbl}>Permissions</label>
-                {editUser.role !== "admin" && (
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => setAllPerms(true)} style={{ background: C.grn + "15", color: C.grn, border: `1px solid ${C.grn}44`, borderRadius: 4, padding: "3px 10px", fontSize: 10, fontWeight: 800, cursor: "pointer" }}>Enable All</button>
-                    <button onClick={() => setAllPerms(false)} style={{ background: C.red + "15", color: C.red, border: `1px solid ${C.red}44`, borderRadius: 4, padding: "3px 10px", fontSize: 10, fontWeight: 800, cursor: "pointer" }}>Disable All</button>
-                  </div>
-                )}
+            {/* PERMISSION TOGGLES */}
+            <div style={{ marginTop: 16, padding: 16, background: C.sf, borderRadius: 12, border: `1px solid ${C.brd}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: NAVY, textTransform: "uppercase", letterSpacing: ".06em" }}>Permissions</div>
+                {editRole !== "admin" && <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => toggleAll(true)} style={{ background: C.grn + "15", border: `1px solid ${C.grn}33`, color: C.grn, borderRadius: 6, padding: "4px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>All On</button>
+                  <button onClick={() => toggleAll(false)} style={{ background: C.red + "15", border: `1px solid ${C.red}33`, color: C.red, borderRadius: 6, padding: "4px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>All Off</button>
+                </div>}
               </div>
-              {editUser.role === "admin" && (
-                <p style={{ fontSize: 12, color: C.t2, marginBottom: 10, fontStyle: "italic" }}>Admin always has full access to everything. Permissions cannot be changed.</p>
-              )}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 6 }}>
-                {PERMS.map((p) => {
-                  const on = editUser.role === "admin" ? true : !!editPerms[p.key];
-                  const locked = editUser.role === "admin";
+              {editRole === "admin" && <div style={{ fontSize: 12, color: C.grn, fontWeight: 600, marginBottom: 8 }}>Admins always have full access to everything.</div>}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 6 }}>
+                {PERMS.map(p => {
+                  const on = editRole === "admin" ? true : editPerms[p.key];
                   return (
-                    <div key={p.key}
-                      onClick={() => !locked && togglePerm(p.key)}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                        background: on ? C.grn + "08" : C.sf, border: `1.5px solid ${on ? C.grn + "55" : C.brd}`,
-                        borderRadius: 8, cursor: locked ? "default" : "pointer", transition: "all .15s",
-                        opacity: locked ? 0.6 : 1
-                      }}>
-                      <div style={{
-                        width: 22, height: 22, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center",
-                        background: on ? C.grn : "transparent", border: `2px solid ${on ? C.grn : C.brdL}`, transition: "all .15s", flexShrink: 0
-                      }}>
-                        {on && <Check size={14} color="#fff" strokeWidth={3} />}
+                    <div key={p.key} onClick={() => togglePerm(p.key)}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: on ? C.grn + "08" : "#fff", border: `1px solid ${on ? C.grn + "33" : C.brd}`, borderRadius: 8, cursor: editRole === "admin" ? "default" : "pointer", transition: "all .15s", opacity: editRole === "admin" ? 0.7 : 1 }}>
+                      <div style={{ width: 36, height: 20, borderRadius: 10, background: on ? C.grn : C.brd, position: "relative", transition: "background .2s", flexShrink: 0 }}>
+                        <div style={{ width: 16, height: 16, borderRadius: 8, background: "#fff", position: "absolute", top: 2, left: on ? 18 : 2, transition: "left .2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
                       </div>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: on ? C.txt : C.t2 }}>{p.label}</span>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: on ? C.txt : C.t2 }}>{p.label}</div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
+            <Fld label="Reset Password (leave blank to keep current)">
+              <input value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="New password (4+ chars)..." style={inp} type="text" />
+            </Fld>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
               <button onClick={() => setEditUser(null)} style={bS}>Cancel</button>
               <button onClick={saveEdit} style={bP}><Check size={14} /> Save Changes</button>
@@ -4787,4 +4766,3 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
     </div>
   );
 }
-// v49b
