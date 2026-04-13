@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49c - live pending costs + granular permissions
+// v49d - live costs, job summary cards, permissions
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -2933,6 +2933,9 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const avgActGP = closedJ.length ? closedJ.reduce((s,j)=>s+j.actGP,0)/closedJ.length : 0;
   const totCollected = allCalc.reduce((s,j)=>s+j.collected,0);
   const totInvoiced = allCalc.reduce((s,j)=>s+j.invoiced,0);
+  const totContractRevenue = allCalc.reduce((s,j)=>s+j.fullContract,0);
+  const knownBidJobs = allCalc.filter(j=>!j.gpUnknown && (j.projectedGP||0) > 0);
+  const avgBidGP = knownBidJobs.length ? knownBidJobs.reduce((s,j)=>s+(j.projectedGP||0),0)/knownBidJobs.length : 0;
 
   const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, isInsurance:nInsurance, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNInsurance(false); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
   const [closedExpenseConfirm, setClosedExpenseConfirm] = useState(null); // {type, jid}
@@ -3386,7 +3389,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
       </div>}
 
       <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
-        {[{l:"Active",v:activeJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Invoiced",v:fmt$(totInvoiced),c:NAVY},{l:"Collected",v:fmt$(totCollected),c:C.grn},{l:"Closed",v:closedJ.length,c:C.grn},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
+        {[{l:"Active",v:activeJ.length,c:C.blu},{l:"Proj Profit",v:fmt$(totProjProfit),c:C.blu},{l:"Total Contract",v:fmt$(totContractRevenue),c:NAVY},{l:"Avg Actual GP%",v:closedJ.length?avgActGP.toFixed(1)+"%":"No closed jobs",c:closedJ.length?C.grn:C.t2},{l:"Avg Bid GP%",v:knownBidJobs.length?avgBidGP.toFixed(1)+"%":"—",c:NAVY},{l:"Actual Profit",v:fmt$(totActProfit),c:totActProfit>=0?C.grn:C.red}].map((s,i)=>(
           <div key={i} style={{flex:"1 1 160px",background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:"16px 20px"}}><div style={{fontSize:10,color:C.t2,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>{s.l}</div><div style={{fontSize:22,fontWeight:900,color:s.c,fontFamily:MN,marginTop:4}}>{s.v}</div></div>
         ))}
       </div>
