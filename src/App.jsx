@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49m - fix invoice hide button
+// v49p - native confirm for invoice hide
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -3107,7 +3107,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
                 return (
                 <div key={inv.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.brd}`}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <button onClick={(e)=>{e.stopPropagation();setHideInvConfirm({jid:j.id,invId:inv.id,invNumber:inv.number});}} style={{background:"none",border:`1px solid ${C.red}33`,borderRadius:6,color:C.red,cursor:"pointer",padding:"4px 6px",display:"flex",alignItems:"center"}} title="Remove this invoice"><Trash2 size={14}/></button>
+                    <button onClick={(e)=>{e.stopPropagation();if(window.confirm("Remove Invoice #"+inv.number+"? This invoice and any payments from it will no longer count toward this job.")){hideInvoice(j.id,inv.id);}}} style={{background:"none",border:`1px solid ${C.red}33`,borderRadius:6,color:C.red,cursor:"pointer",padding:"4px 6px",display:"flex",alignItems:"center"}} title="Remove this invoice"><Trash2 size={14}/></button>
                     <div>
                       <span style={{fontSize:13,fontWeight:700}}>Invoice #{inv.number}</span>
                       <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,marginLeft:8,background:isPaid?C.grn+"15":isPartial?C.wrn+"15":C.red+"15",color:isPaid?C.grn:isPartial?C.wrn:C.red}}>{isPaid?"Paid":isPartial?"Partial":inv.status||"Unpaid"}</span>
@@ -3142,6 +3142,17 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
         </div>
       </div>
       {viewOrder&&<OrderPDF order={viewOrder} items={items} onClose={()=>setViewOrder(null)} />}
+      {hideInvConfirm && <Modal open onClose={() => setHideInvConfirm(null)} title="Remove Invoice">
+        <div style={{textAlign:"center",padding:"10px 0 20px"}}>
+          <AlertTriangle size={40} color={C.wrn} style={{marginBottom:12}}/>
+          <p style={{fontSize:15,fontWeight:600,marginBottom:8}}>Remove Invoice #{hideInvConfirm.invNumber}?</p>
+          <p style={{color:C.t2,fontSize:13,marginBottom:20}}>This invoice and any payments received from it will no longer count toward this job's totals.</p>
+          <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+            <button onClick={() => setHideInvConfirm(null)} style={{...bS,borderRadius:10,padding:"12px 24px"}}>Cancel</button>
+            <button onClick={() => hideInvoice(hideInvConfirm.jid, hideInvConfirm.invId)} style={{...bD,borderRadius:10,padding:"12px 24px"}}>Yes, Remove It</button>
+          </div>
+        </div>
+      </Modal>}
       </>
     );
   }
@@ -3483,17 +3494,6 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           <div style={{display:"flex",gap:10,justifyContent:"center"}}>
             <button onClick={() => setClosedExpenseConfirm(null)} style={{...bS,borderRadius:10,padding:"12px 24px"}}>Cancel</button>
             <button onClick={() => { if (closedExpenseConfirm.type === "cost") addCost(closedExpenseConfirm.jid); else addAddlCharge(closedExpenseConfirm.jid); }} style={{...bP,borderRadius:10,padding:"12px 24px",background:C.wrn}}>Yes, Add It</button>
-          </div>
-        </div>
-      </Modal>}
-      {hideInvConfirm && <Modal open onClose={() => setHideInvConfirm(null)} title="Remove Invoice">
-        <div style={{textAlign:"center",padding:"10px 0 20px"}}>
-          <AlertTriangle size={40} color={C.wrn} style={{marginBottom:12}}/>
-          <p style={{fontSize:15,fontWeight:600,marginBottom:8}}>Remove Invoice #{hideInvConfirm.invNumber}?</p>
-          <p style={{color:C.t2,fontSize:13,marginBottom:20}}>This invoice and any payments received from it will no longer count toward this job's totals.</p>
-          <div style={{display:"flex",gap:10,justifyContent:"center"}}>
-            <button onClick={() => setHideInvConfirm(null)} style={{...bS,borderRadius:10,padding:"12px 24px"}}>Cancel</button>
-            <button onClick={() => hideInvoice(hideInvConfirm.jid, hideInvConfirm.invId)} style={{...bD,borderRadius:10,padding:"12px 24px"}}>Yes, Remove It</button>
           </div>
         </div>
       </Modal>}
