@@ -405,6 +405,44 @@ export default function App() {
   const sT = useCallback((t) => { setTemplates(t); sv("templates", t); }, []);
   const sSh = useCallback((s) => { setShrinkLog(s); sv("shrinkage", s); }, []);
   const sTJ = useCallback((j) => { setTrackedJobs(j); sv("tracked_jobs", j); }, []);
+  const [newJobsQueue, setNewJobsQueue] = useState([]);
+  const [newJobGPs, setNewJobGPs] = useState({});
+  const [newJobContracts, setNewJobContracts] = useState({});
+  const [newJobInsurance, setNewJobInsurance] = useState({});
+
+  // Auto-add JN jobs with status "Signed Contract - Replacement"
+  useEffect(() => {
+    if (!rdy || !user || user.role !== "admin") return;
+    (async () => {
+      try {
+        const r = await fetch("/api/jn?action=jobs");
+        const d = await r.json();
+        const jnJobs = d.jobs || [];
+        const trackedJnIds = new Set(trackedJobs.map(tj => tj.jnJobId).filter(Boolean));
+        const newJobs = jnJobs.filter(jj => {
+          const st = (jj.status || "").toLowerCase().replace(/[^a-z]/g, "");
+          return st === "signedcontractreplacement" && !trackedJnIds.has(jj.id);
+        });
+        if (newJobs.length) {
+          const queue = newJobs.map(jj => ({ tempId: uid(), jnJobId: jj.id, name: jj.name || "", address: jj.address || "" }));
+          setNewJobsQueue(queue);
+          const gps = {}; const contracts = {}; const ins = {};
+          queue.forEach(q => { gps[q.tempId] = "35"; contracts[q.tempId] = ""; ins[q.tempId] = false; });
+          setNewJobGPs(gps); setNewJobContracts(contracts); setNewJobInsurance(ins);
+        }
+      } catch(e) {}
+    })();
+  }, [rdy, user]);
+
+  const confirmNewJobs = () => {
+    const added = newJobsQueue.map(q => ({
+      id: q.tempId, jnJobId: q.jnJobId, name: q.name, address: q.address,
+      contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: +newJobGPs[q.tempId] || 35, isInsurance: newJobInsurance[q.tempId] || false,
+      status: "in_progress", costs: [], additionalCharges: [], notes: "", createdDate: new Date().toISOString(), completedDate: ""
+    }));
+    sTJ([...trackedJobs, ...added]);
+    setNewJobsQueue([]);
+  };
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
   const logout = useCallback(async () => { setUser(null); setPg("home"); try { localStorage.removeItem("roofus_sess"); } catch {} }, []);
   const isA = user?.role === "admin";
@@ -426,6 +464,39 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: C.bg }}>
       <style>{CSS}</style>
+
+      {/* NEW JOBS POPUP */}
+      {newJobsQueue.length > 0 && <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+        <div style={{ background: C.card, borderRadius: 20, padding: 30, maxWidth: 600, width: "100%", maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+            <div style={{ background: C.grn + "15", borderRadius: 12, padding: 10 }}><CheckCircle size={24} color={C.grn} /></div>
+            <div><h2 style={{ fontSize: 20, fontWeight: 900, fontFamily: BC }}>NEW JOBS DETECTED</h2><p style={{ color: C.t2, fontSize: 13 }}>{newJobsQueue.length} job{newJobsQueue.length !== 1 ? "s" : ""} moved to Signed Contract in JobNimbus</p></div>
+          </div>
+          {newJobsQueue.map(q => (
+            <div key={q.tempId} style={{ background: C.sf, borderRadius: 14, padding: 16, marginBottom: 12, border: `1px solid ${C.brd}` }}>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 2 }}>{q.name}</div>
+              {q.address && <div style={{ fontSize: 12, color: C.t2, marginBottom: 10 }}>{q.address}</div>}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ flex: "1 1 120px" }}>
+                  <div style={{ fontSize: 10, color: C.t2, fontWeight: 700, textTransform: "uppercase", marginBottom: 3 }}>Projected GP %</div>
+                  <input type="number" value={newJobGPs[q.tempId] || ""} onChange={(e) => setNewJobGPs({ ...newJobGPs, [q.tempId]: e.target.value })} onFocus={(e) => e.target.select()} placeholder="35" style={{ ...inp, borderRadius: 10, padding: "10px 14px", fontSize: 15, fontFamily: MN }} />
+                </div>
+                <div style={{ flex: "1 1 150px" }}>
+                  <div style={{ fontSize: 10, color: C.t2, fontWeight: 700, textTransform: "uppercase", marginBottom: 3 }}>Contract $</div>
+                  <input type="number" value={newJobContracts[q.tempId] || ""} onChange={(e) => setNewJobContracts({ ...newJobContracts, [q.tempId]: e.target.value })} onFocus={(e) => e.target.select()} placeholder="0" style={{ ...inp, borderRadius: 10, padding: "10px 14px", fontSize: 15, fontFamily: MN }} />
+                </div>
+                <div style={{ flex: "0 0 auto", paddingTop: 18 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}><input type="checkbox" checked={newJobInsurance[q.tempId] || false} onChange={(e) => setNewJobInsurance({ ...newJobInsurance, [q.tempId]: e.target.checked })} style={{ width: 18, height: 18 }} /> Insurance</label>
+                </div>
+              </div>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button onClick={() => setNewJobsQueue([])} style={{ ...bS, flex: 1, borderRadius: 12, padding: "14px 20px" }}>Skip for Now</button>
+            <button onClick={confirmNewJobs} style={{ ...bP, flex: 2, borderRadius: 12, padding: "14px 20px", fontSize: 16 }}><CheckCircle size={16} /> Add {newJobsQueue.length} Job{newJobsQueue.length !== 1 ? "s" : ""}</button>
+          </div>
+        </div>
+      </div>}
       {/* HEADER */}
       <div style={{ background: "#FFFFFF", borderBottom: `3px solid ${RED}`, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100, flexWrap: "wrap", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setPg("home")}>
