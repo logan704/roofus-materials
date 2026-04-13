@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49L - hide invoices, filter drafts, bid GP cards, shingle colors
+// v49m - fix invoice hide button
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -2977,7 +2977,10 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const deleteAddlCharge = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j)); };
   const updateJob = (jid,upd) => { sJ(jobs.map(j=>j.id===jid?{...j,...upd}:j)); };
   const hideInvoice = (jid, invId) => {
-    sJ(jobs.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j));
+    const updated = jobs.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j);
+    sJ(updated);
+    const ej = updated.find(j => j.id === jid);
+    if (ej) setEditJob(ej);
     setHideInvConfirm(null);
   };
 
@@ -3104,7 +3107,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
                 return (
                 <div key={inv.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.brd}`}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <button onClick={()=>setHideInvConfirm({jid:j.id,invId:inv.id,invNumber:inv.number})} style={{background:"none",border:"none",color:C.t2,cursor:"pointer",padding:2}} title="Remove this invoice"><X size={14}/></button>
+                    <button onClick={(e)=>{e.stopPropagation();setHideInvConfirm({jid:j.id,invId:inv.id,invNumber:inv.number});}} style={{background:"none",border:`1px solid ${C.red}33`,borderRadius:6,color:C.red,cursor:"pointer",padding:"4px 6px",display:"flex",alignItems:"center"}} title="Remove this invoice"><Trash2 size={14}/></button>
                     <div>
                       <span style={{fontSize:13,fontWeight:700}}>Invoice #{inv.number}</span>
                       <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,marginLeft:8,background:isPaid?C.grn+"15":isPartial?C.wrn+"15":C.red+"15",color:isPaid?C.grn:isPartial?C.wrn:C.red}}>{isPaid?"Paid":isPartial?"Partial":inv.status||"Unpaid"}</span>
