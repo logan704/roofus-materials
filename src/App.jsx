@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49p - native confirm for invoice hide
+// v49q - merge-safe atomic order operations
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -440,7 +440,33 @@ export default function App() {
 
   const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
   const sI = useCallback((i) => { setItems(i); sv("items", i); }, []);
-  const sO = useCallback((o) => { setOrders(o); sv("orders", o); }, []);
+  const sO = useCallback((o) => { setOrders(typeof o === "function" ? o : () => o); sv("orders", typeof o === "function" ? o(orders) : o); }, [orders]);
+
+  // Merge-safe order operations — read fresh from DB before writing to prevent race conditions
+  const atomicAddOrder = useCallback(async (newOrd) => {
+    const current = await ld("orders", []);
+    const merged = [...current, newOrd];
+    setOrders(merged);
+    await sv("orders", merged);
+  }, []);
+  const atomicUpdateOrder = useCallback(async (id, updFn) => {
+    const current = await ld("orders", []);
+    const merged = current.map(o => o.id === id ? updFn(o) : o);
+    setOrders(merged);
+    await sv("orders", merged);
+  }, []);
+  const atomicRemoveOrder = useCallback(async (id) => {
+    const current = await ld("orders", []);
+    const merged = current.filter(o => o.id !== id);
+    setOrders(merged);
+    await sv("orders", merged);
+  }, []);
+  const atomicUpdateOrders = useCallback(async (updFn) => {
+    const current = await ld("orders", []);
+    const merged = updFn(current);
+    setOrders(merged);
+    await sv("orders", merged);
+  }, []);
   const sT = useCallback((t) => { setTemplates(t); sv("templates", t); }, []);
   const sSh = useCallback((s) => { setShrinkLog(s); sv("shrinkage", s); }, []);
   const sTJ = useCallback((j) => { setTrackedJobs(j); sv("tracked_jobs", j); }, []);
@@ -607,8 +633,8 @@ export default function App() {
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
         {pg === "home" && <HomePage canApprove={canApprove} canJobs={canJobs} go={(page, tpl) => { setStartTpl(tpl || null); setPg(page); }} pendCt={pendCt} templates={templates} />}
-        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} sO={sO} sI={sI} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
-        {pg === "approvals" && canApprove && <Approvals orders={orders} sO={sO} items={items} sI={sI} view={setVOrd} />}
+        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} addOrder={atomicAddOrder} sI={sI} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
+        {pg === "approvals" && canApprove && <Approvals orders={orders} updateOrder={atomicUpdateOrder} removeOrder={atomicRemoveOrder} items={items} sI={sI} view={setVOrd} />}
         {pg === "items" && canItems && <ItemMgr items={items} sI={sI} orders={orders} />}
         {pg === "inventory" && canInventory && <InvMgr items={items} sI={sI} />}
         {pg === "shrinkage" && canShrinkage && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
@@ -616,7 +642,7 @@ export default function App() {
         {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
         {pg === "supplier" && canSupplier && <SupplierCost items={items} sI={sI} />}
         {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} items={items} />}
-        {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} sO={sO} />}
+        {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
         {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} nav={setPg} />}
         {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
@@ -646,7 +672,7 @@ export default function App() {
               sI(updatedItems);
             }
           }
-          sO(orders.filter((o) => o.id !== id)); setVOrd(null);
+          atomicRemoveOrder(id); setVOrd(null);
         } : null}
         onEdit={canEditOrders ? (id, newLines) => {
           const ord = orders.find((o) => o.id === id);
@@ -684,13 +710,13 @@ export default function App() {
             sI(updatedItems);
           }
           const updatedOrd = { ...ord, lines: newLines };
-          sO(orders.map((o) => o.id === id ? updatedOrd : o));
+          atomicUpdateOrder(id, () => updatedOrd);
           setVOrd(updatedOrd);
           // Re-upload to JN if linked
           if (updatedOrd.jnJobId) {
             if (updatedOrd.jnFileId) deleteFromJN(updatedOrd.jnFileId);
             uploadToJN(updatedOrd, items).then((newFileId) => {
-              if (newFileId) sO((prev) => prev.map((o) => o.id === id ? { ...o, jnFileId: newFileId } : o));
+              if (newFileId) atomicUpdateOrder(id, (o) => ({ ...o, jnFileId: newFileId }));
             });
           }
           // Update OSB note if qty changed
@@ -699,10 +725,10 @@ export default function App() {
             const newOsbQty = newLines.filter(l => (iMap2[l.itemId]?.name || "").toLowerCase() === "7/16 osb").reduce((s,l) => s + l.qty, 0);
             if (newOsbQty > 0) {
               updateOSBNote(updatedOrd.osbNoteId, updatedOrd, newOsbQty);
-              sO((prev) => prev.map((o) => o.id === id ? { ...o, osbQty: newOsbQty } : o));
+              atomicUpdateOrder(id, (o) => ({ ...o, osbQty: newOsbQty }));
             } else {
               deleteOSBNote(updatedOrd.osbNoteId);
-              sO((prev) => prev.map((o) => o.id === id ? { ...o, osbNoteId: "", osbDesc: "", osbQty: 0 } : o));
+              atomicUpdateOrder(id, (o) => ({ ...o, osbNoteId: "", osbDesc: "", osbQty: 0 }));
             }
           }
         } : null}
@@ -823,7 +849,7 @@ function BigBtn({ icon, label, sub, color, onClick }) {
 }
 
 // ═══ ORDER BUILDER ═══
-function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, clearStartTpl, go }) {
+function OrderBuilder({ type, items, user, orders, addOrder, sI, templates, startTpl, clearStartTpl, go }) {
   const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
   const [step, setStep] = useState("choose"); // choose, job, build
@@ -922,7 +948,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
     const autoPoNumber = jobTrim ? `${jobTrim} ${poLabel} #${existingCount + 1}` : "";
     const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
     // Stock is NOT deducted at submit — only at approval
-    sO([...orders, ord]); setDone(true);
+    addOrder(ord); setDone(true);
   };
 
   if (done) return (
@@ -1143,7 +1169,7 @@ function OrderBuilder({ type, items, user, orders, sO, sI, templates, startTpl, 
     </div>
   );
 }
-function Approvals({ orders, sO, items, sI, view }) {
+function Approvals({ orders, updateOrder, removeOrder, items, sI, view }) {
   const pend = orders.filter((o) => o.status === "pending").sort((a, b) => new Date(b.date) - new Date(a.date));
   const [deleteWarn, setDeleteWarn] = useState(null);
 
@@ -1185,9 +1211,9 @@ function Approvals({ orders, sO, items, sI, view }) {
     if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
       osbNoteId = await createOSBNote(approvedOrder);
     }
-    sO(orders.map((o) => o.id === id ? { ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" } : o));
+    updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }));
   };
-  const reject = (id) => { if (confirm("Reject this order?")) sO(orders.map((o) => o.id === id ? { ...o, status: "rejected", approvedDate: new Date().toISOString() } : o)); };
+  const reject = (id) => { if (confirm("Reject this order?")) updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() })); };
   const deleteOrder = (id) => {
     const ord = orders.find((o) => o.id === id);
     if (ord?.jnFileId) deleteFromJN(ord.jnFileId);
@@ -1202,7 +1228,7 @@ function Approvals({ orders, sO, items, sI, view }) {
         return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
       }));
     }
-    sO(orders.filter((o) => o.id !== id));
+    removeOrder(id);
     setDeleteWarn(null);
   };
 
@@ -2018,7 +2044,7 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
 }
 
 // ═══ ORDER HISTORY ═══
-function History({ orders, items, user, canViewAll, canEdit, canDelete, view, sO }) {
+function History({ orders, items, user, canViewAll, canEdit, canDelete, view }) {
   const [search, setSearch] = useState(""); const [stF, setStF] = useState("All"); const [tyF, setTyF] = useState("All");
   const vis = canViewAll ? orders : orders.filter((o) => o.userId === user.id);
   const filt = vis.filter((o) => {
