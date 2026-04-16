@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49q - merge-safe atomic order operations
+// v49t - guarded atomic saves, audit log, error handling, double-click prevention
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -41,6 +41,7 @@ const CSS = `@import url('https://fonts.googleapis.com/css2?family=Barlow+Conden
 *{box-sizing:border-box;margin:0;padding:0}body{background:${C.bg};color:${C.txt};font-family:'Barlow',sans-serif;-webkit-text-size-adjust:100%;overflow-x:hidden;max-width:100vw}
 input,select,textarea,button{font-family:'Barlow',sans-serif;font-size:16px}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:${C.brd};border-radius:3px}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}.fu{animation:fadeUp .3s ease-out}
 button:active{transform:scale(.97)}
 select option{background:${C.w};color:${C.txt}}
@@ -441,35 +442,62 @@ export default function App() {
   const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
   const sI = useCallback((i) => { setItems(i); sv("items", i); }, []);
   const sO = useCallback((o) => { setOrders(typeof o === "function" ? o : () => o); sv("orders", typeof o === "function" ? o(orders) : o); }, [orders]);
-
-  // Merge-safe order operations — read fresh from DB before writing to prevent race conditions
-  const atomicAddOrder = useCallback(async (newOrd) => {
-    const current = await ld("orders", []);
-    const merged = [...current, newOrd];
-    setOrders(merged);
-    await sv("orders", merged);
-  }, []);
-  const atomicUpdateOrder = useCallback(async (id, updFn) => {
-    const current = await ld("orders", []);
-    const merged = current.map(o => o.id === id ? updFn(o) : o);
-    setOrders(merged);
-    await sv("orders", merged);
-  }, []);
-  const atomicRemoveOrder = useCallback(async (id) => {
-    const current = await ld("orders", []);
-    const merged = current.filter(o => o.id !== id);
-    setOrders(merged);
-    await sv("orders", merged);
-  }, []);
-  const atomicUpdateOrders = useCallback(async (updFn) => {
-    const current = await ld("orders", []);
-    const merged = updFn(current);
-    setOrders(merged);
-    await sv("orders", merged);
-  }, []);
   const sT = useCallback((t) => { setTemplates(t); sv("templates", t); }, []);
   const sSh = useCallback((s) => { setShrinkLog(s); sv("shrinkage", s); }, []);
   const sTJ = useCallback((j) => { setTrackedJobs(j); sv("tracked_jobs", j); }, []);
+
+  // ═══ GUARDED ATOMIC SAVE SYSTEM ═══
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [lastSaved, setLastSaved] = useState(null);
+
+  // Audit log helper
+  const auditLog = useCallback(async (action) => {
+    try {
+      const log = await ld("audit_log", []);
+      await sv("audit_log", [{ action, user: user?.name || "?", date: new Date().toISOString() }, ...log].slice(0, 500));
+    } catch(e) {}
+  }, [user]);
+
+  // Guarded wrapper — prevents double-clicks, catches errors, logs saves
+  const guardedSave = useCallback(async (key, setFn, transformFn, audit) => {
+    if (saving) return; // prevent double-click
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const current = await ld(key, []);
+      const result = typeof transformFn === "function" ? transformFn(current) : transformFn;
+      setFn(result);
+      await sv(key, result);
+      setLastSaved(new Date());
+      if (audit) auditLog(audit);
+      return result;
+    } catch (e) {
+      const msg = "Save failed — " + (e.message || "please try again");
+      setSaveError(msg);
+      console.error("Save error:", e);
+      setTimeout(() => setSaveError(null), 8000);
+      throw e;
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, user]);
+
+  // ═══ ALL ATOMIC OPERATIONS (using guarded wrapper) ═══
+  const atomicUpdateItems = useCallback((transformFn, audit) => guardedSave("items", setItems, transformFn, audit), [guardedSave]);
+  const atomicAddItem = useCallback((newItem) => guardedSave("items", setItems, (cur) => [...cur, newItem], "Add item: " + (newItem.name || "")), [guardedSave]);
+  const atomicRemoveItem = useCallback((id) => guardedSave("items", setItems, (cur) => cur.filter(i => i.id !== id), "Delete item"), [guardedSave]);
+
+  const atomicAddOrder = useCallback((newOrd) => guardedSave("orders", setOrders, (cur) => [...cur, newOrd], "Submit order: " + (newOrd.jobName || "")), [guardedSave]);
+  const atomicUpdateOrder = useCallback((id, updFn, audit) => guardedSave("orders", setOrders, (cur) => cur.map(o => o.id === id ? updFn(o) : o), audit), [guardedSave]);
+  const atomicRemoveOrder = useCallback((id) => guardedSave("orders", setOrders, (cur) => cur.filter(o => o.id !== id), "Delete order"), [guardedSave]);
+
+  const atomicUpdateJobs = useCallback((transformFn, audit) => guardedSave("tracked_jobs", setTrackedJobs, transformFn, audit), [guardedSave]);
+  const atomicAddJobs = useCallback((newJobs) => guardedSave("tracked_jobs", setTrackedJobs, (cur) => [...cur, ...newJobs], "Add " + newJobs.length + " job(s)"), [guardedSave]);
+
+  const atomicUpdateUsers = useCallback((transformFn, audit) => guardedSave("users", setUsers, transformFn, audit), [guardedSave]);
+  const atomicUpdateTemplates = useCallback((transformFn, audit) => guardedSave("templates", setTemplates, transformFn, audit), [guardedSave]);
+  const atomicUpdateShrinkage = useCallback((transformFn, audit) => guardedSave("shrinkage", setShrinkLog, transformFn, audit), [guardedSave]);
   const [newJobsQueue, setNewJobsQueue] = useState([]);
   const [newJobGPs, setNewJobGPs] = useState({});
   const [newJobContracts, setNewJobContracts] = useState({});
@@ -505,7 +533,7 @@ export default function App() {
       contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: newJobGPUnknown[q.tempId] ? 0 : (+newJobGPs[q.tempId] || 35), gpUnknown: newJobGPUnknown[q.tempId] || false,
       status: "in_progress", costs: [], additionalCharges: [], notes: "", createdDate: new Date().toISOString(), completedDate: ""
     }));
-    sTJ([...trackedJobs, ...added]);
+    atomicAddJobs(added);
     setNewJobsQueue([]);
   };
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
@@ -533,13 +561,19 @@ export default function App() {
   useEffect(() => { setMatDrop(false); setSettDrop(false); }, [pg]);
 
   if (!rdy) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: C.bg }}><style>{CSS}</style><img src={LOGO} alt="" style={{ height: 60 }} /></div>;
-  if (!user) return <><style>{CSS}</style><Auth users={users} sU={sU} login={login} /></>;
+  if (!user) return <><style>{CSS}</style><Auth users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} login={login} /></>;
 
   const pendCt = orders.filter((o) => o.status === "pending").length;
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg }}>
       <style>{CSS}</style>
+
+      {/* SAVE INDICATOR */}
+      {(saving || saveError || lastSaved) && <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:9998,display:"flex",justifyContent:"center",padding:"6px 16px",pointerEvents:saveError?"auto":"none"}}>
+        {saveError && <div style={{background:"#B22234",color:"#fff",padding:"10px 20px",borderRadius:10,fontSize:13,fontWeight:700,boxShadow:"0 4px 16px rgba(0,0,0,0.3)",pointerEvents:"auto",display:"flex",alignItems:"center",gap:8}}><AlertTriangle size={16}/> {saveError} <button onClick={()=>setSaveError(null)} style={{background:"none",border:"none",color:"#fff",cursor:"pointer",marginLeft:8,fontWeight:800}}>✕</button></div>}
+        {saving && !saveError && <div style={{background:NAVY,color:"#fff",padding:"8px 20px",borderRadius:10,fontSize:12,fontWeight:700,boxShadow:"0 4px 16px rgba(0,0,0,0.2)",display:"flex",alignItems:"center",gap:8}}><RotateCcw size={14} style={{animation:"spin 1s linear infinite"}}/> Saving...</div>}
+      </div>}
 
       {/* NEW JOBS POPUP */}
       {newJobsQueue.length > 0 && <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -616,6 +650,7 @@ export default function App() {
             </button>
             {settDrop && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#fff", border: `1px solid ${C.brd}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 180, zIndex: 200, overflow: "hidden" }}>
               <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.brd}`, fontSize: 11, color: C.t2, fontWeight: 700 }}>{user.name} · {user.role}</div>
+              {lastSaved && <div style={{ padding: "4px 14px", borderBottom: `1px solid ${C.brd}`, fontSize: 10, color: C.grn }}>{saving ? "Saving..." : "Last saved: " + new Date(lastSaved).toLocaleTimeString()}</div>}
               {canSettings && <button onClick={() => setPg("settings")}
                 style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px", border: "none", background: pg === "settings" ? C.sf : "transparent",
                   color: C.txt, fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "left" }}>
@@ -633,19 +668,19 @@ export default function App() {
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
         {pg === "home" && <HomePage canApprove={canApprove} canJobs={canJobs} go={(page, tpl) => { setStartTpl(tpl || null); setPg(page); }} pendCt={pendCt} templates={templates} />}
-        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} addOrder={atomicAddOrder} sI={sI} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
-        {pg === "approvals" && canApprove && <Approvals orders={orders} updateOrder={atomicUpdateOrder} removeOrder={atomicRemoveOrder} items={items} sI={sI} view={setVOrd} />}
-        {pg === "items" && canItems && <ItemMgr items={items} sI={sI} orders={orders} />}
-        {pg === "inventory" && canInventory && <InvMgr items={items} sI={sI} />}
-        {pg === "shrinkage" && canShrinkage && <ShrinkageMgr items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} />}
-        {pg === "damage" && <DamageReport items={items} sI={sI} shrinkLog={shrinkLog} sSh={sSh} user={user} />}
-        {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} items={items} sI={sI} />}
-        {pg === "supplier" && canSupplier && <SupplierCost items={items} sI={sI} />}
-        {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} items={items} />}
+        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} addOrder={atomicAddOrder} sI={sI} saving={saving} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
+        {pg === "approvals" && canApprove && <Approvals orders={orders} updateOrder={atomicUpdateOrder} removeOrder={atomicRemoveOrder} items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} view={setVOrd} saving={saving} />}
+        {pg === "items" && canItems && <ItemMgr items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} atomicAddItem={atomicAddItem} atomicRemoveItem={atomicRemoveItem} orders={orders} />}
+        {pg === "inventory" && canInventory && <InvMgr items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} saving={saving} />}
+        {pg === "shrinkage" && canShrinkage && <ShrinkageMgr items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} shrinkLog={shrinkLog} sSh={sSh} atomicUpdateShrinkage={atomicUpdateShrinkage} />}
+        {pg === "damage" && <DamageReport items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} shrinkLog={shrinkLog} sSh={sSh} atomicUpdateShrinkage={atomicUpdateShrinkage} user={user} />}
+        {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} atomicUpdateShrinkage={atomicUpdateShrinkage} items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} />}
+        {pg === "supplier" && canSupplier && <SupplierCost items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} />}
+        {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
-        {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} orders={orders} items={items} nav={setPg} />}
+        {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
         {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
-        {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
+        {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
         onDelete={canDeleteOrders ? (id) => {
@@ -655,7 +690,31 @@ export default function App() {
             if (ord.osbNoteId) deleteOSBNote(ord.osbNoteId);
             // Only restore stock if order was approved
             if (ord.status === "approved") {
-              const updatedItems = items.map((it) => {
+              atomicUpdateItems((freshItems) => freshItems.map((it) => {
+                const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
+                if (!ls.length) return it;
+                const v = { ...(it.variants || getVariants(it)) };
+                ls.forEach((l) => {
+                  const optKey = l.option || "_default";
+                  if (v[optKey]) {
+                    if (ord.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
+                    else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
+                  }
+                });
+                const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
+                return { ...it, variants: v, qtyOnHand: totalQ };
+              }));
+            }
+          }
+          atomicRemoveOrder(id); setVOrd(null);
+        } : null}
+        onEdit={canEditOrders ? (id, newLines) => {
+          const ord = orders.find((o) => o.id === id);
+          if (!ord) return;
+          // Only adjust stock if order was already approved
+          if (ord.status === "approved") {
+            atomicUpdateItems((freshItems) => {
+              let updated = freshItems.map((it) => {
                 const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
                 if (!ls.length) return it;
                 const v = { ...(it.variants || getVariants(it)) };
@@ -669,45 +728,22 @@ export default function App() {
                 const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
                 return { ...it, variants: v, qtyOnHand: totalQ };
               });
-              sI(updatedItems);
-            }
-          }
-          atomicRemoveOrder(id); setVOrd(null);
-        } : null}
-        onEdit={canEditOrders ? (id, newLines) => {
-          const ord = orders.find((o) => o.id === id);
-          if (!ord) return;
-          // Only adjust stock if order was already approved
-          if (ord.status === "approved") {
-            let updatedItems = items.map((it) => {
-              const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
-              if (!ls.length) return it;
-              const v = { ...(it.variants || getVariants(it)) };
-              ls.forEach((l) => {
-                const optKey = l.option || "_default";
-                if (v[optKey]) {
-                  if (ord.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
-                  else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
-                }
+              updated = updated.map((it) => {
+                const ls = newLines.filter((l) => l.itemId === it.id);
+                if (!ls.length) return it;
+                const v = { ...(it.variants || getVariants(it)) };
+                ls.forEach((l) => {
+                  const optKey = l.option || "_default";
+                  if (v[optKey]) {
+                    if (ord.type === "order") v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
+                    else v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
+                  }
+                });
+                const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
+                return { ...it, variants: v, qtyOnHand: totalQ };
               });
-              const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
-              return { ...it, variants: v, qtyOnHand: totalQ };
+              return updated;
             });
-            updatedItems = updatedItems.map((it) => {
-              const ls = newLines.filter((l) => l.itemId === it.id);
-              if (!ls.length) return it;
-              const v = { ...(it.variants || getVariants(it)) };
-              ls.forEach((l) => {
-                const optKey = l.option || "_default";
-                if (v[optKey]) {
-                  if (ord.type === "order") v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
-                  else v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
-                }
-              });
-              const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
-              return { ...it, variants: v, qtyOnHand: totalQ };
-            });
-            sI(updatedItems);
           }
           const updatedOrd = { ...ord, lines: newLines };
           atomicUpdateOrder(id, () => updatedOrd);
@@ -738,7 +774,7 @@ export default function App() {
 }
 
 // ═══ AUTH ═══
-function Auth({ users, sU, login }) {
+function Auth({ users, sU, atomicUpdateUsers, login }) {
   const [mode, setMode] = useState("login");
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [show, setShow] = useState(false); const [err, setErr] = useState("");
   const [pending, setPending] = useState(false);
@@ -755,7 +791,7 @@ function Auth({ users, sU, login }) {
       if (users.find((x) => x.email.toLowerCase() === email.toLowerCase().trim())) { setErr("Email taken."); return; }
       if (pw.length < 4) { setErr("4+ characters."); return; }
       const u = { id: uid(), name: name.trim(), email: email.trim().toLowerCase(), pw: hP(pw), role: "pending", created: new Date().toISOString() };
-      sU([...users, u]);
+      atomicUpdateUsers((cur) => [...cur, u]);
       setPending(true);
     }
   };
@@ -849,7 +885,7 @@ function BigBtn({ icon, label, sub, color, onClick }) {
 }
 
 // ═══ ORDER BUILDER ═══
-function OrderBuilder({ type, items, user, orders, addOrder, sI, templates, startTpl, clearStartTpl, go }) {
+function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templates, startTpl, clearStartTpl, go }) {
   const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
   const [step, setStep] = useState("choose"); // choose, job, build
@@ -1151,7 +1187,7 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, templates, star
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 22, fontWeight: 800 }}><span>Total</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Margin</span><span style={{ fontFamily: MN }}>{fmt$(tSell - tCost)}</span></div>
               </div>
-              <button onClick={submit} disabled={!lines.length || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 16, padding: "16px", fontSize: 16, borderRadius: 14, opacity: (!lines.length || !allOptionsSet) ? 0.5 : 1, fontWeight: 800, letterSpacing: ".01em" }}><Check size={18} /> Submit {type === "return" ? "Return" : "Order"}</button>
+              <button onClick={submit} disabled={saving || !lines.length || !allOptionsSet} style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 16, padding: "16px", fontSize: 16, borderRadius: 14, opacity: (!lines.length || !allOptionsSet) ? 0.5 : 1, fontWeight: 800, letterSpacing: ".01em" }}><Check size={18} /> Submit {type === "return" ? "Return" : "Order"}</button>
             </>}
           </div>
         </div>
@@ -1169,7 +1205,7 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, templates, star
     </div>
   );
 }
-function Approvals({ orders, updateOrder, removeOrder, items, sI, view }) {
+function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateItems, view, saving }) {
   const pend = orders.filter((o) => o.status === "pending").sort((a, b) => new Date(b.date) - new Date(a.date));
   const [deleteWarn, setDeleteWarn] = useState(null);
 
@@ -1186,8 +1222,8 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, view }) {
       return { ...l, unitCost: wac, markupCost: (it.markup || 0) >= 100 ? wac : wac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
     });
     const approvedOrder = { ...order, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
-    // Deduct/add stock at approval time
-    sI(items.map((it) => {
+    // Deduct/add stock at approval time (merge-safe)
+    atomicUpdateItems((freshItems) => freshItems.map((it) => {
       const ls = updatedLines.filter((l) => l.itemId === it.id);
       if (!ls.length) return it;
       const v = { ...(getVariants(it)) };
@@ -1211,16 +1247,16 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, view }) {
     if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
       osbNoteId = await createOSBNote(approvedOrder);
     }
-    updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }));
+    updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
   };
-  const reject = (id) => { if (confirm("Reject this order?")) updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() })); };
+  const reject = (id) => { if (confirm("Reject this order?")) updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
   const deleteOrder = (id) => {
     const ord = orders.find((o) => o.id === id);
     if (ord?.jnFileId) deleteFromJN(ord.jnFileId);
     if (ord?.osbNoteId) deleteOSBNote(ord.osbNoteId);
     // Only restore stock if order was approved (pending orders never deducted)
-    if (ord && ord.status === "approved" && sI) {
-      sI(items.map((it) => {
+    if (ord && ord.status === "approved") {
+      atomicUpdateItems((freshItems) => freshItems.map((it) => {
         const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
         if (!ls.length) return it;
         const v = { ...(it.variants || getVariants(it)) };
@@ -1256,9 +1292,9 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, view }) {
               </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                 <button onClick={() => view(o)} style={{ ...bS, padding: "8px 12px", fontSize: 12 }}><Eye size={13} /> View</button>
-                <button onClick={() => setDeleteWarn(o)} style={{ ...bS, padding: "8px 12px", fontSize: 12, color: C.red, borderColor: C.red + "44" }}><Trash2 size={13} /> Delete</button>
-                <button onClick={() => reject(o.id)} style={{ ...bD, padding: "8px 12px", fontSize: 12 }}><XCircle size={13} /> Reject</button>
-                <button onClick={() => approve(o.id)} style={{ ...bP, padding: "8px 12px", fontSize: 12, background: C.grn }}><CheckCircle size={13} /> Approve</button>
+                <button onClick={() => setDeleteWarn(o)} disabled={saving} style={{ ...bS, padding: "8px 12px", fontSize: 12, color: C.red, borderColor: C.red + "44", opacity: saving ? 0.5 : 1 }}><Trash2 size={13} /> Delete</button>
+                <button onClick={() => reject(o.id)} disabled={saving} style={{ ...bD, padding: "8px 12px", fontSize: 12, opacity: saving ? 0.5 : 1 }}><XCircle size={13} /> Reject</button>
+                <button onClick={() => approve(o.id)} disabled={saving} style={{ ...bP, padding: "8px 12px", fontSize: 12, background: C.grn, opacity: saving ? 0.5 : 1 }}><CheckCircle size={13} /> Approve</button>
               </div>
             </div>
           </div>
@@ -1288,7 +1324,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, view }) {
 }
 
 // ═══ ITEM MANAGER (multi-option subcategories) ═══
-function ItemMgr({ items, sI, orders }) {
+function ItemMgr({ items, sI, atomicUpdateItems, atomicAddItem, atomicRemoveItem, orders }) {
   const [modal, setModal] = useState(null); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All");
   const cats = ["All", ...new Set(items.map((i) => i.category))];
   const filt = items.filter((i) => {
@@ -1345,7 +1381,7 @@ function ItemMgr({ items, sI, orders }) {
                     <td style={{ padding: "9px 10px" }}>
                       {vi === 0 && <div style={{ display: "flex", gap: 5 }}>
                         <button onClick={() => setModal(it)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
-                        <button onClick={() => { if (confirm(`Delete "${it.name}"?`)) sI(items.filter((x) => x.id !== it.id)); }} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
+                        <button onClick={() => { if (confirm(`Delete "${it.name}"?`)) atomicRemoveItem(it.id); }} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>}
                     </td>
                   </tr>
@@ -1406,11 +1442,11 @@ function ItemModal({ open, onClose, items, sI, ed }) {
         updatedVariants[o] = { ...existing, minStock: +(variantMinStocks[o] || 0) || 0 };
       });
       const totalQ = Object.values(updatedVariants).reduce((s, x) => s + (x.qty || 0), 0);
-      sI(items.map((i) => i.id === ed.id ? { ...i, name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, options: opts, variants: updatedVariants, qtyOnHand: totalQ } : i));
+      atomicUpdateItems((cur) => cur.map((i) => i.id === ed.id ? { ...i, name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, options: opts, variants: updatedVariants, qtyOnHand: totalQ } : i));
     } else {
       const initVariants = {};
       effectiveOpts.forEach((o) => { initVariants[o] = { qty: 0, wac: +cost, minStock: +(variantMinStocks[o] || 0) || 0 }; });
-      sI([...items, { id: uid(), name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, qtyOnHand: 0, active: true, options: opts, variants: initVariants }]);
+      atomicAddItem({ id: uid(), name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, qtyOnHand: 0, active: true, options: opts, variants: initVariants });
     }
     onClose();
   };
@@ -1510,7 +1546,7 @@ function getLowStockVariants(items, orders) {
 }
 
 // ═══ INVENTORY (WAC) — bulk receive ═══
-function InvMgr({ items, sI }) {
+function InvMgr({ items, sI, atomicUpdateItems, saving }) {
   const [lines, setLines] = useState([]); // [{itemId, option, qty, cost}]
   const [note, setNote] = useState("");
   const [log, setLog] = useState([]);
@@ -1547,30 +1583,32 @@ function InvMgr({ items, sI }) {
   const totalUnits = validLines.reduce((s, l) => s + (+l.qty), 0);
   const totalCostVal = validLines.reduce((s, l) => s + (+l.qty) * (+l.cost), 0);
 
-  const receiveAll = () => {
+  const receiveAll = async () => {
     if (!validLines.length) return;
     const newLogEntries = [];
-    let updatedItems = [...items];
 
-    validLines.forEach((l) => {
-      const idx = updatedItems.findIndex((i) => i.id === l.itemId);
-      if (idx < 0) return;
-      const it = updatedItems[idx];
-      const v = { ...(it.variants || getVariants(it)) };
-      const curV = v[l.option] || { qty: 0, wac: it.wacCost || 0, minStock: 0 };
-      const oQ = curV.qty || 0, oC = curV.wac || 0, nQ = +l.qty, nC = +l.cost;
-      const tQ = oQ + nQ;
-      const wac = tQ > 0 ? Math.round((oQ * oC + nQ * nC) / tQ * 100) / 100 : nC;
-      v[l.option] = { ...curV, qty: tQ, wac };
-      const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-      const totalC = Object.values(v).filter((x) => x.qty > 0).reduce((s, x) => s + x.qty * x.wac, 0);
-      const itemWac = totalQ > 0 ? Math.round(totalC / totalQ * 100) / 100 : wac;
-      updatedItems[idx] = { ...it, variants: v, qtyOnHand: totalQ, wacCost: itemWac };
-      const displayName = l.itemName + (l.option !== "_default" ? ` (${l.option})` : "");
-      newLogEntries.push({ id: uid(), itemId: l.itemId, itemName: displayName, option: l.option, qty: nQ, unitCost: nC, prevWAC: oC, newWAC: wac, prevQty: oQ, newQty: tQ, date: new Date().toISOString(), note: note.trim() });
+    await atomicUpdateItems((freshItems) => {
+      let updatedItems = [...freshItems];
+      validLines.forEach((l) => {
+        const idx = updatedItems.findIndex((i) => i.id === l.itemId);
+        if (idx < 0) return;
+        const it = updatedItems[idx];
+        const v = { ...(it.variants || getVariants(it)) };
+        const curV = v[l.option] || { qty: 0, wac: it.wacCost || 0, minStock: 0 };
+        const oQ = curV.qty || 0, oC = curV.wac || 0, nQ = +l.qty, nC = +l.cost;
+        const tQ = oQ + nQ;
+        const wac = tQ > 0 ? Math.round((oQ * oC + nQ * nC) / tQ * 100) / 100 : nC;
+        v[l.option] = { ...curV, qty: tQ, wac };
+        const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+        const totalC = Object.values(v).filter((x) => x.qty > 0).reduce((s, x) => s + x.qty * x.wac, 0);
+        const itemWac = totalQ > 0 ? Math.round(totalC / totalQ * 100) / 100 : wac;
+        updatedItems[idx] = { ...it, variants: v, qtyOnHand: totalQ, wacCost: itemWac };
+        const displayName = l.itemName + (l.option !== "_default" ? ` (${l.option})` : "");
+        newLogEntries.push({ id: uid(), itemId: l.itemId, itemName: displayName, option: l.option, qty: nQ, unitCost: nC, prevWAC: oC, newWAC: wac, prevQty: oQ, newQty: tQ, date: new Date().toISOString(), note: note.trim() });
+      });
+      return updatedItems;
     });
 
-    sI(updatedItems);
     svLog([...newLogEntries, ...log]);
     setDone(true);
     setTimeout(() => { setDone(false); setLines([]); setNote(""); }, 2000);
@@ -1651,7 +1689,7 @@ function InvMgr({ items, sI }) {
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800 }}><span>Total Cost</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(totalCostVal)}</span></div>
                 </div>
                 {done && <div style={{ textAlign: "center", padding: 12, color: C.grn, fontWeight: 700, fontSize: 14 }}><CheckCircle size={16} style={{ verticalAlign: "middle" }} /> All received!</div>}
-                <button onClick={receiveAll} disabled={!validLines.length}
+                <button onClick={receiveAll} disabled={saving || !validLines.length}
                   style={{ ...bP, width: "100%", justifyContent: "center", marginTop: 12, padding: 14, fontSize: 15, background: validLines.length ? C.grn : C.brd, opacity: validLines.length ? 1 : 0.5 }}>
                   <Package size={16} /> Receive {validLines.length} Item{validLines.length !== 1 ? "s" : ""}
                 </button>
@@ -1735,7 +1773,7 @@ function InvMgr({ items, sI }) {
               <button onClick={() => {
                 const r = deleteReceipt;
                 const opt = r.option || "_default";
-                sI(items.map((it) => {
+                atomicUpdateItems((cur) => cur.map((it) => {
                   if (it.id !== r.itemId) return it;
                   const v = { ...(it.variants || getVariants(it)) };
                   const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
@@ -1777,7 +1815,7 @@ function InvMgr({ items, sI }) {
               const newCost = +(erCost) || oldCost;
               const qtyDiff = newQty - oldQty;
               // Adjust inventory: remove old contribution, add new
-              sI(items.map((it) => {
+              atomicUpdateItems((cur) => cur.map((it) => {
                 if (it.id !== r.itemId) return it;
                 const v = { ...(it.variants || getVariants(it)) };
                 const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
@@ -1830,7 +1868,7 @@ function AdjustMgr({ items, sI }) {
     const newVariants = { ...variants, [selOpt]: { ...curV, qty: Math.max(0, (curV.qty || 0) - removeQty) } };
     const totalQ = Object.values(newVariants).reduce((s, x) => s + (x.qty || 0), 0);
 
-    sI(items.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
+    atomicUpdateItems((cur) => cur.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
 
     const displayName = it.name + (selOpt !== "_default" ? ` (${selOpt})` : "");
     svLog([{ id: uid(), itemId: sel, itemName: displayName, option: selOpt, qty: removeQty, wacAtTime: curV.wac, lostValue, reason, note: note.trim(), date: new Date().toISOString() }, ...log]);
@@ -1932,7 +1970,7 @@ function AdjustMgr({ items, sI }) {
 }
 
 // ═══ TEMPLATE MANAGER ═══
-function TplMgr({ templates, sT, items }) {
+function TplMgr({ templates, sT, atomicUpdateTemplates, items }) {
   const [modal, setModal] = useState(null);
   return (
     <div className="fu">
@@ -1952,7 +1990,7 @@ function TplMgr({ templates, sT, items }) {
               </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => setModal(t)} style={{ ...bS, padding: "8px 12px", fontSize: 12 }}><Edit3 size={13} /> Edit</button>
-                <button onClick={() => { if (confirm(`Delete "${t.name}"?`)) sT(templates.filter((x) => x.id !== t.id)); }} style={{ ...bD, padding: "8px 12px", fontSize: 12 }}><Trash2 size={13} /></button>
+                <button onClick={() => { if (confirm(`Delete "${t.name}"?`)) atomicUpdateTemplates((cur) => cur.filter((x) => x.id !== t.id)); }} style={{ ...bD, padding: "8px 12px", fontSize: 12 }}><Trash2 size={13} /></button>
               </div>
             </div>
           </div>
@@ -1985,8 +2023,8 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
 
   const save = () => {
     if (!name.trim()) return;
-    if (ed) { sT(templates.map((t) => t.id === ed.id ? { ...t, name: name.trim(), items: tplItems } : t)); }
-    else { sT([...templates, { id: uid(), name: name.trim(), items: tplItems }]); }
+    if (ed) { atomicUpdateTemplates((cur) => cur.map((t) => t.id === ed.id ? { ...t, name: name.trim(), items: tplItems } : t)); }
+    else { atomicUpdateTemplates((cur) => [...cur, { id: uid(), name: name.trim(), items: tplItems }]); }
     onClose();
   };
 
@@ -2091,7 +2129,7 @@ function History({ orders, items, user, canViewAll, canEdit, canDelete, view }) 
 }
 
 // ═══ SHRINKAGE / LOSS MANAGER ═══
-function ShrinkageMgr({ items, sI, shrinkLog, sSh }) {
+function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpdateShrinkage }) {
   const [counting, setCounting] = useState(false);
   const [counts, setCounts] = useState({}); // { "itemId:option": actualQty }
   const [catF, setCatF] = useState("All");
@@ -2145,8 +2183,8 @@ function ShrinkageMgr({ items, sI, shrinkLog, sSh }) {
   const saveCount = () => {
     if (!variances.length) return;
 
-    // Adjust inventory for each variance
-    const updatedItems = items.map((it) => {
+    // Adjust inventory for each variance (merge-safe)
+    atomicUpdateItems((freshItems) => freshItems.map((it) => {
       const v = { ...(it.variants || getVariants(it)) };
       let changed = false;
       Object.entries(v).forEach(([opt, vd]) => {
@@ -2162,8 +2200,7 @@ function ShrinkageMgr({ items, sI, shrinkLog, sSh }) {
       if (!changed) return it;
       const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
       return { ...it, variants: v, qtyOnHand: totalQ };
-    });
-    sI(updatedItems);
+    }));
 
     // Log each variance
     const newEntries = variances.map((vr) => ({
@@ -2179,7 +2216,7 @@ function ShrinkageMgr({ items, sI, shrinkLog, sSh }) {
       date: new Date().toISOString(),
       type: vr.variance < 0 ? "shrinkage" : "found",
     }));
-    sSh([...newEntries, ...shrinkLog]);
+    atomicUpdateShrinkage((cur) => [...newEntries, ...cur]);
     setSaved(true);
     setCounting(false);
   };
@@ -2329,7 +2366,7 @@ function ShrinkageMgr({ items, sI, shrinkLog, sSh }) {
 }
 
 // ═══ DAMAGE REPORT (for managers + admin) ═══
-function DamageReport({ items, sI, shrinkLog, sSh, user }) {
+function DamageReport({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpdateShrinkage, user }) {
   const [sel, setSel] = useState("");
   const [selOpt, setSelOpt] = useState("");
   const [qty, setQty] = useState("");
@@ -2366,7 +2403,7 @@ function DamageReport({ items, sI, shrinkLog, sSh, user }) {
     const newQty = Math.max(0, (curV.qty || 0) - (+qty));
     const newVariants = { ...variants, [selOpt]: { ...curV, qty: newQty } };
     const totalQ = Object.values(newVariants).reduce((s, x) => s + (x.qty || 0), 0);
-    sI(items.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
+    atomicUpdateItems((cur) => cur.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
 
     // Log it
     const displayName = it.name + (selOpt !== "_default" ? ` (${selOpt})` : "");
@@ -2377,7 +2414,7 @@ function DamageReport({ items, sI, shrinkLog, sSh, user }) {
       reportedBy: user?.name || "Unknown",
       date: new Date().toISOString(), type: "damage",
     };
-    sSh([entry, ...shrinkLog]);
+    atomicUpdateShrinkage((cur) => [entry, ...cur]);
     setSaving(false);
     setDone(true);
     setTimeout(() => {
@@ -2497,7 +2534,7 @@ function DamageReport({ items, sI, shrinkLog, sSh, user }) {
 }
 
 // ═══ DAMAGE GALLERY (admin only) ═══
-function DamageGallery({ shrinkLog, sSh, items, sI }) {
+function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomicUpdateItems }) {
   const [filter, setFilter] = useState("all"); // all, damage, shrinkage, found
   const [search, setSearch] = useState("");
   const [enlarged, setEnlarged] = useState(null);
@@ -2518,9 +2555,9 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
       const curV = v[opt] || { qty: 0, wac: r.unitCost || 0 };
       v[opt] = { ...curV, qty: (curV.qty || 0) + r.qty };
       const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-      sI(items.map((i) => i.id === r.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+      atomicUpdateItems((cur) => cur.map((i) => i.id === r.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
     }
-    sSh(shrinkLog.filter((x) => x.id !== r.id));
+    atomicUpdateShrinkage((cur) => cur.filter((x) => x.id !== r.id));
     setDeleteWarn(null); setEnlarged(null);
   };
 
@@ -2541,10 +2578,10 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
         const curV = v[opt] || { qty: 0, wac: editing.unitCost || 0 };
         v[opt] = { ...curV, qty: Math.max(0, (curV.qty || 0) - diff) };
         const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-        sI(items.map((i) => i.id === editing.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+        atomicUpdateItems((cur) => cur.map((i) => i.id === editing.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
       }
     }
-    sSh(shrinkLog.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote, lostValue: newQty * (x.unitCost || 0) } : x));
+    atomicUpdateShrinkage((cur) => cur.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote, lostValue: newQty * (x.unitCost || 0) } : x));
     setEditing(null); setEnlarged(null);
   };
 
@@ -2659,7 +2696,7 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
                 // Restore inventory
                 const r = deleteWarn;
                 const opt = r.option || "_default";
-                sI(items.map((it) => {
+                atomicUpdateItems((cur) => cur.map((it) => {
                   if (it.id !== r.itemId) return it;
                   const v = { ...(it.variants || getVariants(it)) };
                   const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
@@ -2667,7 +2704,7 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
                   const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
                   return { ...it, variants: v, qtyOnHand: totalQ };
                 }));
-                sSh(shrinkLog.filter((x) => x.id !== r.id));
+                atomicUpdateShrinkage((cur) => cur.filter((x) => x.id !== r.id));
                 setDeleteWarn(null);
               }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Restore Inventory</button>
             </div>
@@ -2687,7 +2724,7 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
             <button onClick={() => {
               const newQty = +editQty || editing.qty;
               const newCost = (editing.unitCost || 0);
-              sSh(shrinkLog.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote.trim(), lostValue: newQty * newCost } : x));
+              atomicUpdateShrinkage((cur) => cur.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote.trim(), lostValue: newQty * newCost } : x));
               setEditing(null);
             }} style={bP}><Check size={14} /> Save Changes</button>
           </div>
@@ -2698,7 +2735,7 @@ function DamageGallery({ shrinkLog, sSh, items, sI }) {
 }
 
 // ═══ SUPPLIER COST ═══
-function SupplierCost({ items, sI }) {
+function SupplierCost({ items, sI, atomicUpdateItems }) {
   const [edits, setEdits] = useState({}); // { itemId: supplierCostValue }
   const [saved, setSaved] = useState(false);
   const [catF, setCatF] = useState("All");
@@ -2730,13 +2767,13 @@ function SupplierCost({ items, sI }) {
 
   const saveAll = () => {
     if (!hasChanges) return;
-    const updated = items.map((it) => {
-      if (edits[it.id] !== undefined) {
-        return { ...it, supplierCost: +edits[it.id] || 0 };
+    const editsCopy = { ...edits };
+    atomicUpdateItems((freshItems) => freshItems.map((it) => {
+      if (editsCopy[it.id] !== undefined) {
+        return { ...it, supplierCost: +editsCopy[it.id] || 0 };
       }
       return it;
-    });
-    sI(updated);
+    }));
     setEdits({});
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -2842,7 +2879,7 @@ function SupplierCost({ items, sI }) {
 }
 
 // ═══ JOB PROFIT TRACKER ═══
-function JobTracker({ jobs, sJ, orders, items, nav }) {
+function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
   const [view, setView] = useState("list"); // list, detail, reports, history
   const [editJob, setEditJob] = useState(null);
   const [filterStatus, setFilterStatus] = useState("all");
@@ -2896,7 +2933,15 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
           }
           return tj;
         });
-        if (changed) sJ(updated);
+        if (changed) { atomicUpdateJobs((cur) => cur.map((tj) => {
+          const jnJob2 = jnJobs.find((j) => j.id === tj.jnJobId);
+          if (tj.status === "open") tj = { ...tj, status: "in_progress" };
+          if (!tj.jnJobId || tj.status === "waiting_invoices" || tj.status === "closed") return tj;
+          if (jnJob2 && (jnJob2.status || "").toLowerCase().replace(/[^a-z]/g, "") === "jobcompleted") {
+            return { ...tj, status: "waiting_invoices", completedDate: tj.completedDate || new Date().toISOString() };
+          }
+          return tj;
+        })); }
       } catch(e) {}
       // Fetch invoice/payment data from JN
       fetchFinance();
@@ -2968,7 +3013,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
   const knownBidJobs = allCalc.filter(j=>!j.gpUnknown && (j.projectedGP||0) > 0);
   const avgBidGP = knownBidJobs.length ? knownBidJobs.reduce((s,j)=>s+(j.projectedGP||0),0)/knownBidJobs.length : 0;
 
-  const addJob = () => { if (!nName.trim()) return; sJ([...jobs, { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
+  const addJob = () => { if (!nName.trim()) return; const newJob = { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }; atomicUpdateJobs((cur) => [...cur, newJob]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
   const [closedExpenseConfirm, setClosedExpenseConfirm] = useState(null); // {type, jid}
   const addCost = (jid) => {
     if (!cDesc.trim()||!cAmt) return;
@@ -2979,17 +3024,17 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
     const amt = +cAmt||0;
     const cat = cCat;
     const desc = cDesc.trim();
-    sJ(jobs.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()}]}:j));
+    atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()}]}:j));
     setCostConfirm({ category: cat, amount: amt, jobName: job?.name || "" });
     setTimeout(() => setCostConfirm(null), 3000);
     setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
   };
-  const deleteCost = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
+  const deleteCost = (jid,cid) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
   const startEditCost = (jid, c) => { setEditingCost({ jid, cid: c.id, category: c.category, description: c.description, amount: c.amount }); };
   const saveEditCost = () => {
     if (!editingCost) return;
     const { jid, cid, category, description, amount } = editingCost;
-    sJ(jobs.map(j => j.id === jid ? { ...j, costs: (j.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c) } : j));
+    atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, costs: (j.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c) } : j));
     setEditingCost(null);
   };
   const addAddlCharge = (jid) => {
@@ -2998,15 +3043,12 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
     if (job && job.status === "closed" && !closedExpenseConfirm) {
       setClosedExpenseConfirm({ type: "charge", jid }); return;
     }
-    sJ(jobs.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)); setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null);
+    atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)); setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null);
   };
-  const deleteAddlCharge = (jid,cid) => { sJ(jobs.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j)); };
-  const updateJob = (jid,upd) => { sJ(jobs.map(j=>j.id===jid?{...j,...upd}:j)); };
+  const deleteAddlCharge = (jid,cid) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j)); };
+  const updateJob = (jid,upd) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,...upd}:j)); };
   const hideInvoice = (jid, invId) => {
-    const updated = jobs.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j);
-    sJ(updated);
-    const ej = updated.find(j => j.id === jid);
-    if (ej) setEditJob(ej);
+    atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j));
     setHideInvConfirm(null);
   };
 
@@ -3163,7 +3205,7 @@ function JobTracker({ jobs, sJ, orders, items, nav }) {
               <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Actual</div><div style={{fontSize:20,fontWeight:800,fontFamily:MN,color:j.actGP$>=0?C.grn:C.red}}>{fmt$(j.actGP$)} <span style={{fontSize:13,fontWeight:600}}>({j.actGP.toFixed(1)}%)</span></div></div>
               <div style={{paddingTop:12,borderTop:`2px solid ${C.brd}`}}><div style={{fontSize:11,color:C.t2,marginBottom:2}}>Variance</div><div style={{fontSize:24,fontWeight:900,fontFamily:MN,color:j.variance>=0?C.grn:C.red}}>{j.variance>=0?"+":""}{fmt$(j.variance)}</div></div>
             </div>
-            <button onClick={()=>{if(confirm("Delete this job?")) {sJ(jobs.filter(x=>x.id!==j.id)); setEditJob(null);}}} style={{...bS,width:"100%",marginTop:12,borderRadius:10,color:C.red,borderColor:C.red+"44",justifyContent:"center"}}><Trash2 size={14}/> Delete Job</button>
+            <button onClick={()=>{if(confirm("Delete this job?")) {atomicUpdateJobs((cur) => cur.filter(x=>x.id!==j.id)); setEditJob(null);}}} style={{...bS,width:"100%",marginTop:12,borderRadius:10,color:C.red,borderColor:C.red+"44",justifyContent:"center"}}><Trash2 size={14}/> Delete Job</button>
           </div>
         </div>
       </div>
@@ -4751,7 +4793,7 @@ function Reports({ orders, items, shrinkLog }) {
 }
 
 // ═══ SETTINGS PAGE ═══
-function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
+function SettingsPage({ users, sU, atomicUpdateUsers, me, items, orders, templates, shrinkLog }) {
   const ROLES = ["admin", "manager", "user"];
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [editUser, setEditUser] = useState(null);
@@ -4789,7 +4831,7 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
   };
 
   const deleteUser = (u) => {
-    sU(users.filter((x) => x.id !== u.id));
+    atomicUpdateUsers((cur) => cur.filter((x) => x.id !== u.id));
     setDeleteConfirm(null);
   };
 
@@ -4799,7 +4841,7 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
   };
   const saveEdit = () => {
     if (!editName.trim() || !editEmail.trim()) return;
-    sU(users.map((x) => {
+    atomicUpdateUsers((cur) => cur.map((x) => {
       if (x.id !== editUser.id) return x;
       const updated = { ...x, name: editName.trim(), email: editEmail.trim().toLowerCase(), role: editRole };
       if (editRole !== "admin") updated.perms = { ...editPerms };
@@ -4822,10 +4864,10 @@ function SettingsPage({ users, sU, me, items, orders, templates, shrinkLog }) {
   const activeUsers = users.filter((u) => u.role !== "pending");
 
   const approveUser = (u) => {
-    sU(users.map((x) => x.id === u.id ? { ...x, role: "user", perms: { ...DEFAULT_PERMS, edit_orders: true } } : x));
+    atomicUpdateUsers((cur) => cur.map((x) => x.id === u.id ? { ...x, role: "user", perms: { ...DEFAULT_PERMS, edit_orders: true } } : x));
   };
   const rejectUser = (u) => {
-    sU(users.filter((x) => x.id !== u.id));
+    atomicUpdateUsers((cur) => cur.filter((x) => x.id !== u.id));
   };
 
   const permCount = (u) => {
