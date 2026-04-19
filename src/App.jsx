@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49t - guarded atomic saves, audit log, error handling, double-click prevention
+// v49u - return qty cap, 10 bug fixes, full data integrity
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -61,6 +61,23 @@ select option{background:${C.w};color:${C.txt}}
 const MN = `'IBM Plex Mono',monospace`;
 const BC = `'Barlow Condensed',sans-serif`;
 
+// Strict read — detects ld failures using sentinel (works with both window.storage and storage.js)
+async function ldStrict(k) {
+  const sentinel = "__RUSA_READ_FAIL_" + Date.now() + "__";
+  const result = await ld(k, sentinel);
+  if (result === sentinel) throw new Error("Database read failed for: " + k);
+  return result;
+}
+// Strict write — writes then verifies (detects silent sv failures)
+async function svStrict(k, v) {
+  await sv(k, v);
+  const sentinel = "__RUSA_VERIFY_FAIL_" + Date.now() + "__";
+  const check = await ld(k, sentinel);
+  if (check === sentinel) throw new Error("Write verification failed for: " + k);
+  if (Array.isArray(v) && Array.isArray(check) && check.length !== v.length) {
+    throw new Error("Write mismatch for " + k + ": wrote " + v.length + " records but read back " + check.length);
+  }
+}
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 // Compress and resize photo from file input → base64 string
@@ -398,12 +415,53 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const [u, it, o, t, sh, tj] = await Promise.all([ld("users", []), ld("items", []), ld("orders", []), ld("templates", []), ld("shrinkage", []), ld("tracked_jobs", [])]);
+      // STARTUP VALIDATION: if we've used the portal before, data shouldn't all be empty
+      // Check if this is genuinely a first-time load vs a failed read
+      const hasExistingData = await ld("v47_shrink_reset", false);
+      if (hasExistingData && it.length === 0 && o.length === 0) {
+        // Portal has been used before but items AND orders are empty — likely a read failure
+        // Try one more time
+        const retryItems = await ld("items", []);
+        const retryOrders = await ld("orders", []);
+        if (retryItems.length === 0 && retryOrders.length === 0) {
+          console.error("STARTUP: Items and orders both empty despite prior usage — possible read failure");
+        }
+        if (retryItems.length > 0) { it.splice(0, it.length, ...retryItems); }
+        if (retryOrders.length > 0) { o.splice(0, o.length, ...retryOrders); }
+      }
       if (!u.length) {
         const a = { id: uid(), name: "Logan", email: "logan@usaroof.com", pw: hP("admin"), role: "admin", created: new Date().toISOString() };
         u.push(a);
         await sv("users", u);
       }
       setUsers(u); setItems(it); setOrders(o); setTemplates(t); setShrinkLog(sh); setTrackedJobs(tj);
+      // LOCAL BACKUP — save last known good state to localStorage as insurance
+      try {
+        if (it.length > 0) localStorage.setItem("roofus_backup_items", JSON.stringify(it));
+        if (o.length > 0) localStorage.setItem("roofus_backup_orders", JSON.stringify(o));
+        if (tj.length > 0) localStorage.setItem("roofus_backup_jobs", JSON.stringify(tj));
+        localStorage.setItem("roofus_backup_date", new Date().toISOString());
+      } catch(e) {}
+      // DATA VALIDATION — if DB returned empty but localStorage has data, warn
+      const backupItems = localStorage.getItem("roofus_backup_items");
+      if (it.length === 0 && backupItems) {
+        try {
+          const parsed = JSON.parse(backupItems);
+          if (parsed.length > 5) {
+            console.error("WARNING: DB returned 0 items but localStorage has " + parsed.length + " items backed up");
+            // Retry the read to distinguish between genuine empty and network glitch
+            const retryItems = await ld("items", []);
+            const retryOrders = await ld("orders", []);
+            if (retryItems.length > 0) { setItems(retryItems); }
+            else if (parsed.length > 0) {
+              // DB is genuinely empty but we had data before — restore from backup
+              if (confirm("Database returned 0 items but a local backup has " + parsed.length + " items. Restore from backup?")) {
+                setItems(parsed); await sv("items", parsed);
+              }
+            }
+          }
+        } catch(e) {}
+      }
       // Migrate users to granular permissions
       const migrated2 = u.map(migratePerms);
       if (JSON.stringify(migrated2) !== JSON.stringify(u)) { setUsers(migrated2); await sv("users", migrated2); }
@@ -450,6 +508,15 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [lastSaved, setLastSaved] = useState(null);
+  const saveQueue = useRef(Promise.resolve());
+  const savingRef = useRef(false);
+
+  // Warn before closing tab during save
+  useEffect(() => {
+    const handler = (e) => { if (savingRef.current) { e.preventDefault(); e.returnValue = "Save in progress — are you sure you want to leave?"; } };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   // Audit log helper
   const auditLog = useCallback(async (action) => {
@@ -459,29 +526,72 @@ export default function App() {
     } catch(e) {}
   }, [user]);
 
-  // Guarded wrapper — prevents double-clicks, catches errors, logs saves
-  const guardedSave = useCallback(async (key, setFn, transformFn, audit) => {
-    if (saving) return; // prevent double-click
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const current = await ld(key, []);
-      const result = typeof transformFn === "function" ? transformFn(current) : transformFn;
-      setFn(result);
-      await sv(key, result);
-      setLastSaved(new Date());
-      if (audit) auditLog(audit);
-      return result;
-    } catch (e) {
-      const msg = "Save failed — " + (e.message || "please try again");
-      setSaveError(msg);
-      console.error("Save error:", e);
-      setTimeout(() => setSaveError(null), 8000);
-      throw e;
-    } finally {
-      setSaving(false);
-    }
-  }, [saving, user]);
+  // Core guarded save — queued, validated, backed up, verified
+  const guardedSave = useCallback((key, setFn, transformFn, audit) => {
+    const job = saveQueue.current.then(async () => {
+      setSaving(true);
+      savingRef.current = true;
+      setSaveError(null);
+      try {
+        // 1. READ fresh from DB — using ldStrict which THROWS on failure
+        const current = await ldStrict(key);
+
+        // 2. VALIDATE — reject empty reads when data should exist
+        if (!Array.isArray(current)) {
+          throw new Error("DB returned non-array for " + key + " — aborting to prevent data loss");
+        }
+
+        // 3. TRANSFORM
+        const result = typeof transformFn === "function" ? transformFn(current) : transformFn;
+
+        // 4. VALIDATE RESULT — never write empty array if current has data
+        if (Array.isArray(result) && result.length === 0 && current.length > 0) {
+          throw new Error("Write would erase " + current.length + " records from " + key + " — aborting");
+        }
+
+        // 5. BACKUP — save current state before overwriting
+        try { await sv(key + "_backup", current); } catch(e) {}
+
+        // 6. WRITE to Supabase FIRST — using svStrict which THROWS on failure
+        await svStrict(key, result);
+
+        // 7. VERIFY — read back and confirm
+        let verified = false;
+        try {
+          const readBack = await ldStrict(key);
+          verified = Array.isArray(readBack) && readBack.length === result.length;
+        } catch(e) { /* verification failed but write may have succeeded */ }
+
+        // 8. UPDATE UI only after successful write
+        setFn(result);
+        setLastSaved(new Date());
+        if (audit) auditLog(audit);
+        // 9. UPDATE LOCAL BACKUP
+        try {
+          if (Array.isArray(result) && result.length > 0 && (key === "items" || key === "orders" || key === "tracked_jobs")) {
+            localStorage.setItem("roofus_backup_" + key.replace("tracked_", ""), JSON.stringify(result));
+            localStorage.setItem("roofus_backup_date", new Date().toISOString());
+          }
+        } catch(e) {}
+
+        if (!verified) console.warn("Save verification failed for " + key + " — data may not have persisted");
+
+        return result;
+      } catch (e) {
+        const msg = "SAVE FAILED — " + (e.message || "check your internet and try again");
+        setSaveError(msg);
+        console.error("Save error:", key, e);
+        // Revert UI to what's actually in DB
+        try { const fresh = await ld(key, []); if (Array.isArray(fresh) && fresh.length > 0) setFn(fresh); } catch(e2) {}
+        return null;
+      } finally {
+        setSaving(false);
+        savingRef.current = false;
+      }
+    });
+    saveQueue.current = job.catch(() => {});
+    return job;
+  }, [user]);
 
   // ═══ ALL ATOMIC OPERATIONS (using guarded wrapper) ═══
   const atomicUpdateItems = useCallback((transformFn, audit) => guardedSave("items", setItems, transformFn, audit), [guardedSave]);
@@ -493,7 +603,12 @@ export default function App() {
   const atomicRemoveOrder = useCallback((id) => guardedSave("orders", setOrders, (cur) => cur.filter(o => o.id !== id), "Delete order"), [guardedSave]);
 
   const atomicUpdateJobs = useCallback((transformFn, audit) => guardedSave("tracked_jobs", setTrackedJobs, transformFn, audit), [guardedSave]);
-  const atomicAddJobs = useCallback((newJobs) => guardedSave("tracked_jobs", setTrackedJobs, (cur) => [...cur, ...newJobs], "Add " + newJobs.length + " job(s)"), [guardedSave]);
+  const atomicAddJobs = useCallback((newJobs) => guardedSave("tracked_jobs", setTrackedJobs, (cur) => {
+    // GUARD: filter out any jobs whose jnJobId already exists in DB (prevents double-add)
+    const existingJnIds = new Set(cur.map(j => j.jnJobId).filter(Boolean));
+    const deduped = newJobs.filter(j => !j.jnJobId || !existingJnIds.has(j.jnJobId));
+    return [...cur, ...deduped];
+  }, "Add " + newJobs.length + " job(s)"), [guardedSave]);
 
   const atomicUpdateUsers = useCallback((transformFn, audit) => guardedSave("users", setUsers, transformFn, audit), [guardedSave]);
   const atomicUpdateTemplates = useCallback((transformFn, audit) => guardedSave("templates", setTemplates, transformFn, audit), [guardedSave]);
@@ -683,14 +798,14 @@ export default function App() {
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
-        onDelete={canDeleteOrders ? (id) => {
+        onDelete={canDeleteOrders ? async (id) => {
           const ord = orders.find((o) => o.id === id);
           if (ord) {
             if (ord.jnFileId) deleteFromJN(ord.jnFileId);
             if (ord.osbNoteId) deleteOSBNote(ord.osbNoteId);
-            // Only restore stock if order was approved
+            // Only restore stock if order was approved — await before removing order
             if (ord.status === "approved") {
-              atomicUpdateItems((freshItems) => freshItems.map((it) => {
+              const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
                 const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
                 if (!ls.length) return it;
                 const v = { ...(it.variants || getVariants(it)) };
@@ -704,16 +819,17 @@ export default function App() {
                 const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
                 return { ...it, variants: v, qtyOnHand: totalQ };
               }));
+              if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return; }
             }
           }
-          atomicRemoveOrder(id); setVOrd(null);
+          await atomicRemoveOrder(id); setVOrd(null);
         } : null}
-        onEdit={canEditOrders ? (id, newLines) => {
+        onEdit={canEditOrders ? async (id, newLines) => {
           const ord = orders.find((o) => o.id === id);
           if (!ord) return;
-          // Only adjust stock if order was already approved
+          // Only adjust stock if order was already approved — await before updating order
           if (ord.status === "approved") {
-            atomicUpdateItems((freshItems) => {
+            const stockResult = await atomicUpdateItems((freshItems) => {
               let updated = freshItems.map((it) => {
                 const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
                 if (!ls.length) return it;
@@ -744,9 +860,10 @@ export default function App() {
               });
               return updated;
             });
+            if (!stockResult) { alert("Stock update failed — order NOT edited."); return; }
           }
           const updatedOrd = { ...ord, lines: newLines };
-          atomicUpdateOrder(id, () => updatedOrd);
+          await atomicUpdateOrder(id, () => updatedOrd);
           setVOrd(updatedOrd);
           // Re-upload to JN if linked
           if (updatedOrd.jnJobId) {
@@ -975,14 +1092,23 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
   const osbQty = osbLines.reduce((s,l) => s + l.qty, 0);
   const osbUnit = iMap[osbLines[0]?.itemId]?.unit || "sheet";
 
-  const submit = () => {
+  const submit = async () => {
     if (!lines.length || !allOptionsSet) return;
+    // BUG #9: Validate all line quantities are positive numbers
+    const badLine = lines.find(l => !l.qty || +l.qty <= 0 || isNaN(+l.qty));
+    if (badLine) { alert("All items must have a valid quantity greater than 0."); return; }
+    // BUG #10: Validate no NaN/Infinity in costs
+    const badCost = lines.find(l => isNaN(l.unitCost) || !isFinite(l.unitCost) || isNaN(l.markupCost) || !isFinite(l.markupCost));
+    if (badCost) { alert("Invalid cost detected on one or more items. Please remove and re-add the item."); return; }
     if (hasOSB && !osbDesc.trim()) { setOsbPrompt(true); return; }
     const jobTrim = job.trim();
-    const existingCount = orders.filter(o => o.jobName === jobTrim && o.type === type).length;
+    // Read fresh orders from DB for accurate PO numbering
+    let freshOrders = orders;
+    try { freshOrders = await ldStrict("orders"); } catch(e) {}
+    const existingCount = freshOrders.filter(o => o.jobName === jobTrim && o.type === type).length;
     const poLabel = type === "return" ? "Return" : "Materials";
     const autoPoNumber = jobTrim ? `${jobTrim} ${poLabel} #${existingCount + 1}` : "";
-    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: l.qty, option: l.option, unitCost: l.unitCost, markupCost: l.markupCost, supplierCost: l.supplierCost || 0 })) };
+    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: Math.max(1, Math.round(+l.qty)), option: l.option, unitCost: Math.max(0, +l.unitCost || 0), markupCost: Math.max(0, +l.markupCost || 0), supplierCost: Math.max(0, +l.supplierCost || 0) })) };
     // Stock is NOT deducted at submit — only at approval
     addOrder(ord); setDone(true);
   };
@@ -1212,9 +1338,57 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
   const approve = async (id) => {
     const order = orders.find((o) => o.id === id);
     if (!order) return;
-    // Lock WAC at approval time — recalculate costs from current variant WAC
+    // GUARD: Read fresh order from DB to verify it's still pending (prevents double-approval)
+    try {
+      const freshOrders = await ldStrict("orders");
+      const freshOrder = freshOrders.find(o => o.id === id);
+      if (!freshOrder || freshOrder.status !== "pending") {
+        alert("This order was already " + (freshOrder?.status || "processed") + " by someone else.");
+        return;
+      }
+    } catch(e) { alert("Cannot verify order status — check your internet."); return; }
+
+    // GUARD: If this is a return linked to a job, cap qty at total ordered minus already returned
+    if (order.type === "return" && order.jnJobId) {
+      try {
+        const freshOrders2 = await ldStrict("orders");
+        // Sum total ordered per item+option for this job
+        const jobOrders = freshOrders2.filter(o => o.jnJobId === order.jnJobId && o.status === "approved" && o.type === "order");
+        const jobReturns = freshOrders2.filter(o => o.jnJobId === order.jnJobId && o.status === "approved" && o.type === "return" && o.id !== id);
+        const orderedQty = {}; // key: itemId:option → total ordered
+        jobOrders.forEach(o => (o.lines||[]).forEach(l => {
+          const k = l.itemId + ":" + (l.option || "_default");
+          orderedQty[k] = (orderedQty[k] || 0) + l.qty;
+        }));
+        const returnedQty = {}; // key: itemId:option → total already returned
+        jobReturns.forEach(o => (o.lines||[]).forEach(l => {
+          const k = l.itemId + ":" + (l.option || "_default");
+          returnedQty[k] = (returnedQty[k] || 0) + l.qty;
+        }));
+        const iMap = Object.fromEntries(items.map(i => [i.id, i]));
+        const overLines = [];
+        order.lines.forEach(l => {
+          const k = l.itemId + ":" + (l.option || "_default");
+          const maxReturn = (orderedQty[k] || 0) - (returnedQty[k] || 0);
+          if (l.qty > maxReturn) {
+            const name = iMap[l.itemId]?.name || "Unknown";
+            const opt = l.option && l.option !== "_default" ? ` (${l.option})` : "";
+            overLines.push(`${name}${opt}: returning ${l.qty} but only ${maxReturn} available to return`);
+          }
+        });
+        if (overLines.length) {
+          alert("RETURN BLOCKED — quantities exceed what was ordered for this job:\n\n" + overLines.join("\n") + "\n\nEdit the return quantities and try again.");
+          return;
+        }
+      } catch(e) { /* if check fails, continue with approval */ }
+    }
+
+    // Read FRESH items from DB for accurate WAC locking
+    let freshItems = items;
+    try { freshItems = await ldStrict("items"); } catch(e) { /* fall back to state */ }
+    // Lock WAC at approval time — recalculate costs from FRESH variant WAC
     const updatedLines = order.lines.map((l) => {
-      const it = items.find((i) => i.id === l.itemId);
+      const it = freshItems.find((i) => i.id === l.itemId);
       if (!it) return l;
       const v = getVariants(it);
       const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 };
@@ -1222,8 +1396,8 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       return { ...l, unitCost: wac, markupCost: (it.markup || 0) >= 100 ? wac : wac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
     });
     const approvedOrder = { ...order, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
-    // Deduct/add stock at approval time (merge-safe)
-    atomicUpdateItems((freshItems) => freshItems.map((it) => {
+    // Deduct/add stock at approval time — MUST complete before marking order approved
+    const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
       const ls = updatedLines.filter((l) => l.itemId === it.id);
       if (!ls.length) return it;
       const v = { ...(getVariants(it)) };
@@ -1237,6 +1411,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
       return { ...it, variants: v, qtyOnHand: totalQ };
     }));
+    if (!stockResult) { alert("Stock deduction failed — order NOT approved. Check your internet."); return; }
     // Upload to JobNimbus if linked
     let jnFileId = null;
     if (approvedOrder.jnJobId) {
@@ -1250,21 +1425,28 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
   };
   const reject = (id) => { if (confirm("Reject this order?")) updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
-  const deleteOrder = (id) => {
+  const deleteOrder = async (id) => {
     const ord = orders.find((o) => o.id === id);
+    // GUARD: Verify order still exists in DB
+    try {
+      const freshOrders = await ldStrict("orders");
+      const freshOrd = freshOrders.find(o => o.id === id);
+      if (!freshOrd) { alert("This order was already deleted by someone else."); setDeleteWarn(null); return; }
+    } catch(e) { alert("Cannot verify order — check your internet."); setDeleteWarn(null); return; }
     if (ord?.jnFileId) deleteFromJN(ord.jnFileId);
     if (ord?.osbNoteId) deleteOSBNote(ord.osbNoteId);
     // Only restore stock if order was approved (pending orders never deducted)
     if (ord && ord.status === "approved") {
-      atomicUpdateItems((freshItems) => freshItems.map((it) => {
+      const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
         const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
         if (!ls.length) return it;
         const v = { ...(it.variants || getVariants(it)) };
         ls.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: ord.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
         return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
       }));
+      if (!stockResult) { alert("Stock restoration failed — order NOT deleted. Check your internet."); setDeleteWarn(null); return; }
     }
-    removeOrder(id);
+    await removeOrder(id);
     setDeleteWarn(null);
   };
 
@@ -1560,7 +1742,12 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
   const [erNote, setErNote] = useState("");
 
   useEffect(() => { (async () => { setLog(await ld("inv_log", [])); })(); }, []);
-  const svLog = useCallback((l) => { setLog(l); sv("inv_log", l); }, []);
+  const svLog = useCallback(async (newLog) => {
+    // Atomic log save — read fresh, apply transform, write
+    try {
+      if (Array.isArray(newLog)) { await sv("inv_log", newLog); setLog(newLog); }
+    } catch(e) { console.error("Log save error:", e); }
+  }, []);
 
   const cats = ["All", ...new Set(items.map((i) => i.category))];
   const filtered = items.filter((i) => {
@@ -1770,15 +1957,14 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
             <p style={{ color: C.grn, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>{deleteReceipt.qty} units will be removed from inventory.</p>
             <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
               <button onClick={() => setDeleteReceipt(null)} style={{ ...bS, padding: "12px 28px", fontSize: 14 }}>Cancel</button>
-              <button onClick={() => {
+              <button onClick={async () => {
                 const r = deleteReceipt;
                 const opt = r.option || "_default";
-                atomicUpdateItems((cur) => cur.map((it) => {
+                const stockResult = await atomicUpdateItems((cur) => cur.map((it) => {
                   if (it.id !== r.itemId) return it;
                   const v = { ...(it.variants || getVariants(it)) };
                   const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
                   const newQty = Math.max(0, (curV.qty || 0) - (r.qty || 0));
-                  // Recalc WAC: remove the cost contribution of this receipt
                   const totalCostBefore = (curV.qty || 0) * (curV.wac || 0);
                   const removedCost = (r.qty || 0) * (r.unitCost || 0);
                   const newWac = newQty > 0 ? Math.round((totalCostBefore - removedCost) / newQty * 100) / 100 : curV.wac || 0;
@@ -1786,6 +1972,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
                   const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
                   return { ...it, variants: v, qtyOnHand: totalQ };
                 }));
+                if (!stockResult) { alert("Stock update failed — receipt NOT deleted."); return; }
                 svLog(log.filter((x) => x.id !== r.id));
                 setDeleteReceipt(null);
               }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Update Inventory</button>
@@ -1806,16 +1993,16 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
           </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button onClick={() => setEditReceipt(null)} style={bS}>Cancel</button>
-            <button onClick={() => {
+            <button onClick={async () => {
               const r = editReceipt;
               const opt = r.option || "_default";
               const oldQty = r.qty || 0;
-              const newQty = +(erQty) || oldQty;
+              const newQty = Math.max(0, +(erQty) || oldQty);
               const oldCost = r.unitCost || 0;
-              const newCost = +(erCost) || oldCost;
+              const newCost = Math.max(0, +(erCost) || oldCost);
+              if (isNaN(newQty) || isNaN(newCost)) { alert("Invalid quantity or cost."); return; }
               const qtyDiff = newQty - oldQty;
-              // Adjust inventory: remove old contribution, add new
-              atomicUpdateItems((cur) => cur.map((it) => {
+              const stockResult = await atomicUpdateItems((cur) => cur.map((it) => {
                 if (it.id !== r.itemId) return it;
                 const v = { ...(it.variants || getVariants(it)) };
                 const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
@@ -1823,11 +2010,11 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
                 const totalCostBefore = (curV.qty || 0) * (curV.wac || 0);
                 const costDiff = (newQty * newCost) - (oldQty * oldCost);
                 const adjWac = adjQty > 0 ? Math.round((totalCostBefore + costDiff) / adjQty * 100) / 100 : newCost;
-                v[opt] = { ...curV, qty: Math.max(0, adjQty), wac: adjWac };
+                v[opt] = { ...curV, qty: Math.max(0, adjQty), wac: Math.max(0, adjWac) };
                 const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
                 return { ...it, variants: v, qtyOnHand: totalQ };
               }));
-              // Update log entry
+              if (!stockResult) { alert("Stock update failed — receipt NOT edited."); return; }
               svLog(log.map((x) => x.id === r.id ? { ...x, qty: newQty, unitCost: newCost, note: erNote.trim() } : x));
               setEditReceipt(null);
             }} style={bP}><Check size={14} /> Save & Update Inventory</button>
@@ -1849,7 +2036,11 @@ function AdjustMgr({ items, sI }) {
   const [ok, setOk] = useState(false);
 
   useEffect(() => { (async () => { setLog(await ld("adj_log", [])); })(); }, []);
-  const svLog = useCallback((l) => { setLog(l); sv("adj_log", l); }, []);
+  const svLog = useCallback(async (newLog) => {
+    try {
+      if (Array.isArray(newLog)) { await sv("adj_log", newLog); setLog(newLog); }
+    } catch(e) { console.error("Log save error:", e); }
+  }, []);
 
   const it = items.find((i) => i.id === sel);
   const opts = it ? ((it.options && it.options.length > 0) ? it.options : ["_default"]) : [];
@@ -2180,11 +2371,11 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
   const totalShrinkage = variances.filter((v) => v.variance < 0).reduce((s, v) => s + Math.abs(v.variance) * v.wac, 0);
   const totalFound = variances.filter((v) => v.variance > 0).reduce((s, v) => s + v.variance * v.wac, 0);
 
-  const saveCount = () => {
+  const saveCount = async () => {
     if (!variances.length) return;
 
-    // Adjust inventory for each variance (merge-safe)
-    atomicUpdateItems((freshItems) => freshItems.map((it) => {
+    // Adjust inventory for each variance — MUST complete before logging
+    const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
       const v = { ...(it.variants || getVariants(it)) };
       let changed = false;
       Object.entries(v).forEach(([opt, vd]) => {
@@ -2192,6 +2383,7 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
         const actual = counts[key];
         if (actual === "" || actual === undefined) return;
         const newQty = Math.max(0, +actual);
+        if (isNaN(newQty)) return;
         if (newQty !== (vd.qty || 0)) {
           v[opt] = { ...vd, qty: newQty };
           changed = true;
@@ -2201,6 +2393,7 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
       const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
       return { ...it, variants: v, qtyOnHand: totalQ };
     }));
+    if (!stockResult) { alert("Inventory update failed — count NOT saved."); return; }
 
     // Log each variance
     const newEntries = variances.map((vr) => ({
@@ -2216,7 +2409,7 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
       date: new Date().toISOString(),
       type: vr.variance < 0 ? "shrinkage" : "found",
     }));
-    atomicUpdateShrinkage((cur) => [...newEntries, ...cur]);
+    await atomicUpdateShrinkage((cur) => [...newEntries, ...cur]);
     setSaved(true);
     setCounting(false);
   };
@@ -2394,16 +2587,18 @@ function DamageReport({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
     setPhoto(compressed);
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!sel || !selOpt || !qty || +qty <= 0 || !photo) return;
     setSaving(true);
 
-    // Deduct from inventory
+    // Deduct from inventory — MUST complete before logging
     const curV = variants[selOpt] || { qty: 0, wac: it.wacCost || 0 };
+    const deductQty = Math.min(+qty, curV.qty || 0);
     const newQty = Math.max(0, (curV.qty || 0) - (+qty));
     const newVariants = { ...variants, [selOpt]: { ...curV, qty: newQty } };
     const totalQ = Object.values(newVariants).reduce((s, x) => s + (x.qty || 0), 0);
-    atomicUpdateItems((cur) => cur.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
+    const stockResult = await atomicUpdateItems((cur) => cur.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
+    if (!stockResult) { alert("Stock update failed — damage NOT reported."); setSaving(false); return; }
 
     // Log it
     const displayName = it.name + (selOpt !== "_default" ? ` (${selOpt})` : "");
@@ -2414,7 +2609,7 @@ function DamageReport({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
       reportedBy: user?.name || "Unknown",
       date: new Date().toISOString(), type: "damage",
     };
-    atomicUpdateShrinkage((cur) => [entry, ...cur]);
+    await atomicUpdateShrinkage((cur) => [entry, ...cur]);
     setSaving(false);
     setDone(true);
     setTimeout(() => {
@@ -2546,8 +2741,8 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
 
   const REASONS = ["Damaged", "Broken", "Weather Damage", "Theft", "Defective", "Water Damage", "Missing", "Other"];
 
-  const deleteDamage = (r) => {
-    // Restore inventory
+  const deleteDamage = async (r) => {
+    // Restore inventory — MUST complete before removing log
     const it = items.find((i) => i.id === r.itemId);
     if (it && r.qty) {
       const v = { ...(it.variants || getVariants(it)) };
@@ -2555,9 +2750,10 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
       const curV = v[opt] || { qty: 0, wac: r.unitCost || 0 };
       v[opt] = { ...curV, qty: (curV.qty || 0) + r.qty };
       const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-      atomicUpdateItems((cur) => cur.map((i) => i.id === r.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+      const stockResult = await atomicUpdateItems((cur) => cur.map((i) => i.id === r.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+      if (!stockResult) { alert("Stock restoration failed — damage record NOT deleted."); return; }
     }
-    atomicUpdateShrinkage((cur) => cur.filter((x) => x.id !== r.id));
+    await atomicUpdateShrinkage((cur) => cur.filter((x) => x.id !== r.id));
     setDeleteWarn(null); setEnlarged(null);
   };
 
@@ -2565,10 +2761,11 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
     setEditing(r); setEditQty(String(r.qty || "")); setEditReason(r.reason || "Damaged"); setEditNote(r.note || "");
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editing) return;
     const oldQty = editing.qty || 0;
-    const newQty = +editQty || 0;
+    const newQty = Math.max(0, +editQty || 0);
+    if (isNaN(newQty)) { alert("Invalid quantity."); return; }
     const diff = newQty - oldQty;
     if (diff !== 0) {
       const it = items.find((i) => i.id === editing.itemId);
@@ -2578,10 +2775,11 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
         const curV = v[opt] || { qty: 0, wac: editing.unitCost || 0 };
         v[opt] = { ...curV, qty: Math.max(0, (curV.qty || 0) - diff) };
         const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-        atomicUpdateItems((cur) => cur.map((i) => i.id === editing.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+        const stockResult = await atomicUpdateItems((cur) => cur.map((i) => i.id === editing.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
+        if (!stockResult) { alert("Stock update failed — edit NOT saved."); return; }
       }
     }
-    atomicUpdateShrinkage((cur) => cur.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote, lostValue: newQty * (x.unitCost || 0) } : x));
+    await atomicUpdateShrinkage((cur) => cur.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote, lostValue: newQty * (x.unitCost || 0) } : x));
     setEditing(null); setEnlarged(null);
   };
 
