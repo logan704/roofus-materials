@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49u8 - same-day dedup for audit
+// v49u8 - stock replay over-approval detection
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -5255,6 +5255,100 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
               <div style={{marginTop:14,padding:"12px 16px",background:C.wrn+"10",border:`1px solid ${C.wrn}33`,borderRadius:10}}>
                 <div style={{fontSize:12,fontWeight:700,color:C.wrn,marginBottom:4}}>⚠️ Why some numbers may be off</div>
                 <div style={{fontSize:12,color:C.t2}}>The audit calculates expected stock from all logged receives, approved orders, returns, and shrinkage. Any inventory that existed BEFORE the receive logging system was built will not appear as receives — the audit thinks those items were never received. For those items, use the "Set To" field to enter the correct quantity and click Fix individually.</div>
+              </div>
+
+              {/* ── STOCK REPLAY ── */}
+              <div style={{marginTop:24}}>
+                <div style={{fontSize:18,fontWeight:800,marginBottom:12,fontFamily:BC}}>Stock Replay — Over-Approval Detection</div>
+                <div style={{fontSize:12,color:C.t2,marginBottom:16}}>Replays every transaction in chronological order. Flags any moment an order deducted more than available stock.</div>
+                {(() => {
+                  // Build ALL transactions across all items chronologically
+                  const allTx = [];
+
+                  // Receives (deduplicated)
+                  dedupedLog.forEach(r => {
+                    allTx.push({ type: "receive", itemId: r.itemId, option: r.option || "_default", qty: +(r.qty)||0, date: r.date, label: "Received", detail: `+${+(r.qty)||0} @ ${fmt$(+(r.unitCost)||0)}` });
+                  });
+
+                  // Approved orders
+                  allApproved.filter(o => o.type === "order").forEach(o => {
+                    (o.lines || []).forEach(l => {
+                      allTx.push({ type: "order", itemId: l.itemId, option: l.option || "_default", qty: -(+(l.qty)||0), date: o.approvedDate || o.date, label: o.jobName || "No job", detail: `-${+(l.qty)||0}`, po: o.poNumber || "", job: o.jobName || "" });
+                    });
+                  });
+
+                  // Approved returns
+                  allApproved.filter(o => o.type === "return").forEach(o => {
+                    (o.lines || []).forEach(l => {
+                      allTx.push({ type: "return", itemId: l.itemId, option: l.option || "_default", qty: +(l.qty)||0, date: o.approvedDate || o.date, label: (o.jobName || "No job") + " Return", detail: `+${+(l.qty)||0}`, po: o.poNumber || "" });
+                    });
+                  });
+
+                  // Shrinkage
+                  (shrinkLog || []).forEach(r => {
+                    const qty = r.type === "found" ? (+(r.qty)||0) : -(+(r.qty)||0);
+                    allTx.push({ type: "shrinkage", itemId: r.itemId, option: r.option || "_default", qty, date: r.date, label: r.reason || "Shrinkage", detail: `${qty > 0 ? "+" : ""}${qty}` });
+                  });
+
+                  // Sort by date
+                  allTx.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+                  // Replay per item/option
+                  const violations = []; // { itemId, option, name, job, po, date, orderQty, stockBefore, stockAfter, overdrawn }
+                  const runningStock = {};
+
+                  allTx.forEach(tx => {
+                    const k = tx.itemId + ":" + tx.option;
+                    if (!runningStock[k]) runningStock[k] = 0;
+                    const before = runningStock[k];
+                    runningStock[k] += tx.qty;
+                    if (tx.type === "order" && runningStock[k] < 0) {
+                      const it = items.find(i => i.id === tx.itemId);
+                      const name = (it?.name || "?") + (tx.option !== "_default" ? ` (${tx.option})` : "");
+                      violations.push({
+                        name, job: tx.job || tx.label, po: tx.po || "", date: tx.date,
+                        orderQty: Math.abs(tx.qty), stockBefore: before,
+                        stockAfter: runningStock[k],
+                        overdrawn: Math.abs(runningStock[k])
+                      });
+                      runningStock[k] = 0; // Math.max(0) — what the system actually did
+                    }
+                  });
+
+                  const totalOverdrawn = violations.reduce((s, v) => s + v.overdrawn, 0);
+
+                  return (
+                    <div>
+                      <Rw g={14}>
+                        <Stat label="Over-Approvals Found" value={violations.length} color={violations.length > 0 ? C.red : C.grn} />
+                        <Stat label="Total Units Over-Deducted" value={totalOverdrawn} color={totalOverdrawn > 0 ? C.red : C.grn} />
+                      </Rw>
+
+                      {violations.length === 0 && <div style={{...crd,marginTop:16,padding:30,textAlign:"center"}}><CheckCircle size={40} color={C.grn} style={{marginBottom:12}}/><div style={{fontSize:18,fontWeight:700}}>No over-approvals detected</div><div style={{color:C.t2,fontSize:13}}>Every order had sufficient stock at the time of approval.</div></div>}
+
+                      {violations.length > 0 && <div style={{...crd,padding:0,marginTop:16}}><div style={{overflowX:"auto",maxHeight:500}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                          <thead><tr>{["Item","Job","PO","Date","Order Qty","Stock Before","Overdrawn"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+                          <tbody>{violations.map((v,i) => (
+                            <tr key={i} style={{borderBottom:`1px solid ${C.brd}`,background:C.red+"08"}}>
+                              <td style={{...tdS,fontWeight:700}}>{v.name}</td>
+                              <td style={{...tdS}}>{v.job}</td>
+                              <td style={{...tdS,fontSize:11,color:C.t2}}>{v.po||"—"}</td>
+                              <td style={{...tdS,fontSize:11}}>{fD(v.date)}</td>
+                              <td style={{...tdS,fontFamily:MN,fontWeight:700}}>{v.orderQty}</td>
+                              <td style={{...tdS,fontFamily:MN,fontWeight:700,color:C.wrn}}>{v.stockBefore}</td>
+                              <td style={{...tdS,fontFamily:MN,fontWeight:800,color:C.red}}>-{v.overdrawn}</td>
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      </div></div>}
+
+                      {violations.length > 0 && <div style={{marginTop:12,fontSize:11,color:C.t2,fontStyle:"italic"}}>
+                        These orders were approved when stock was insufficient. The system set stock to 0 instead of going negative. The "Overdrawn" column shows how many units were deducted beyond what was available. This cannot happen going forward — the stock check at approval now blocks insufficient stock.
+                      </div>}
+                    </div>
+                  );
+                })()}
               </div>
             </>}
           </div>
