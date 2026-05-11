@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49u7 - audit drill-down, coercion fix, atomic logs
+// v49u8 - same-day dedup for audit
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -5058,14 +5058,14 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
         // Build expected stock from all transactions
         const expected = {}; // key: itemId:option → { qty, name, receives, orders, returns, shrinkage }
 
-        // Check for duplicate inv_log entries (same item, same qty, same cost, within 5 seconds)
+        // Check for duplicate inv_log entries (same item, same qty, same cost, same DAY)
         const dedupedLog = [];
         const logSeen = new Set();
         invLog.forEach(r => {
-          const sig = r.itemId + ":" + (r.option||"_default") + ":" + (+r.qty) + ":" + (+r.unitCost);
-          const timeKey = sig + ":" + Math.floor(new Date(r.date).getTime() / 5000);
-          if (logSeen.has(timeKey)) return;
-          logSeen.add(timeKey);
+          const day = new Date(r.date).toISOString().slice(0, 10); // YYYY-MM-DD
+          const sig = r.itemId + ":" + (r.option||"_default") + ":" + (+r.qty) + ":" + (+r.unitCost) + ":" + day;
+          if (logSeen.has(sig)) return;
+          logSeen.add(sig);
           dedupedLog.push(r);
         });
         const dupeCount = invLog.length - dedupedLog.length;
