@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49u - return qty cap, 10 bug fixes, full data integrity
+// v49u4 - inventory audit tool, stock check on approval, return cap
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -462,6 +462,34 @@ export default function App() {
           }
         } catch(e) {}
       }
+      // ORDERS RESTORE CHECK
+      const backupOrders = localStorage.getItem("roofus_backup_orders");
+      if (o.length === 0 && backupOrders) {
+        try {
+          const parsed = JSON.parse(backupOrders);
+          if (parsed.length > 0) {
+            const retryO = await ld("orders", []);
+            if (retryO.length > 0) { setOrders(retryO); }
+            else if (confirm("Database returned 0 orders but a local backup has " + parsed.length + " orders. Restore from backup?")) {
+              setOrders(parsed); await sv("orders", parsed);
+            }
+          }
+        } catch(e) {}
+      }
+      // JOBS RESTORE CHECK
+      const backupJobs = localStorage.getItem("roofus_backup_jobs");
+      if (tj.length === 0 && backupJobs) {
+        try {
+          const parsed = JSON.parse(backupJobs);
+          if (parsed.length > 0) {
+            const retryJ = await ld("tracked_jobs", []);
+            if (retryJ.length > 0) { setTrackedJobs(retryJ); }
+            else if (confirm("Database returned 0 jobs but a local backup has " + parsed.length + " jobs. Restore from backup?")) {
+              setTrackedJobs(parsed); await sv("tracked_jobs", parsed);
+            }
+          }
+        } catch(e) {}
+      }
       // Migrate users to granular permissions
       const migrated2 = u.map(migratePerms);
       if (JSON.stringify(migrated2) !== JSON.stringify(u)) { setUsers(migrated2); await sv("users", migrated2); }
@@ -642,13 +670,14 @@ export default function App() {
     })();
   }, [rdy, user]);
 
-  const confirmNewJobs = () => {
+  const confirmNewJobs = async () => {
     const added = newJobsQueue.map(q => ({
       id: q.tempId, jnJobId: q.jnJobId, name: q.name, address: q.address,
       contractAmount: +newJobContracts[q.tempId] || 0, projectedGP: newJobGPUnknown[q.tempId] ? 0 : (+newJobGPs[q.tempId] || 35), gpUnknown: newJobGPUnknown[q.tempId] || false,
       status: "in_progress", costs: [], additionalCharges: [], notes: "", createdDate: new Date().toISOString(), completedDate: ""
     }));
-    atomicAddJobs(added);
+    const result = await atomicAddJobs(added);
+    if (!result) { alert("Failed to add jobs — check your internet."); return; }
     setNewJobsQueue([]);
   };
   const login = useCallback(async (u) => { setUser(u); setPg("home"); await svL("sess", { uid: u.id }); }, []);
@@ -794,7 +823,7 @@ export default function App() {
         {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
         {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
-        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} />}
+        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} />}
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
@@ -895,7 +924,7 @@ function Auth({ users, sU, atomicUpdateUsers, login }) {
   const [mode, setMode] = useState("login");
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [show, setShow] = useState(false); const [err, setErr] = useState("");
   const [pending, setPending] = useState(false);
-  const go = () => {
+  const go = async () => {
     setErr("");
     if (mode === "login") {
       const u = users.find((x) => x.email.toLowerCase() === email.toLowerCase().trim());
@@ -908,7 +937,8 @@ function Auth({ users, sU, atomicUpdateUsers, login }) {
       if (users.find((x) => x.email.toLowerCase() === email.toLowerCase().trim())) { setErr("Email taken."); return; }
       if (pw.length < 4) { setErr("4+ characters."); return; }
       const u = { id: uid(), name: name.trim(), email: email.trim().toLowerCase(), pw: hP(pw), role: "pending", created: new Date().toISOString() };
-      atomicUpdateUsers((cur) => [...cur, u]);
+      const result = await atomicUpdateUsers((cur) => [...cur, u]);
+      if (!result) { setErr("Failed to create account — check your internet."); return; }
       setPending(true);
     }
   };
@@ -1110,7 +1140,9 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
     const autoPoNumber = jobTrim ? `${jobTrim} ${poLabel} #${existingCount + 1}` : "";
     const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: Math.max(1, Math.round(+l.qty)), option: l.option, unitCost: Math.max(0, +l.unitCost || 0), markupCost: Math.max(0, +l.markupCost || 0), supplierCost: Math.max(0, +l.supplierCost || 0) })) };
     // Stock is NOT deducted at submit — only at approval
-    addOrder(ord); setDone(true);
+    const saved = await addOrder(ord);
+    if (saved) setDone(true);
+    else alert("Order failed to save — check your internet and try again.");
   };
 
   if (done) return (
@@ -1324,7 +1356,7 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
           <Fld label="Description (required)"><textarea value={osbDesc} onChange={(e)=>setOsbDesc(e.target.value)} placeholder={type==="return"?"e.g. Unused sheets, no damage found":"e.g. Water damage on north side of roof, replacing 3 sheets"} rows={3} style={{...inp,resize:"vertical",minHeight:80}}/></Fld>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}}>
             <button onClick={()=>setOsbPrompt(false)} style={{...bS,borderRadius:10}}>Cancel</button>
-            <button onClick={()=>{if(osbDesc.trim()){setOsbPrompt(false);setTimeout(submit,50);}}} disabled={!osbDesc.trim()} style={{...bP,borderRadius:10,opacity:osbDesc.trim()?1:0.5}}><Check size={14}/> Continue & Submit</button>
+            <button onClick={()=>{if(osbDesc.trim()){setOsbPrompt(false);submit();}}} disabled={!osbDesc.trim()} style={{...bP,borderRadius:10,opacity:osbDesc.trim()?1:0.5}}><Check size={14}/> Continue & Submit</button>
           </div>
         </div>
       </Modal>}
@@ -1380,7 +1412,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
           alert("RETURN BLOCKED — quantities exceed what was ordered for this job:\n\n" + overLines.join("\n") + "\n\nEdit the return quantities and try again.");
           return;
         }
-      } catch(e) { /* if check fails, continue with approval */ }
+      } catch(e) { alert("Cannot verify return quantities — check your internet and try again."); return; }
     }
 
     // Read FRESH items from DB for accurate WAC locking
@@ -1396,6 +1428,27 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       return { ...l, unitCost: wac, markupCost: (it.markup || 0) >= 100 ? wac : wac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
     });
     const approvedOrder = { ...order, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
+
+    // STOCK CHECK — block approval if any line would go negative (orders only, returns add stock)
+    if (order.type === "order") {
+      const shortages = [];
+      updatedLines.forEach((l) => {
+        const it = freshItems.find((i) => i.id === l.itemId);
+        if (!it) return;
+        const v = getVariants(it);
+        const opt = l.option || "_default";
+        const onHand = v[opt]?.qty || 0;
+        if (l.qty > onHand) {
+          const name = it.name + (opt !== "_default" ? ` (${opt})` : "");
+          shortages.push(`${name}: need ${l.qty}, only ${onHand} in stock`);
+        }
+      });
+      if (shortages.length) {
+        alert("INSUFFICIENT STOCK — cannot approve this order:\n\n" + shortages.join("\n") + "\n\nReceive more inventory or edit the order first.");
+        return;
+      }
+    }
+
     // Deduct/add stock at approval time — MUST complete before marking order approved
     const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
       const ls = updatedLines.filter((l) => l.itemId === it.id);
@@ -1422,9 +1475,9 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
       osbNoteId = await createOSBNote(approvedOrder);
     }
-    updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
+    await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
   };
-  const reject = (id) => { if (confirm("Reject this order?")) updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
+  const reject = async (id) => { if (confirm("Reject this order?")) await updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
   const deleteOrder = async (id) => {
     const ord = orders.find((o) => o.id === id);
     // GUARD: Verify order still exists in DB
@@ -1573,12 +1626,12 @@ function ItemMgr({ items, sI, atomicUpdateItems, atomicAddItem, atomicRemoveItem
           </table>
         </div>
       </div>
-      <ItemModal open={modal} onClose={() => setModal(null)} items={items} sI={sI} ed={modal && modal !== "new" ? modal : null} />
+      <ItemModal open={modal} onClose={() => setModal(null)} items={items} atomicUpdateItems={atomicUpdateItems} atomicAddItem={atomicAddItem} ed={modal && modal !== "new" ? modal : null} />
     </div>
   );
 }
 
-function ItemModal({ open, onClose, items, sI, ed }) {
+function ItemModal({ open, onClose, items, atomicUpdateItems, atomicAddItem, ed }) {
   const [name, setName] = useState(""); const [cat, setCat] = useState(CATS[0]); const [unit, setUnit] = useState(UNITS[0]);
   const [cost, setCost] = useState(""); const [mk, setMk] = useState("25");
   const [optStr, setOptStr] = useState("");
@@ -1612,7 +1665,7 @@ function ItemModal({ open, onClose, items, sI, ed }) {
     setVariantMinStocks((prev) => ({ ...prev, [opt]: val }));
   };
 
-  const save = () => {
+  const save = async () => {
     if (!name.trim() || !cost) return;
     const opts = parsedOpts;
     if (ed) {
@@ -1624,11 +1677,13 @@ function ItemModal({ open, onClose, items, sI, ed }) {
         updatedVariants[o] = { ...existing, minStock: +(variantMinStocks[o] || 0) || 0 };
       });
       const totalQ = Object.values(updatedVariants).reduce((s, x) => s + (x.qty || 0), 0);
-      atomicUpdateItems((cur) => cur.map((i) => i.id === ed.id ? { ...i, name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, options: opts, variants: updatedVariants, qtyOnHand: totalQ } : i));
+      const result = await atomicUpdateItems((cur) => cur.map((i) => i.id === ed.id ? { ...i, name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, options: opts, variants: updatedVariants, qtyOnHand: totalQ } : i));
+      if (!result) { alert("Failed to save item."); return; }
     } else {
       const initVariants = {};
       effectiveOpts.forEach((o) => { initVariants[o] = { qty: 0, wac: +cost, minStock: +(variantMinStocks[o] || 0) || 0 }; });
-      atomicAddItem({ id: uid(), name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, qtyOnHand: 0, active: true, options: opts, variants: initVariants });
+      const result = await atomicAddItem({ id: uid(), name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, qtyOnHand: 0, active: true, options: opts, variants: initVariants });
+      if (!result) { alert("Failed to add item."); return; }
     }
     onClose();
   };
@@ -3211,9 +3266,9 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
   const knownBidJobs = allCalc.filter(j=>!j.gpUnknown && (j.projectedGP||0) > 0);
   const avgBidGP = knownBidJobs.length ? knownBidJobs.reduce((s,j)=>s+(j.projectedGP||0),0)/knownBidJobs.length : 0;
 
-  const addJob = () => { if (!nName.trim()) return; const newJob = { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }; atomicUpdateJobs((cur) => [...cur, newJob]); setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
+  const addJob = async () => { if (!nName.trim()) return; const newJob = { id:uid(), jnJobId:nJnId, name:nName.trim(), address:nAddr.trim(), contractAmount:+nContract||0, projectedGP:nGPUnknown?0:(+nGP||0), gpUnknown:nGPUnknown, status:"in_progress", costs:[], additionalCharges:[], notes:"", createdDate:new Date().toISOString(), completedDate:"" }; const result = await atomicUpdateJobs((cur) => [...cur, newJob]); if (!result) { alert("Failed to add job — check your internet."); return; } setNName(""); setNAddr(""); setNContract(""); setNGP("35"); setNGPUnknown(false); setNJnId(""); setJnSearch(""); setAddModal(false); };
   const [closedExpenseConfirm, setClosedExpenseConfirm] = useState(null); // {type, jid}
-  const addCost = (jid) => {
+  const addCost = async (jid) => {
     if (!cDesc.trim()||!cAmt) return;
     const job = jobs.find(j=>j.id===jid);
     if (job && job.status === "closed" && !closedExpenseConfirm) {
@@ -3222,17 +3277,19 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
     const amt = +cAmt||0;
     const cat = cCat;
     const desc = cDesc.trim();
-    atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()}]}:j));
+    const result = await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()}]}:j));
+    if (!result) { alert("Failed to save cost — check your internet."); return; }
     setCostConfirm({ category: cat, amount: amt, jobName: job?.name || "" });
     setTimeout(() => setCostConfirm(null), 3000);
     setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
   };
   const deleteCost = (jid,cid) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
   const startEditCost = (jid, c) => { setEditingCost({ jid, cid: c.id, category: c.category, description: c.description, amount: c.amount }); };
-  const saveEditCost = () => {
+  const saveEditCost = async () => {
     if (!editingCost) return;
     const { jid, cid, category, description, amount } = editingCost;
-    atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, costs: (j.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c) } : j));
+    const result = await atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, costs: (j.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c) } : j));
+    if (!result) { alert("Failed to save cost edit."); return; }
     setEditingCost(null);
   };
   const addAddlCharge = (jid) => {
@@ -3241,12 +3298,13 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
     if (job && job.status === "closed" && !closedExpenseConfirm) {
       setClosedExpenseConfirm({ type: "charge", jid }); return;
     }
-    atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)); setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null);
+    atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)).then(result => { if (result) { setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null); } else { alert("Failed to save charge."); } });
   };
   const deleteAddlCharge = (jid,cid) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j)); };
   const updateJob = (jid,upd) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,...upd}:j)); };
-  const hideInvoice = (jid, invId) => {
-    atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j));
+  const hideInvoice = async (jid, invId) => {
+    const result = await atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j));
+    if (!result) { alert("Failed to hide invoice."); return; }
     setHideInvConfirm(null);
   };
 
@@ -3769,7 +3827,7 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
 }
 
 // ═══ REPORTS ═══
-function Reports({ orders, items, shrinkLog }) {
+function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
   const [tab, setTab] = useState("dash");
   const [range, setRange] = useState("30");
   const [catF, setCatF] = useState("All");
@@ -3784,6 +3842,8 @@ function Reports({ orders, items, shrinkLog }) {
   const [scRange, setScRange] = useState("90");
   const [scStart, setScStart] = useState("");
   const [scEnd, setScEnd] = useState("");
+  const [fixing, setFixing] = useState(false);
+  const [fixed, setFixed] = useState(false);
 
   useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); })(); }, []);
 
@@ -3837,7 +3897,7 @@ function Reports({ orders, items, shrinkLog }) {
   const tabs = [
     { k: "dash", l: "Dashboard" }, { k: "inv", l: "Inventory" }, { k: "move", l: "Movement" }, { k: "purchases", l: "Purchases" },
     { k: "aging", l: "Aging" }, { k: "sales", l: "Sales" }, { k: "reorder", l: "Reorder" },
-    { k: "margin", l: "Margin" }, { k: "shrink", l: "Shrinkage" }, { k: "savings", l: "Savings vs Supplier" }, { k: "sva", l: "Shingles vs Accessories" }, { k: "shingleColors", l: "Shingle Colors" }, { k: "jobs", l: "By Job" },
+    { k: "margin", l: "Margin" }, { k: "shrink", l: "Shrinkage" }, { k: "savings", l: "Savings vs Supplier" }, { k: "sva", l: "Shingles vs Accessories" }, { k: "shingleColors", l: "Shingle Colors" }, { k: "jobs", l: "By Job" }, { k: "audit", l: "🔍 Audit" },
   ];
 
   const thS = { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card };
@@ -4986,11 +5046,150 @@ function Reports({ orders, items, shrinkLog }) {
           </div>
         );
       })()}
+
+      {/* ── AUDIT ── */}
+      {tab === "audit" && (() => {
+
+        // Build expected stock from all transactions
+        const expected = {}; // key: itemId:option → { qty, name }
+
+        // 1. Add all receives from inv_log
+        invLog.forEach(r => {
+          const k = r.itemId + ":" + (r.option || "_default");
+          if (!expected[k]) expected[k] = { qty: 0, itemId: r.itemId, option: r.option || "_default", name: r.itemName || "?" };
+          expected[k].qty += (r.qty || 0);
+        });
+
+        // 2. Subtract all approved orders
+        appOrders.filter(o => o.type === "order").forEach(o => {
+          (o.lines || []).forEach(l => {
+            const k = l.itemId + ":" + (l.option || "_default");
+            const it = items.find(i => i.id === l.itemId);
+            if (!expected[k]) expected[k] = { qty: 0, itemId: l.itemId, option: l.option || "_default", name: (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "") };
+            expected[k].qty -= (l.qty || 0);
+          });
+        });
+
+        // 3. Add all approved returns
+        appOrders.filter(o => o.type === "return").forEach(o => {
+          (o.lines || []).forEach(l => {
+            const k = l.itemId + ":" + (l.option || "_default");
+            const it = items.find(i => i.id === l.itemId);
+            if (!expected[k]) expected[k] = { qty: 0, itemId: l.itemId, option: l.option || "_default", name: (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "") };
+            expected[k].qty += (l.qty || 0);
+          });
+        });
+
+        // 4. Subtract shrinkage/damage
+        (shrinkLog || []).forEach(r => {
+          if (r.type === "found") return; // found items ADD stock
+          const k = r.itemId + ":" + (r.option || "_default");
+          if (!expected[k]) expected[k] = { qty: 0, itemId: r.itemId, option: r.option || "_default", name: r.itemName || "?" };
+          expected[k].qty -= (r.qty || 0);
+        });
+
+        // 4b. Add "found" items from physical counts
+        (shrinkLog || []).forEach(r => {
+          if (r.type !== "found") return;
+          const k = r.itemId + ":" + (r.option || "_default");
+          if (!expected[k]) expected[k] = { qty: 0, itemId: r.itemId, option: r.option || "_default", name: r.itemName || "?" };
+          expected[k].qty += (r.qty || 0);
+        });
+
+        // 5. Compare to current stock
+        const discrepancies = [];
+        let totalOverstated = 0;
+        let totalUnderstated = 0;
+
+        items.forEach(it => {
+          const v = getVariants(it);
+          Object.entries(v).forEach(([opt, vd]) => {
+            const k = it.id + ":" + opt;
+            const currentQty = vd.qty || 0;
+            const expectedQty = expected[k] ? Math.max(0, expected[k].qty) : 0;
+            const diff = currentQty - expectedQty;
+            if (Math.abs(diff) >= 1) {
+              const wac = vd.wac || it.wacCost || 0;
+              const name = it.name + (opt !== "_default" ? ` (${opt})` : "");
+              discrepancies.push({ itemId: it.id, option: opt, name, currentQty, expectedQty, diff, dollarImpact: diff * wac, wac });
+              if (diff > 0) totalOverstated += diff * wac;
+              else totalUnderstated += Math.abs(diff) * wac;
+            }
+          });
+        });
+
+        discrepancies.sort((a, b) => Math.abs(b.dollarImpact) - Math.abs(a.dollarImpact));
+
+        const fixAll = async () => {
+          if (!confirm("This will correct ALL " + discrepancies.length + " items to their calculated stock levels. This cannot be undone. Continue?")) return;
+          setFixing(true);
+          const fixMap = {};
+          discrepancies.forEach(d => { fixMap[d.itemId + ":" + d.option] = d.expectedQty; });
+          await atomicUpdateItems((cur) => cur.map(it => {
+            const v = { ...(getVariants(it)) };
+            let changed = false;
+            Object.entries(v).forEach(([opt, vd]) => {
+              const k = it.id + ":" + opt;
+              if (fixMap[k] !== undefined && (vd.qty || 0) !== fixMap[k]) {
+                v[opt] = { ...vd, qty: Math.max(0, fixMap[k]) };
+                changed = true;
+              }
+            });
+            if (!changed) return it;
+            const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+            return { ...it, variants: v, qtyOnHand: totalQ };
+          }));
+          setFixing(false);
+          setFixed(true);
+        };
+
+        return (
+          <div>
+            <Rw g={14}>
+              <Stat label="Discrepancies Found" value={discrepancies.length} color={discrepancies.length > 0 ? C.red : C.grn} />
+              <Stat label="Overstated Value" value={fmt$(totalOverstated)} sub="more stock than expected" color={totalOverstated > 0 ? C.wrn : C.grn} />
+              <Stat label="Understated Value" value={fmt$(totalUnderstated)} sub="less stock than expected" color={totalUnderstated > 0 ? C.red : C.grn} />
+              <Stat label="Items Audited" value={items.length} color={C.blu} />
+            </Rw>
+
+            {fixed && <div style={{marginTop:16,padding:"14px 20px",background:C.grn+"12",border:`1px solid ${C.grn}33`,borderRadius:10,fontWeight:700,color:C.grn,textAlign:"center"}}>All stock levels corrected successfully. Refresh to verify.</div>}
+
+            {discrepancies.length === 0 && !fixed && <div style={{...crd,marginTop:16,padding:30,textAlign:"center"}}><CheckCircle size={40} color={C.grn} style={{marginBottom:12}}/><div style={{fontSize:18,fontWeight:700,marginBottom:4}}>Inventory is clean</div><div style={{color:C.t2,fontSize:13}}>All current stock levels match the calculated values from receives, orders, returns, and shrinkage.</div></div>}
+
+            {discrepancies.length > 0 && <>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16,marginBottom:8}}>
+                <div style={{fontSize:14,fontWeight:700,color:C.red}}>{discrepancies.length} items need correction</div>
+                <button onClick={fixAll} disabled={fixing || fixed} style={{...bD,borderRadius:10,padding:"10px 20px",fontSize:13,opacity:fixing||fixed?0.5:1}}>{fixing ? "Fixing..." : fixed ? "Fixed!" : "Fix All Discrepancies"}</button>
+              </div>
+
+              <div style={{...crd,padding:0}}><div style={{overflowX:"auto",maxHeight:600}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr>{["Item","Current Stock","Expected Stock","Difference","WAC","$ Impact","Status"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+                  <tbody>{discrepancies.map((d,i) => (
+                    <tr key={i} style={{borderBottom:`1px solid ${C.brd}`,background:d.diff>0?C.wrn+"08":C.red+"08"}}>
+                      <td style={{...tdS,fontWeight:700}}>{d.name}</td>
+                      <td style={{...tdS,fontFamily:MN,fontWeight:700}}>{d.currentQty}</td>
+                      <td style={{...tdS,fontFamily:MN,fontWeight:700,color:C.blu}}>{d.expectedQty}</td>
+                      <td style={{...tdS,fontFamily:MN,fontWeight:800,color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "+" : ""}{d.diff}</td>
+                      <td style={{...tdS,fontFamily:MN}}>{fmt$(d.wac)}</td>
+                      <td style={{...tdS,fontFamily:MN,fontWeight:700,color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "+" : ""}{fmt$(d.dollarImpact)}</td>
+                      <td style={{...tdS}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:d.diff>0?C.wrn+"15":C.red+"15",color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "OVERSTATED" : "UNDERSTATED"}</span></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div></div>
+
+              <div style={{fontSize:11,color:C.t2,marginTop:12,fontStyle:"italic"}}>
+                Expected stock = all receives − all approved orders + all approved returns − all shrinkage/damage + physical count adjustments. Overstated means you have MORE stock in the system than you should. Understated means you have LESS.
+              </div>
+            </>}
+          </div>
+        );
+      })()}
+
     </div>
   );
 }
-
-// ═══ SETTINGS PAGE ═══
 function SettingsPage({ users, sU, atomicUpdateUsers, me, items, orders, templates, shrinkLog }) {
   const ROLES = ["admin", "manager", "user"];
   const [deleteConfirm, setDeleteConfirm] = useState(null);
