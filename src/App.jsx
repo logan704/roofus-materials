@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49u4 - inventory audit tool, stock check on approval, return cap
+// v49u7 - audit drill-down, coercion fix, atomic logs
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -1797,10 +1797,12 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
   const [erNote, setErNote] = useState("");
 
   useEffect(() => { (async () => { setLog(await ld("inv_log", [])); })(); }, []);
-  const svLog = useCallback(async (newLog) => {
-    // Atomic log save — read fresh, apply transform, write
+  const svLog = useCallback(async (transformFn) => {
+    // ATOMIC: read fresh log from DB, apply transform, write back
     try {
-      if (Array.isArray(newLog)) { await sv("inv_log", newLog); setLog(newLog); }
+      const fresh = await ld("inv_log", []);
+      const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
+      if (Array.isArray(result)) { await sv("inv_log", result); setLog(result); }
     } catch(e) { console.error("Log save error:", e); }
   }, []);
 
@@ -1851,7 +1853,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
       return updatedItems;
     });
 
-    svLog([...newLogEntries, ...log]);
+    await svLog((fresh) => [...newLogEntries, ...fresh]);
     setDone(true);
     setTimeout(() => { setDone(false); setLines([]); setNote(""); }, 2000);
   };
@@ -2028,7 +2030,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
                   return { ...it, variants: v, qtyOnHand: totalQ };
                 }));
                 if (!stockResult) { alert("Stock update failed — receipt NOT deleted."); return; }
-                svLog(log.filter((x) => x.id !== r.id));
+                await svLog((fresh) => fresh.filter((x) => x.id !== r.id));
                 setDeleteReceipt(null);
               }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Update Inventory</button>
             </div>
@@ -2070,7 +2072,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
                 return { ...it, variants: v, qtyOnHand: totalQ };
               }));
               if (!stockResult) { alert("Stock update failed — receipt NOT edited."); return; }
-              svLog(log.map((x) => x.id === r.id ? { ...x, qty: newQty, unitCost: newCost, note: erNote.trim() } : x));
+              await svLog((fresh) => fresh.map((x) => x.id === r.id ? { ...x, qty: newQty, unitCost: newCost, note: erNote.trim() } : x));
               setEditReceipt(null);
             }} style={bP}><Check size={14} /> Save & Update Inventory</button>
           </div>
@@ -2091,9 +2093,11 @@ function AdjustMgr({ items, sI }) {
   const [ok, setOk] = useState(false);
 
   useEffect(() => { (async () => { setLog(await ld("adj_log", [])); })(); }, []);
-  const svLog = useCallback(async (newLog) => {
+  const svLog = useCallback(async (transformFn) => {
     try {
-      if (Array.isArray(newLog)) { await sv("adj_log", newLog); setLog(newLog); }
+      const fresh = await ld("adj_log", []);
+      const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
+      if (Array.isArray(result)) { await sv("adj_log", result); setLog(result); }
     } catch(e) { console.error("Log save error:", e); }
   }, []);
 
@@ -2117,7 +2121,7 @@ function AdjustMgr({ items, sI }) {
     atomicUpdateItems((cur) => cur.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
 
     const displayName = it.name + (selOpt !== "_default" ? ` (${selOpt})` : "");
-    svLog([{ id: uid(), itemId: sel, itemName: displayName, option: selOpt, qty: removeQty, wacAtTime: curV.wac, lostValue, reason, note: note.trim(), date: new Date().toISOString() }, ...log]);
+    svLog((fresh) => [{ id: uid(), itemId: sel, itemName: displayName, option: selOpt, qty: removeQty, wacAtTime: curV.wac, lostValue, reason, note: note.trim(), date: new Date().toISOString() }, ...fresh]);
     setOk(true);
     setTimeout(() => { setOk(false); setSel(""); setSelOpt(""); setQty(""); setNote(""); }, 1800);
   };
@@ -3844,6 +3848,7 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
   const [scEnd, setScEnd] = useState("");
   const [fixing, setFixing] = useState(false);
   const [fixed, setFixed] = useState(false);
+  const [auditDetail, setAuditDetail] = useState(null); // {itemId, option, name}
 
   useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); })(); }, []);
 
@@ -5051,49 +5056,67 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
       {tab === "audit" && (() => {
 
         // Build expected stock from all transactions
-        const expected = {}; // key: itemId:option → { qty, name }
+        const expected = {}; // key: itemId:option → { qty, name, receives, orders, returns, shrinkage }
 
-        // 1. Add all receives from inv_log
+        // Check for duplicate inv_log entries (same item, same qty, same cost, within 5 seconds)
+        const dedupedLog = [];
+        const logSeen = new Set();
         invLog.forEach(r => {
+          const sig = r.itemId + ":" + (r.option||"_default") + ":" + (+r.qty) + ":" + (+r.unitCost);
+          const timeKey = sig + ":" + Math.floor(new Date(r.date).getTime() / 5000);
+          if (logSeen.has(timeKey)) return;
+          logSeen.add(timeKey);
+          dedupedLog.push(r);
+        });
+        const dupeCount = invLog.length - dedupedLog.length;
+
+        const ensureKey = (k, itemId, option, name) => {
+          if (!expected[k]) expected[k] = { qty: 0, itemId, option, name, receives: [], orders: [], returns: [], shrinkage: [] };
+        };
+
+        // 1. Add all receives (deduplicated, coerced to number)
+        dedupedLog.forEach(r => {
           const k = r.itemId + ":" + (r.option || "_default");
-          if (!expected[k]) expected[k] = { qty: 0, itemId: r.itemId, option: r.option || "_default", name: r.itemName || "?" };
-          expected[k].qty += (r.qty || 0);
+          ensureKey(k, r.itemId, r.option || "_default", r.itemName || "?");
+          const qty = +(r.qty) || 0;
+          expected[k].qty += qty;
+          expected[k].receives.push({ qty, cost: +(r.unitCost)||0, date: r.date, note: r.note||"" });
         });
 
-        // 2. Subtract all approved orders
-        appOrders.filter(o => o.type === "order").forEach(o => {
+        // 2. Subtract ALL approved orders
+        const allApproved = orders.filter(o => o.status === "approved");
+        allApproved.filter(o => o.type === "order").forEach(o => {
           (o.lines || []).forEach(l => {
             const k = l.itemId + ":" + (l.option || "_default");
             const it = items.find(i => i.id === l.itemId);
-            if (!expected[k]) expected[k] = { qty: 0, itemId: l.itemId, option: l.option || "_default", name: (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "") };
-            expected[k].qty -= (l.qty || 0);
+            const name = (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "");
+            ensureKey(k, l.itemId, l.option || "_default", name);
+            const qty = +(l.qty) || 0;
+            expected[k].qty -= qty;
+            expected[k].orders.push({ qty, po: o.poNumber||"", job: o.jobName||"", date: o.approvedDate||o.date });
           });
         });
 
-        // 3. Add all approved returns
-        appOrders.filter(o => o.type === "return").forEach(o => {
+        // 3. Add ALL approved returns
+        allApproved.filter(o => o.type === "return").forEach(o => {
           (o.lines || []).forEach(l => {
             const k = l.itemId + ":" + (l.option || "_default");
             const it = items.find(i => i.id === l.itemId);
-            if (!expected[k]) expected[k] = { qty: 0, itemId: l.itemId, option: l.option || "_default", name: (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "") };
-            expected[k].qty += (l.qty || 0);
+            const name = (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "");
+            ensureKey(k, l.itemId, l.option || "_default", name);
+            const qty = +(l.qty) || 0;
+            expected[k].qty += qty;
+            expected[k].returns.push({ qty, po: o.poNumber||"", job: o.jobName||"", date: o.approvedDate||o.date });
           });
         });
 
-        // 4. Subtract shrinkage/damage
+        // 4. Subtract shrinkage/damage, add found
         (shrinkLog || []).forEach(r => {
-          if (r.type === "found") return; // found items ADD stock
           const k = r.itemId + ":" + (r.option || "_default");
-          if (!expected[k]) expected[k] = { qty: 0, itemId: r.itemId, option: r.option || "_default", name: r.itemName || "?" };
-          expected[k].qty -= (r.qty || 0);
-        });
-
-        // 4b. Add "found" items from physical counts
-        (shrinkLog || []).forEach(r => {
-          if (r.type !== "found") return;
-          const k = r.itemId + ":" + (r.option || "_default");
-          if (!expected[k]) expected[k] = { qty: 0, itemId: r.itemId, option: r.option || "_default", name: r.itemName || "?" };
-          expected[k].qty += (r.qty || 0);
+          ensureKey(k, r.itemId, r.option || "_default", r.itemName || "?");
+          const qty = +(r.qty) || 0;
+          if (r.type === "found") { expected[k].qty += qty; expected[k].shrinkage.push({ qty, type: "found", reason: r.reason||"", date: r.date }); }
+          else { expected[k].qty -= qty; expected[k].shrinkage.push({ qty: -qty, type: r.type||"shrinkage", reason: r.reason||"", date: r.date }); }
         });
 
         // 5. Compare to current stock
@@ -5119,6 +5142,18 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
         });
 
         discrepancies.sort((a, b) => Math.abs(b.dollarImpact) - Math.abs(a.dollarImpact));
+
+        const fixOne = async (d, overrideQty) => {
+          const targetQty = overrideQty !== undefined ? Math.max(0, +overrideQty) : d.expectedQty;
+          if (isNaN(targetQty)) { alert("Invalid quantity."); return; }
+          await atomicUpdateItems((cur) => cur.map(it => {
+            if (it.id !== d.itemId) return it;
+            const v = { ...(getVariants(it)) };
+            if (v[d.option]) v[d.option] = { ...v[d.option], qty: targetQty };
+            const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
+            return { ...it, variants: v, qtyOnHand: totalQ };
+          }));
+        };
 
         const fixAll = async () => {
           if (!confirm("This will correct ALL " + discrepancies.length + " items to their calculated stock levels. This cannot be undone. Continue?")) return;
@@ -5154,6 +5189,11 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
 
             {fixed && <div style={{marginTop:16,padding:"14px 20px",background:C.grn+"12",border:`1px solid ${C.grn}33`,borderRadius:10,fontWeight:700,color:C.grn,textAlign:"center"}}>All stock levels corrected successfully. Refresh to verify.</div>}
 
+            {dupeCount > 0 && <div style={{marginTop:16,padding:"12px 16px",background:C.red+"10",border:`1px solid ${C.red}33`,borderRadius:10}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:4}}>⚠️ {dupeCount} duplicate receive log entries detected and excluded</div>
+              <div style={{fontSize:12,color:C.t2}}>The race condition that was fixed caused some receives to be logged twice. The audit has automatically excluded these duplicates from the calculation.</div>
+            </div>}
+
             {discrepancies.length === 0 && !fixed && <div style={{...crd,marginTop:16,padding:30,textAlign:"center"}}><CheckCircle size={40} color={C.grn} style={{marginBottom:12}}/><div style={{fontSize:18,fontWeight:700,marginBottom:4}}>Inventory is clean</div><div style={{color:C.t2,fontSize:13}}>All current stock levels match the calculated values from receives, orders, returns, and shrinkage.</div></div>}
 
             {discrepancies.length > 0 && <>
@@ -5164,23 +5204,57 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
 
               <div style={{...crd,padding:0}}><div style={{overflowX:"auto",maxHeight:600}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead><tr>{["Item","Current Stock","Expected Stock","Difference","WAC","$ Impact","Status"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
-                  <tbody>{discrepancies.map((d,i) => (
-                    <tr key={i} style={{borderBottom:`1px solid ${C.brd}`,background:d.diff>0?C.wrn+"08":C.red+"08"}}>
-                      <td style={{...tdS,fontWeight:700}}>{d.name}</td>
+                  <thead><tr>{["Item","Current","Expected","Diff","WAC","$ Impact","Status","Set To",""].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+                  <tbody>{discrepancies.map((d,i) => {
+                    const expData = expected[d.itemId + ":" + d.option];
+                    const isOpen = auditDetail && auditDetail.itemId === d.itemId && auditDetail.option === d.option;
+                    return (<React.Fragment key={i}>
+                    <tr style={{borderBottom:`1px solid ${C.brd}`,background:d.diff>0?C.wrn+"08":C.red+"08",cursor:"pointer"}} onClick={()=>setAuditDetail(isOpen?null:{itemId:d.itemId,option:d.option,name:d.name})}>
+                      <td style={{...tdS,fontWeight:700}}>{isOpen?"▼ ":"▶ "}{d.name}</td>
                       <td style={{...tdS,fontFamily:MN,fontWeight:700}}>{d.currentQty}</td>
                       <td style={{...tdS,fontFamily:MN,fontWeight:700,color:C.blu}}>{d.expectedQty}</td>
                       <td style={{...tdS,fontFamily:MN,fontWeight:800,color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "+" : ""}{d.diff}</td>
                       <td style={{...tdS,fontFamily:MN}}>{fmt$(d.wac)}</td>
                       <td style={{...tdS,fontFamily:MN,fontWeight:700,color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "+" : ""}{fmt$(d.dollarImpact)}</td>
-                      <td style={{...tdS}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:d.diff>0?C.wrn+"15":C.red+"15",color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "OVERSTATED" : "UNDERSTATED"}</span></td>
+                      <td style={{...tdS}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:d.diff>0?C.wrn+"15":C.red+"15",color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "OVER" : "UNDER"}</span></td>
+                      <td style={{...tdS}}><input id={"fix_"+i} type="number" defaultValue={d.expectedQty} onFocus={(e)=>e.target.select()} onClick={(e)=>e.stopPropagation()} style={{width:60,padding:"4px 6px",borderRadius:6,border:`1px solid ${C.brd}`,fontFamily:MN,fontSize:12,textAlign:"center"}}/></td>
+                      <td style={{...tdS}}><button onClick={(e)=>{e.stopPropagation();const v=document.getElementById("fix_"+i).value;fixOne(d,v);}} style={{padding:"4px 10px",borderRadius:6,border:"none",background:NAVY,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Fix</button></td>
                     </tr>
-                  ))}</tbody>
+                    {isOpen && expData && <tr><td colSpan={9} style={{padding:"12px 20px",background:C.sf,borderBottom:`2px solid ${C.brd}`}}>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                        <div>
+                          <div style={{fontSize:11,fontWeight:800,color:C.grn,marginBottom:6,textTransform:"uppercase"}}>Receives ({expData.receives.length} entries, total +{expData.receives.reduce((s,r)=>s+r.qty,0)})</div>
+                          {expData.receives.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>+{r.qty} @ {fmt$(r.cost)} — {fD(r.date)} {r.note&&<span style={{color:C.t2}}>({r.note})</span>}</div>)}
+                          {!expData.receives.length&&<div style={{fontSize:11,color:C.t2}}>No receives logged</div>}
+                        </div>
+                        <div>
+                          <div style={{fontSize:11,fontWeight:800,color:C.red,marginBottom:6,textTransform:"uppercase"}}>Orders ({expData.orders.length} entries, total -{expData.orders.reduce((s,r)=>s+r.qty,0)})</div>
+                          {expData.orders.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>-{r.qty} — {r.job||"No job"} {r.po&&`(${r.po})`} — {fD(r.date)}</div>)}
+                          {!expData.orders.length&&<div style={{fontSize:11,color:C.t2}}>No orders</div>}
+                        </div>
+                        <div>
+                          <div style={{fontSize:11,fontWeight:800,color:C.blu,marginBottom:6,textTransform:"uppercase"}}>Returns ({expData.returns.length} entries, total +{expData.returns.reduce((s,r)=>s+r.qty,0)})</div>
+                          {expData.returns.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>+{r.qty} — {r.job||"No job"} — {fD(r.date)}</div>)}
+                          {!expData.returns.length&&<div style={{fontSize:11,color:C.t2}}>No returns</div>}
+                        </div>
+                        <div>
+                          <div style={{fontSize:11,fontWeight:800,color:C.wrn,marginBottom:6,textTransform:"uppercase"}}>Shrinkage/Damage ({expData.shrinkage.length} entries)</div>
+                          {expData.shrinkage.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>{r.qty>0?"+":""}{r.qty} — {r.reason||r.type} — {fD(r.date)}</div>)}
+                          {!expData.shrinkage.length&&<div style={{fontSize:11,color:C.t2}}>None</div>}
+                        </div>
+                      </div>
+                      <div style={{marginTop:10,padding:"8px 12px",background:NAVY+"08",borderRadius:8,fontSize:11,fontFamily:MN}}>
+                        <strong>Math:</strong> {expData.receives.reduce((s,r)=>s+r.qty,0)} received − {expData.orders.reduce((s,r)=>s+r.qty,0)} ordered + {expData.returns.reduce((s,r)=>s+r.qty,0)} returned − {Math.abs(expData.shrinkage.filter(r=>r.qty<0).reduce((s,r)=>s+r.qty,0))} shrinkage = {d.expectedQty} expected vs {d.currentQty} actual
+                      </div>
+                    </td></tr>}
+                    </React.Fragment>);
+                  })}</tbody>
                 </table>
               </div></div>
 
-              <div style={{fontSize:11,color:C.t2,marginTop:12,fontStyle:"italic"}}>
-                Expected stock = all receives − all approved orders + all approved returns − all shrinkage/damage + physical count adjustments. Overstated means you have MORE stock in the system than you should. Understated means you have LESS.
+              <div style={{marginTop:14,padding:"12px 16px",background:C.wrn+"10",border:`1px solid ${C.wrn}33`,borderRadius:10}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.wrn,marginBottom:4}}>⚠️ Why some numbers may be off</div>
+                <div style={{fontSize:12,color:C.t2}}>The audit calculates expected stock from all logged receives, approved orders, returns, and shrinkage. Any inventory that existed BEFORE the receive logging system was built will not appear as receives — the audit thinks those items were never received. For those items, use the "Set To" field to enter the correct quantity and click Fix individually.</div>
               </div>
             </>}
           </div>
