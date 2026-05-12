@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v49u8 - stock replay over-approval detection
+// v50b - fix white screen crash in GP reports, live cost updates, page persist
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -408,7 +408,10 @@ export default function App() {
   const [templates, setTemplates] = useState([]);
   const [shrinkLog, setShrinkLog] = useState([]);
   const [trackedJobs, setTrackedJobs] = useState([]);
-  const [pg, setPg] = useState("home");
+  const [pg, setPgRaw] = useState(() => {
+    try { const saved = localStorage.getItem("roofus_pg"); return saved || "home"; } catch { return "home"; }
+  });
+  const setPg = useCallback((p) => { setPgRaw(p); try { localStorage.setItem("roofus_pg", p); } catch {} }, []);
   const [vOrd, setVOrd] = useState(null);
   const [startTpl, setStartTpl] = useState(null);
 
@@ -3281,19 +3284,26 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
     const amt = +cAmt||0;
     const cat = cCat;
     const desc = cDesc.trim();
-    const result = await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),{id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()}]}:j));
+    const newCost = {id:uid(),category:cat,description:desc,amount:amt,date:new Date().toISOString()};
+    const result = await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:[...(j.costs||[]),newCost]}:j));
     if (!result) { alert("Failed to save cost — check your internet."); return; }
+    // Update editJob so UI refreshes immediately
+    if (editJob && editJob.id === jid) setEditJob({...editJob, costs: [...(editJob.costs||[]), newCost]});
     setCostConfirm({ category: cat, amount: amt, jobName: job?.name || "" });
     setTimeout(() => setCostConfirm(null), 3000);
     setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
   };
-  const deleteCost = (jid,cid) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j)); };
+  const deleteCost = async (jid,cid) => {
+    await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j));
+    if (editJob && editJob.id === jid) setEditJob({...editJob, costs: (editJob.costs||[]).filter(c=>c.id!==cid)});
+  };
   const startEditCost = (jid, c) => { setEditingCost({ jid, cid: c.id, category: c.category, description: c.description, amount: c.amount }); };
   const saveEditCost = async () => {
     if (!editingCost) return;
     const { jid, cid, category, description, amount } = editingCost;
     const result = await atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, costs: (j.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c) } : j));
     if (!result) { alert("Failed to save cost edit."); return; }
+    if (editJob && editJob.id === jid) setEditJob({...editJob, costs: (editJob.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c)});
     setEditingCost(null);
   };
   const addAddlCharge = (jid) => {
@@ -3498,6 +3508,8 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
   const activeStatuses = STATUSES.filter(s=>s!=="closed");
 
   // ── REPORT DATA ──
+  const thS = { padding: "8px 10px", textAlign: "left", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: C.card };
+  const tdS = { padding: "7px 10px", fontSize: 12 };
   const now = Date.now();
   const ytdStart = new Date(new Date().getFullYear(), 0, 1).getTime();
   const rangeMs = {all:0,"30":30*86400000,"90":90*86400000,"180":180*86400000,"365":365*86400000,"ytd":now-ytdStart};
