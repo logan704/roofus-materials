@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50b - fix white screen crash in GP reports, live cost updates, page persist
+// v50c - fix savings vs supplier to include returns, fix GP report white screen
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -4682,16 +4682,20 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
         // ALL savings are based ONLY on captured supplier costs at time of order submission
         // Changing supplier cost today does NOT affect past orders — only future ones
         const periodByItem = {};
-        rangeOrders.forEach((o) => o.lines.forEach((l) => {
-          const it = iMap[l.itemId]; if (!it || !filterItem(it)) return;
-          const capturedSc = l.supplierCost || 0;
-          if (!capturedSc) return;
-          const k = l.itemId;
-          if (!periodByItem[k]) periodByItem[k] = { name: it.name, category: it.category, qty: 0, ourCost: 0, supplierWouldHaveCharged: 0 };
-          periodByItem[k].qty += l.qty;
-          periodByItem[k].ourCost += l.qty * (l.unitCost || 0);
-          periodByItem[k].supplierWouldHaveCharged += l.qty * capturedSc;
-        }));
+        const allApprovedRange = orders.filter(o => o.status === "approved" && new Date(o.approvedDate || o.date) >= cut);
+        allApprovedRange.forEach((o) => {
+          const mult = o.type === "return" ? -1 : 1;
+          o.lines.forEach((l) => {
+            const it = iMap[l.itemId]; if (!it || !filterItem(it)) return;
+            const capturedSc = l.supplierCost || 0;
+            if (!capturedSc) return;
+            const k = l.itemId;
+            if (!periodByItem[k]) periodByItem[k] = { name: it.name, category: it.category, qty: 0, ourCost: 0, supplierWouldHaveCharged: 0 };
+            periodByItem[k].qty += l.qty * mult;
+            periodByItem[k].ourCost += l.qty * (l.unitCost || 0) * mult;
+            periodByItem[k].supplierWouldHaveCharged += l.qty * capturedSc * mult;
+          });
+        });
         const periodData = Object.values(periodByItem).map((d) => ({
           ...d, savings: d.supplierWouldHaveCharged - d.ourCost,
           avgOurCost: d.qty > 0 ? d.ourCost / d.qty : 0,
