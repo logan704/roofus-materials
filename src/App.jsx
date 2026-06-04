@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50f - add items to orders, editable notes, low stock warning on submit
+// v50k - savings and SVA use same logic, own date pickers, matching totals
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -403,7 +403,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
               return results.length > 0 ? (
                 <div style={{ border: `1px solid ${C.brd}`, borderRadius: 8, maxHeight: 200, overflowY: "auto", background: C.card }}>
                   {results.map(it => (
-                    <div key={it.id} onClick={() => { setAddSelItem(it); const opts = it.options ? it.options.split(",").map(o=>o.trim()).filter(Boolean) : []; setAddSelOpt(opts.length ? opts[0] : "_default"); setAddSearch(it.name); }} style={{ padding: "8px 12px", fontSize: 13, cursor: "pointer", borderBottom: `1px solid ${C.brd}`, fontWeight: 600 }} onMouseEnter={(e) => e.target.style.background = C.sf} onMouseLeave={(e) => e.target.style.background = "transparent"}>
+                    <div key={it.id} onClick={() => { setAddSelItem(it); const opts = (it.options && it.options.length > 0) ? it.options : []; setAddSelOpt(opts.length ? opts[0] : "_default"); setAddSearch(it.name); }} style={{ padding: "8px 12px", fontSize: 13, cursor: "pointer", borderBottom: `1px solid ${C.brd}`, fontWeight: 600 }} onMouseEnter={(e) => e.target.style.background = C.sf} onMouseLeave={(e) => e.target.style.background = "transparent"}>
                       {it.name} <span style={{ fontSize: 11, color: C.t2 }}>({it.category})</span>
                     </div>
                   ))}
@@ -411,7 +411,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
               ) : <div style={{ fontSize: 12, color: C.t2, padding: 4 }}>No items found</div>;
             })()}
             {addSelItem && (() => {
-              const opts = addSelItem.options ? addSelItem.options.split(",").map(o=>o.trim()).filter(Boolean) : [];
+              const opts = (addSelItem.options && addSelItem.options.length > 0) ? addSelItem.options : [];
               return (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
                   {opts.length > 0 && <select value={addSelOpt} onChange={(e) => setAddSelOpt(e.target.value)} style={{ ...inp, width: "auto", minWidth: 120, borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>
@@ -572,11 +572,45 @@ export default function App() {
     link.rel = "icon"; link.type = "image/png"; link.href = LOGO;
     document.head.appendChild(link);
     document.title = "Roofus Portal — Roof USA";
-    // Ensure viewport meta for mobile
     let vp = document.querySelector("meta[name='viewport']");
     if (!vp) { vp = document.createElement("meta"); vp.name = "viewport"; document.head.appendChild(vp); }
     vp.content = "width=device-width, initial-scale=1, maximum-scale=1";
   }, []);
+
+  // ═══ REAL-TIME SYNC — poll Supabase every 2 seconds ═══
+  const lastSync = useRef({});
+  const syncPaused = useRef(false);
+  useEffect(() => {
+    if (!rdy) return;
+    const poll = async () => {
+      if (syncPaused.current || savingRef.current) return;
+      if (document.hidden) return;
+      try {
+        const [freshItems, freshOrders, freshJobs, freshUsers, freshTemplates, freshShrink] = await Promise.all([
+          ld("items", []), ld("orders", []), ld("tracked_jobs", []),
+          ld("users", []), ld("templates", []), ld("shrinkage", [])
+        ]);
+        const check = (key, fresh, setter) => {
+          const sig = JSON.stringify(fresh);
+          if (lastSync.current[key] !== sig) {
+            lastSync.current[key] = sig;
+            if (Array.isArray(fresh)) setter(fresh);
+          }
+        };
+        check("items", freshItems, setItems);
+        check("orders", freshOrders, setOrders);
+        check("tracked_jobs", freshJobs, setTrackedJobs);
+        check("users", freshUsers, setUsers);
+        check("templates", freshTemplates, setTemplates);
+        check("shrinkage", freshShrink, setShrinkLog);
+      } catch(e) {}
+    };
+    lastSync.current = {};
+    // First poll runs immediately to populate hashes
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
+  }, [rdy]);
 
   const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
   const sI = useCallback((i) => { setItems(i); sv("items", i); }, []);
@@ -609,6 +643,7 @@ export default function App() {
 
   // Core guarded save — queued, validated, backed up, verified
   const guardedSave = useCallback((key, setFn, transformFn, audit) => {
+    syncPaused.current = true; // pause polling IMMEDIATELY when save is queued
     const job = saveQueue.current.then(async () => {
       setSaving(true);
       savingRef.current = true;
@@ -654,6 +689,8 @@ export default function App() {
             localStorage.setItem("roofus_backup_date", new Date().toISOString());
           }
         } catch(e) {}
+        // 10. UPDATE SYNC HASH so polling doesn't re-trigger
+        try { lastSync.current[key] = JSON.stringify(result); } catch(e) {}
 
         if (!verified) console.warn("Save verification failed for " + key + " — data may not have persisted");
 
@@ -668,6 +705,7 @@ export default function App() {
       } finally {
         setSaving(false);
         savingRef.current = false;
+        syncPaused.current = false; // resume polling after save completes
       }
     });
     saveQueue.current = job.catch(() => {});
@@ -1905,7 +1943,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
     if (!validLines.length) return;
     const newLogEntries = [];
 
-    await atomicUpdateItems((freshItems) => {
+    const stockResult = await atomicUpdateItems((freshItems) => {
       let updatedItems = [...freshItems];
       validLines.forEach((l) => {
         const idx = updatedItems.findIndex((i) => i.id === l.itemId);
@@ -1926,6 +1964,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
       });
       return updatedItems;
     });
+    if (!stockResult) { alert("Inventory save failed — receive NOT recorded. Check your internet and try again."); return; }
 
     await svLog((fresh) => [...newLogEntries, ...fresh]);
     setDone(true);
@@ -3924,6 +3963,10 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
   const [svaPreset, setSvaPreset] = useState("all");
   const [svaStart, setSvaStart] = useState("");
   const [svaEnd, setSvaEnd] = useState("");
+  const [savMode, setSavMode] = useState("preset");
+  const [savPreset, setSavPreset] = useState("all");
+  const [savStart, setSavStart] = useState("");
+  const [savEnd, setSavEnd] = useState("");
   const [deadExpand, setDeadExpand] = useState(false);
   const [velExpand, setVelExpand] = useState({ 30: false, 90: false, 180: false });
   const [scRange, setScRange] = useState("90");
@@ -4750,14 +4793,26 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
 
       {/* ── SAVINGS VS SUPPLIER ── */}
       {tab === "savings" && (() => {
-        // ALL savings are based ONLY on captured supplier costs at time of order submission
-        // Changing supplier cost today does NOT affect past orders — only future ones
+        const now2 = Date.now();
+        const ytd2 = new Date(new Date().getFullYear(), 0, 1).getTime();
+        const presetMs2 = {all:0,"30":30*86400000,"90":90*86400000,"180":180*86400000,"365":365*86400000,"ytd":now2-ytd2};
+        const inRange2 = (o) => {
+          const d = o.approvedDate ? new Date(o.approvedDate) : new Date(o.date);
+          if (savMode === "custom") {
+            if (savStart && d < new Date(savStart)) return false;
+            if (savEnd) { const end = new Date(savEnd); end.setHours(23,59,59,999); if (d > end) return false; }
+            return true;
+          }
+          if (savPreset === "all") return true;
+          return (now2 - d.getTime()) < presetMs2[savPreset];
+        };
+
         const periodByItem = {};
-        const allApprovedRange = orders.filter(o => o.status === "approved" && new Date(o.approvedDate || o.date) >= cut);
+        const allApprovedRange = orders.filter(o => o.status === "approved" && inRange2(o));
         allApprovedRange.forEach((o) => {
           const mult = o.type === "return" ? -1 : 1;
           o.lines.forEach((l) => {
-            const it = iMap[l.itemId]; if (!it || !filterItem(it)) return;
+            const it = iMap[l.itemId]; if (!it) return;
             const capturedSc = l.supplierCost || 0;
             if (!capturedSc) return;
             const k = l.itemId;
@@ -4776,10 +4831,19 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
         const totalOurCost = periodData.reduce((s, d) => s + d.ourCost, 0);
         const totalSupplierCost = periodData.reduce((s, d) => s + d.supplierWouldHaveCharged, 0);
         const itemsOverpaying = periodData.filter((d) => d.savings < 0);
-        const ordersWithSupplier = rangeOrders.filter((o) => o.lines.some((l) => l.supplierCost > 0));
+        const ordersWithSupplier = allApprovedRange.filter((o) => o.lines.some((l) => l.supplierCost > 0));
 
         return (
           <div>
+            {/* DATE FILTER */}
+            <div style={{background:C.card,borderRadius:14,border:`1px solid ${C.brd}`,padding:20,marginBottom:20}}>
+              <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:savMode==="custom"?12:0}}>
+                <select value={savMode} onChange={(e)=>setSavMode(e.target.value)} style={{...inp,width:"auto",minWidth:100,borderRadius:10,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}><option value="preset">Preset Range</option><option value="custom">Custom Dates</option></select>
+                {savMode==="preset"&&<select value={savPreset} onChange={(e)=>setSavPreset(e.target.value)} style={{...inp,width:"auto",minWidth:140,borderRadius:10,padding:"10px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}><option value="all">All Time</option><option value="30">Last 30 Days</option><option value="90">Last 90 Days</option><option value="180">Last 6 Months</option><option value="365">Last 12 Months</option><option value="ytd">Year to Date</option></select>}
+                {savMode==="custom"&&<><input type="date" value={savStart} onChange={(e)=>setSavStart(e.target.value)} style={{...inp,width:"auto",borderRadius:10,padding:"10px 14px",fontSize:13}}/><span style={{color:C.t2,fontSize:13}}>to</span><input type="date" value={savEnd} onChange={(e)=>setSavEnd(e.target.value)} style={{...inp,width:"auto",borderRadius:10,padding:"10px 14px",fontSize:13}}/></>}
+                <span style={{fontSize:12,color:C.t2}}>{allApprovedRange.length} orders in range</span>
+              </div>
+            </div>
             <Rw g={14}>
               <Stat label="Total Savings" value={fmt$(totalSavings)} sub={`${ordersWithSupplier.length} orders with supplier pricing`} color={totalSavings >= 0 ? C.grn : C.red} />
               <Stat label="We Paid" value={fmt$(totalOurCost)} color={NAVY} />
@@ -4846,6 +4910,7 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
           (o.lines || []).forEach(l => {
             const it = iMap[l.itemId];
             if (!it) return;
+            if (!(l.supplierCost || 0)) return; // skip lines without supplier cost — matches Savings vs Supplier
             const cat = SHINGLE_CATS.includes(it.category) ? shingle : accessory;
             const q = l.qty * mult;
             const wacCost = q * (l.unitCost || 0);
