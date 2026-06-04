@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50c - fix savings vs supplier to include returns, fix GP report white screen
+// v50d - return cap warning instead of block
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -1412,8 +1412,9 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
           }
         });
         if (overLines.length) {
-          alert("RETURN BLOCKED — quantities exceed what was ordered for this job:\n\n" + overLines.join("\n") + "\n\nEdit the return quantities and try again.");
-          return;
+          if (!confirm("⚠️ RETURN WARNING — quantities exceed what was ordered for this job:\n\n" + overLines.join("\n") + "\n\nThis could mean the original order is still pending or was lost. Click OK to approve anyway, or Cancel to go back.")) {
+            return;
+          }
         }
       } catch(e) { alert("Cannot verify return quantities — check your internet and try again."); return; }
     }
