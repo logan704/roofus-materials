@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50d - return cap warning instead of block
+// v50f - add items to orders, editable notes, low stock warning on submit
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -288,6 +288,23 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
   const [showDeleteWarn, setShowDeleteWarn] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editLines, setEditLines] = useState([]);
+  const [editNotes, setEditNotes] = useState("");
+  const [addSearch, setAddSearch] = useState("");
+  const [addSelItem, setAddSelItem] = useState(null);
+  const [addSelOpt, setAddSelOpt] = useState("");
+
+  const addItemToEdit = () => {
+    if (!addSelItem) return;
+    const it = addSelItem;
+    const opt = addSelOpt || "_default";
+    const v = getVariants(it);
+    const vd = v[opt] || { wac: it.wacCost || 0 };
+    const wac = vd.wac || it.wacCost || 0;
+    const m = it.markup || 0;
+    const sell = m >= 100 ? wac : wac / (1 - m / 100);
+    setEditLines([...editLines, { itemId: it.id, qty: 1, option: opt, unitCost: wac, markupCost: sell, supplierCost: it.supplierCost || 0 }]);
+    setAddSearch(""); setAddSelItem(null); setAddSelOpt("");
+  };
 
   if (showDeleteWarn) {
     return (
@@ -377,9 +394,42 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
               </div>
             );
           })}
+          {/* ADD ITEM SEARCH */}
+          <div style={{ marginTop: 12, padding: "10px 0", borderTop: `1px solid ${C.brd}` }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.blu, textTransform: "uppercase", marginBottom: 6 }}>+ Add Item to Order</div>
+            <input value={addSearch} onChange={(e) => { setAddSearch(e.target.value); setAddSelItem(null); setAddSelOpt(""); }} placeholder="Search items..." style={{ ...inp, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 4 }} />
+            {addSearch.length >= 2 && !addSelItem && (() => {
+              const results = items.filter(it => it.name.toLowerCase().includes(addSearch.toLowerCase())).slice(0, 8);
+              return results.length > 0 ? (
+                <div style={{ border: `1px solid ${C.brd}`, borderRadius: 8, maxHeight: 200, overflowY: "auto", background: C.card }}>
+                  {results.map(it => (
+                    <div key={it.id} onClick={() => { setAddSelItem(it); const opts = it.options ? it.options.split(",").map(o=>o.trim()).filter(Boolean) : []; setAddSelOpt(opts.length ? opts[0] : "_default"); setAddSearch(it.name); }} style={{ padding: "8px 12px", fontSize: 13, cursor: "pointer", borderBottom: `1px solid ${C.brd}`, fontWeight: 600 }} onMouseEnter={(e) => e.target.style.background = C.sf} onMouseLeave={(e) => e.target.style.background = "transparent"}>
+                      {it.name} <span style={{ fontSize: 11, color: C.t2 }}>({it.category})</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <div style={{ fontSize: 12, color: C.t2, padding: 4 }}>No items found</div>;
+            })()}
+            {addSelItem && (() => {
+              const opts = addSelItem.options ? addSelItem.options.split(",").map(o=>o.trim()).filter(Boolean) : [];
+              return (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+                  {opts.length > 0 && <select value={addSelOpt} onChange={(e) => setAddSelOpt(e.target.value)} style={{ ...inp, width: "auto", minWidth: 120, borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>
+                    {opts.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>}
+                  <button onClick={addItemToEdit} style={{ ...bP, padding: "8px 16px", fontSize: 13 }}><Plus size={14} /> Add</button>
+                  <button onClick={() => { setAddSearch(""); setAddSelItem(null); }} style={{ ...bS, padding: "8px 12px", fontSize: 13 }}>Cancel</button>
+                </div>
+              );
+            })()}
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.t2, textTransform: "uppercase", marginBottom: 4 }}>Notes</div>
+            <textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)} rows={3} placeholder="Order notes..." style={{ ...inp, borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "vertical" }} />
+          </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
             <button onClick={() => setEditing(false)} style={bS}>Cancel</button>
-            <button onClick={() => { if (onEdit) onEdit(order.id, editLines); setEditing(false); }} style={{ ...bP, background: C.grn }}><Check size={14} /> Save Changes</button>
+            <button onClick={() => { if (onEdit) onEdit(order.id, editLines, editNotes); setEditing(false); }} style={{ ...bP, background: C.grn }}><Check size={14} /> Save Changes</button>
           </div>
         </div>
       )}
@@ -387,7 +437,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
       <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 8 }}>
           {onDelete && <button onClick={() => setShowDeleteWarn(true)} style={{ ...bS, color: C.red, borderColor: C.red + "55" }}><Trash2 size={14} /> Delete</button>}
-          {onEdit && !editing && <button onClick={() => { setEditLines(ls.map((l) => ({ ...l }))); setEditing(true); }} style={{ ...bS, color: C.blu, borderColor: C.blu + "55" }}><Edit3 size={14} /> Edit</button>}
+          {onEdit && !editing && <button onClick={() => { setEditLines(ls.map((l) => ({ ...l }))); setEditNotes(order.notes || ""); setEditing(true); }} style={{ ...bS, color: C.blu, borderColor: C.blu + "55" }}><Edit3 size={14} /> Edit</button>}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onClose} style={bS}>Close</button>
@@ -856,7 +906,7 @@ export default function App() {
           }
           await atomicRemoveOrder(id); setVOrd(null);
         } : null}
-        onEdit={canEditOrders ? async (id, newLines) => {
+        onEdit={canEditOrders ? async (id, newLines, newNotes) => {
           const ord = orders.find((o) => o.id === id);
           if (!ord) return;
           // Only adjust stock if order was already approved — await before updating order
@@ -894,7 +944,7 @@ export default function App() {
             });
             if (!stockResult) { alert("Stock update failed — order NOT edited."); return; }
           }
-          const updatedOrd = { ...ord, lines: newLines };
+          const updatedOrd = { ...ord, lines: newLines, notes: newNotes !== undefined ? newNotes : (ord.notes || "") };
           await atomicUpdateOrder(id, () => updatedOrd);
           setVOrd(updatedOrd);
           // Re-upload to JN if linked
@@ -1133,6 +1183,26 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
     // BUG #10: Validate no NaN/Infinity in costs
     const badCost = lines.find(l => isNaN(l.unitCost) || !isFinite(l.unitCost) || isNaN(l.markupCost) || !isFinite(l.markupCost));
     if (badCost) { alert("Invalid cost detected on one or more items. Please remove and re-add the item."); return; }
+    // STOCK WARNING — check if items have sufficient stock (orders only)
+    if (type === "order") {
+      const lowStock = [];
+      lines.forEach(l => {
+        const it = iMap[l.itemId];
+        if (!it) return;
+        const v = getVariants(it);
+        const opt = l.option || "_default";
+        const onHand = v[opt]?.qty || 0;
+        if (+l.qty > onHand) {
+          const name = it.name + (opt !== "_default" ? ` (${opt})` : "");
+          lowStock.push(`${name}: ordering ${l.qty} but only ${onHand} in stock`);
+        }
+      });
+      if (lowStock.length) {
+        if (!confirm("⚠️ LOW STOCK WARNING:\n\n" + lowStock.join("\n") + "\n\nThese items may not have enough inventory to fulfill this order. Click OK to submit anyway, or Cancel to go back and edit.")) {
+          return;
+        }
+      }
+    }
     if (hasOSB && !osbDesc.trim()) { setOsbPrompt(true); return; }
     const jobTrim = job.trim();
     // Read fresh orders from DB for accurate PO numbering
