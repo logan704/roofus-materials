@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50k - savings and SVA use same logic, own date pickers, matching totals
+// v50L - fix double-approval from poll gap, savings fix
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
@@ -798,7 +798,7 @@ export default function App() {
   if (!rdy) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: C.bg }}><style>{CSS}</style><img src={LOGO} alt="" style={{ height: 60 }} /></div>;
   if (!user) return <><style>{CSS}</style><Auth users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} login={login} /></>;
 
-  const pendCt = orders.filter((o) => o.status === "pending").length;
+  const pendCt = orders.filter((o) => o.status === "pending" && !approvingIds.current.has(o.id)).length;
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg }}>
@@ -1475,10 +1475,15 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
   );
 }
 function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateItems, view, saving }) {
-  const pend = orders.filter((o) => o.status === "pending").sort((a, b) => new Date(b.date) - new Date(a.date));
+  const approvingIds = useRef(new Set());
+  const pend = orders.filter((o) => o.status === "pending" && !approvingIds.current.has(o.id)).sort((a, b) => new Date(b.date) - new Date(a.date));
   const [deleteWarn, setDeleteWarn] = useState(null);
 
   const approve = async (id) => {
+    if (approvingIds.current.has(id)) return; // already approving this order
+    approvingIds.current.add(id);
+    syncPaused.current = true; // pause polling for ENTIRE approval
+    try {
     const order = orders.find((o) => o.id === id);
     if (!order) return;
     // GUARD: Read fresh order from DB to verify it's still pending (prevents double-approval)
@@ -1588,6 +1593,10 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       osbNoteId = await createOSBNote(approvedOrder);
     }
     await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
+    } finally {
+      approvingIds.current.delete(id);
+      syncPaused.current = false;
+    }
   };
   const reject = async (id) => { if (confirm("Reject this order?")) await updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
   const deleteOrder = async (id) => {
