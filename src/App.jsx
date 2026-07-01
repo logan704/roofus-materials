@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v52b - Mistake Finder: yes/no cards, item previews, one-click stock fixes
+// v53 - Inventory Rescue wizard replaces audit tab
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
 const DELIVERY_SURCHARGE = 10 / 3; // $3.33 per bundle — $10/square, 3 bundles per square
@@ -984,7 +984,7 @@ export default function App() {
         {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
         {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
-        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} auditDeleteOrder={auditDeleteOrder} atomicUpdateOrder={atomicUpdateOrder} />}
+        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} auditDeleteOrder={auditDeleteOrder} atomicUpdateOrder={atomicUpdateOrder} atomicUpdateShrinkage={atomicUpdateShrinkage} />}
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
@@ -4100,7 +4100,7 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
 }
 
 // ═══ REPORTS ═══
-function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder, atomicUpdateOrder }) {
+function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder, atomicUpdateOrder, atomicUpdateShrinkage }) {
   const [tab, setTab] = useState("dash");
   const [range, setRange] = useState("30");
   const [catF, setCatF] = useState("All");
@@ -4143,6 +4143,8 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
   const IGN_KEY = "roofus_audit_ignores";
   const [ignores, setIgnores] = useState(() => { try { return JSON.parse(localStorage.getItem(IGN_KEY)) || {}; } catch { return {}; } });
   const addIgnore = (k) => { const n = { ...ignores, [k]: new Date().toISOString() }; setIgnores(n); try { localStorage.setItem(IGN_KEY, JSON.stringify(n)); } catch {} };
+  const [rescue, setRescue] = useState({ phase: "idle", queue: [], idx: 0, results: [], fixes: 0, startedAt: null });
+  const [countVals, setCountVals] = useState({});
   const lineWords = (lines, im) => (lines||[]).map(l => `${l.qty}× ${(im[l.itemId]?.name)||"Unknown item"}${l.option && l.option!=="_default" ? " ("+l.option+")" : ""}`);
   // One-click stock restoration for Detector 3 — idempotent via flag on the order, fresh-verified
   const restoreOrderStock = async (orderId, timesWanted, flagField) => {
@@ -5402,471 +5404,259 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
 
       {/* ── AUDIT ── */}
       {tab === "audit" && (() => {
+        const imD = Object.fromEntries(items.map(i => [i.id, i]));
+        const busy = !!detBusy;
 
-        // Build expected stock from all transactions
-        const expected = {}; // key: itemId:option → { qty, name, receives, orders, returns, shrinkage }
-
-        // Check for duplicate inv_log entries (same item, same qty, same cost, same DAY)
-        const dedupedLog = [];
-        const logSeen = new Set();
-        invLog.forEach(r => {
-          const day = new Date(r.date).toISOString().slice(0, 10); // YYYY-MM-DD
-          const sig = r.itemId + ":" + (r.option||"_default") + ":" + (+r.qty) + ":" + (+r.unitCost) + ":" + day;
-          if (logSeen.has(sig)) return;
-          logSeen.add(sig);
-          dedupedLog.push(r);
+        // ── ANOMALY PRE-SCAN (shared by ledger) ──
+        const dupExtras = new Set();
+        { const g = {}; invLog.forEach(e => { const k = `${e.itemId}|${e.option||"_default"}|${e.qty}|${e.unitCost}|${(e.date||"").slice(0,10)}`; (g[k]=g[k]||[]).push(e); });
+          Object.values(g).forEach(arr => arr.sort((a,b)=>new Date(a.date)-new Date(b.date)).slice(1).forEach(e => dupExtras.add(e.id))); }
+        const twinInfo = new Map();
+        { const g = {}; orders.filter(o => (o.status==="approved"||o.status==="pending") && (o.lines||[]).length).forEach(o => {
+            const k = (o.jnJobId||o.jobName||"(no job)") + "::" + (o.lines||[]).map(l=>`${l.itemId}|${l.option||"_default"}|${l.qty}`).sort().join("~");
+            (g[k]=g[k]||[]).push(o); });
+          Object.values(g).filter(a=>a.length>1).forEach(a => { a.sort((x,y)=>new Date(x.date)-new Date(y.date));
+            if (new Date(a[a.length-1].date)-new Date(a[0].date) < 48*3600000) a.slice(1).forEach(o => twinInfo.set(o.id, a[0])); }); }
+        const approveByLabel = {};
+        auditTrail.filter(a => typeof a.action==="string" && a.action.startsWith("Approve order")).forEach(a => {
+          const label = a.action.replace(/^Approve order( \(retry\))?: /, ""); (approveByLabel[label]=approveByLabel[label]||[]).push(a); });
+        const extraApproval = new Map(); const missingLabels = [];
+        Object.entries(approveByLabel).forEach(([label, entries]) => {
+          const matches = orders.filter(o => o.id===label || o.jobName===label);
+          const accounted = matches.filter(o => o.approvedDate);
+          if (!matches.length) missingLabels.push({ label, dates: entries.map(e=>fD(e.date)) });
+          else if (entries.length > accounted.length && accounted.length === 1) extraApproval.set(accounted[0].id, entries.length - accounted.length);
         });
-        const dupeCount = invLog.length - dedupedLog.length;
+        const rejectedAfterSet = new Set(orders.filter(o => o.status==="rejected" && o.approvedDate).map(o=>o.id));
 
-        const ensureKey = (k, itemId, option, name) => {
-          if (!expected[k]) expected[k] = { qty: 0, itemId, option, name, receives: [], orders: [], returns: [], shrinkage: [] };
-        };
-
-        // 1. Add all receives (deduplicated, coerced to number)
-        dedupedLog.forEach(r => {
-          const k = r.itemId + ":" + (r.option || "_default");
-          ensureKey(k, r.itemId, r.option || "_default", r.itemName || "?");
-          const qty = +(r.qty) || 0;
-          expected[k].qty += qty;
-          expected[k].receives.push({ qty, cost: +(r.unitCost)||0, date: r.date, note: r.note||"" });
-        });
-
-        // 2. Subtract ALL approved orders
-        const allApproved = orders.filter(o => o.status === "approved");
-        allApproved.filter(o => o.type === "order").forEach(o => {
-          (o.lines || []).forEach(l => {
-            const k = l.itemId + ":" + (l.option || "_default");
-            const it = items.find(i => i.id === l.itemId);
-            const name = (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "");
-            ensureKey(k, l.itemId, l.option || "_default", name);
-            const qty = +(l.qty) || 0;
-            expected[k].qty -= qty;
-            expected[k].orders.push({ qty, po: o.poNumber||"", job: o.jobName||"", date: o.approvedDate||o.date });
+        // ── LEDGER BUILDER (per item, per option) ──
+        const buildLedger = (it) => {
+          const rows = [];
+          invLog.filter(e => e.itemId === it.id).forEach(e => {
+            const opt = e.option || "_default"; const dup = dupExtras.has(e.id);
+            rows.push({ date: e.date, opt, delta: dup ? 0 : +e.qty, label: `Received ${e.qty} @ ${fmt$(e.unitCost)}${e.note?" — "+e.note:""}`,
+              badge: dup ? "duplicate note (stock unaffected)" : null,
+              fix: dup ? { text: "Remove note", run: async () => { if (!confirm("Remove this duplicate receive note?\n\nStock does NOT change — this only cleans the history.")) return; if (await removeInvLogEntry(e.id)) setRescue(r=>({...r,fixes:r.fixes+1})); } } : null });
           });
-        });
-
-        // 3. Add ALL approved returns
-        allApproved.filter(o => o.type === "return").forEach(o => {
-          (o.lines || []).forEach(l => {
-            const k = l.itemId + ":" + (l.option || "_default");
-            const it = items.find(i => i.id === l.itemId);
-            const name = (it?.name || "?") + (l.option && l.option !== "_default" ? ` (${l.option})` : "");
-            ensureKey(k, l.itemId, l.option || "_default", name);
-            const qty = +(l.qty) || 0;
-            expected[k].qty += qty;
-            expected[k].returns.push({ qty, po: o.poNumber||"", job: o.jobName||"", date: o.approvedDate||o.date });
-          });
-        });
-
-        // 4. Subtract shrinkage/damage, add found
-        (shrinkLog || []).forEach(r => {
-          const k = r.itemId + ":" + (r.option || "_default");
-          ensureKey(k, r.itemId, r.option || "_default", r.itemName || "?");
-          const qty = +(r.qty) || 0;
-          if (r.type === "found") { expected[k].qty += qty; expected[k].shrinkage.push({ qty, type: "found", reason: r.reason||"", date: r.date }); }
-          else { expected[k].qty -= qty; expected[k].shrinkage.push({ qty: -qty, type: r.type||"shrinkage", reason: r.reason||"", date: r.date }); }
-        });
-
-        // 5. Compare to current stock
-        const discrepancies = [];
-        let totalOverstated = 0;
-        let totalUnderstated = 0;
-
-        items.forEach(it => {
-          const v = getVariants(it);
-          Object.entries(v).forEach(([opt, vd]) => {
-            const k = it.id + ":" + opt;
-            const currentQty = vd.qty || 0;
-            const expectedQty = expected[k] ? Math.max(0, expected[k].qty) : 0;
-            const diff = currentQty - expectedQty;
-            if (Math.abs(diff) >= 1) {
-              const wac = vd.wac || it.wacCost || 0;
-              const name = it.name + (opt !== "_default" ? ` (${opt})` : "");
-              discrepancies.push({ itemId: it.id, option: opt, name, currentQty, expectedQty, diff, dollarImpact: diff * wac, wac });
-              if (diff > 0) totalOverstated += diff * wac;
-              else totalUnderstated += Math.abs(diff) * wac;
-            }
-          });
-        });
-
-        discrepancies.sort((a, b) => Math.abs(b.dollarImpact) - Math.abs(a.dollarImpact));
-
-        const fixOne = async (d, overrideQty) => {
-          const targetQty = overrideQty !== undefined ? Math.max(0, +overrideQty) : d.expectedQty;
-          if (isNaN(targetQty)) { alert("Invalid quantity."); return; }
-          await atomicUpdateItems((cur) => cur.map(it => {
-            if (it.id !== d.itemId) return it;
-            const v = { ...(getVariants(it)) };
-            if (v[d.option]) v[d.option] = { ...v[d.option], qty: targetQty };
-            const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-            return { ...it, variants: v, qtyOnHand: totalQ };
-          }));
-        };
-
-        const fixAll = async () => {
-          if (!confirm("This will correct ALL " + discrepancies.length + " items to their calculated stock levels. This cannot be undone. Continue?")) return;
-          setFixing(true);
-          const fixMap = {};
-          discrepancies.forEach(d => { fixMap[d.itemId + ":" + d.option] = d.expectedQty; });
-          await atomicUpdateItems((cur) => cur.map(it => {
-            const v = { ...(getVariants(it)) };
-            let changed = false;
-            Object.entries(v).forEach(([opt, vd]) => {
-              const k = it.id + ":" + opt;
-              if (fixMap[k] !== undefined && (vd.qty || 0) !== fixMap[k]) {
-                v[opt] = { ...vd, qty: Math.max(0, fixMap[k]) };
-                changed = true;
+          orders.filter(o => (o.approvedDate && (o.status==="approved" || rejectedAfterSet.has(o.id)))).forEach(o => {
+            (o.lines||[]).filter(l => l.itemId === it.id).forEach(l => {
+              const opt = l.option || "_default"; const sign = o.type === "return" ? +1 : -1; const q = +l.qty || 0;
+              const twin = twinInfo.get(o.id); const rej = rejectedAfterSet.has(o.id) && !(+o.auditStockRestored);
+              const rejFixed = rejectedAfterSet.has(o.id) && (+o.auditStockRestored) >= 1;
+              const badges = [];
+              if (twin) badges.push(`identical to ${twin.poNumber||"an order"} from ${new Date(twin.date).toLocaleTimeString()} — double-submit?`);
+              if (rej) badges.push("later marked REJECTED — this stock never came back");
+              let fix = null;
+              if (twin) fix = { text: "Delete this order", run: async () => {
+                const words = lineWords(o.lines, imD);
+                if (!confirm(`Delete duplicate ${o.poNumber||"order"}?\n\nThis puts BACK into stock (the WHOLE order):\n${words.map(w=>"  + "+w).join("\n")}\n\nThe original ${twin.poNumber||""} stays.`)) return;
+                setDetBusy(o.id); try { if (await auditDeleteOrder(o.id)) setRescue(r=>({...r,fixes:r.fixes+1})); } finally { setDetBusy(null); } } };
+              else if (rej) fix = { text: "Put stock back", run: async () => {
+                const words = lineWords(o.lines, imD);
+                if (!confirm(`Put this order's stock back?\n\n${words.map(w=>"  + "+w).join("\n")}\n\nCan only be done once.`)) return;
+                if (await restoreOrderStock(o.id, 1, "auditStockRestored")) setRescue(r=>({...r,fixes:r.fixes+1})); } };
+              rows.push({ date: o.approvedDate || o.date, opt, delta: sign*q,
+                label: `${o.type==="return"?"Return":"Order"} ${o.poNumber||""} — ${o.jobName||"(no job)"}`, badge: badges.join(" · ")||null, fix });
+              if (rejFixed) rows.push({ date: o.approvedDate || o.date, opt, delta: -sign*q, label: `↳ stock restored by fix ✓`, badge: null, fix: null });
+              const extra = extraApproval.get(o.id) || 0;
+              if (extra > 0) {
+                const fixedN = +o.auditExtraFixed || 0;
+                rows.push({ date: o.approvedDate || o.date, opt, delta: sign*q*extra, label: `↳ EXTRA deduction — approved ${extra+1}× by an old glitch`,
+                  badge: fixedN >= extra ? null : "needs fixing",
+                  fix: fixedN >= extra ? null : { text: `Add back the extra ×${extra}`, run: async () => {
+                    const words = lineWords(o.lines, imD);
+                    if (!confirm(`Add back the extra deduction (×${extra})?\n\n${words.map(w=>`  + ${w}  (×${extra})`).join("\n")}\n\nCan only be done once.`)) return;
+                    if (await restoreOrderStock(o.id, extra, "auditExtraFixed")) setRescue(r=>({...r,fixes:r.fixes+1})); } } });
+                if (fixedN >= extra) rows.push({ date: o.approvedDate || o.date, opt, delta: -sign*q*extra, label: `↳ extra restored by fix ✓`, badge: null, fix: null });
               }
             });
-            if (!changed) return it;
-            const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-            return { ...it, variants: v, qtyOnHand: totalQ };
-          }));
-          setFixing(false);
-          setFixed(true);
+          });
+          shrinkLog.filter(e => e.itemId === it.id).forEach(e => {
+            const opt = e.option || "_default"; const sign = e.type === "found" ? +1 : -1;
+            rows.push({ date: e.date, opt, delta: sign*(+e.qty||0), label: `${e.type==="found"?"Found in count":"Shrinkage (count)"}${e.note?" — "+e.note:""}`, badge: null, fix: null });
+          });
+          rows.sort((a,b)=>new Date(a.date)-new Date(b.date));
+          const expectedByOpt = {}; let run = 0;
+          rows.forEach(r => { expectedByOpt[r.opt] = (expectedByOpt[r.opt]||0) + r.delta; run += r.delta; r.running = run; });
+          const v = getVariants(it); const currentByOpt = {}; let currentTotal = 0;
+          Object.keys(v).forEach(opt => { currentByOpt[opt] = v[opt].qty || 0; currentTotal += v[opt].qty || 0; });
+          Object.keys(expectedByOpt).forEach(opt => { if (!(opt in currentByOpt)) currentByOpt[opt] = 0; });
+          const expectedTotal = Object.values(expectedByOpt).reduce((s,x)=>s+x,0);
+          return { rows, expectedByOpt, expectedTotal, currentByOpt, currentTotal, wacByOpt: Object.fromEntries(Object.keys(currentByOpt).map(o=>[o,(v[o]&&v[o].wac)||it.wacCost||0])) };
         };
 
-        return (
+        // ── SCAN ──
+        const scans = items.map(it => { const L = buildLedger(it); return { it, L, mismatch: L.currentTotal !== L.expectedTotal, diff: L.currentTotal - L.expectedTotal }; });
+        const mismatched = scans.filter(s => s.mismatch);
+        const dollarsOff = mismatched.reduce((s,x)=>s + Math.abs(x.diff) * (x.it.wacCost||0), 0);
+        const verifiedRecent = items.filter(it => it.auditVerified && (Date.now()-new Date(it.auditVerified)) < 30*86400000).length;
+
+        const startRescue = (ids) => { setRescue({ phase:"walk", queue: ids, idx: 0, results: [], fixes: 0, startedAt: new Date().toISOString() }); setCountVals({}); };
+        const advance = (result) => { setCountVals({}); setRescue(r => { const results=[...r.results, ...(result?[result]:[])]; const nidx=r.idx+1; return nidx>=r.queue.length ? {...r,results,phase:"done"} : {...r,results,idx:nidx}; }); };
+
+        const saveVerify = async (it, L) => {
+          if (busy) return; setDetBusy("verify:"+it.id);
+          try {
+            const deltas = [];
+            Object.keys(L.currentByOpt).forEach(opt => {
+              const raw = countVals[opt]; const cur = L.currentByOpt[opt];
+              const val = (raw===undefined || raw==="") ? cur : Math.max(0, +raw);
+              if (isNaN(val)) return;
+              if (val !== cur) deltas.push({ opt, from: cur, to: val, delta: val-cur, value: (val-cur)*(L.wacByOpt[opt]||0) });
+            });
+            const stockResult = await atomicUpdateItems(freshItems => freshItems.map(fi => {
+              if (fi.id !== it.id) return fi;
+              const v = { ...(fi.variants || getVariants(fi)) };
+              deltas.forEach(d => { const vd = v[d.opt] || { qty:0, wac: fi.wacCost||0 }; v[d.opt] = { ...vd, qty: d.to }; });
+              const totalQ = Object.values(v).reduce((s,x)=>s+(x.qty||0),0);
+              return { ...fi, variants: v, qtyOnHand: totalQ, auditVerified: new Date().toISOString() };
+            }));
+            if (!stockResult) { alert("Save failed — this item was NOT verified. Check your internet."); return; }
+            if (deltas.length) {
+              const entries = deltas.map(d => ({ id: uid(), itemId: it.id, itemName: it.name + (d.opt!=="_default"?` (${d.opt})`:""), option: d.opt,
+                qty: Math.abs(d.delta), unitCost: L.wacByOpt[d.opt]||0, lostValue: Math.abs(d.value), type: d.delta<0?"shrinkage":"found",
+                date: new Date().toISOString(), note: "Inventory Rescue" }));
+              const logged = await atomicUpdateShrinkage(cur => [...entries, ...cur]);
+              if (!logged) alert("Stock was saved, but the shrinkage log failed — history may miss this adjustment.");
+            }
+            advance({ itemId: it.id, name: it.name, deltas });
+          } finally { setDetBusy(null); }
+        };
+
+        const bigBtn = { ...bP, padding:"14px 22px", fontSize:15, fontWeight:800 };
+        const softCard = { ...crd, padding:20 };
+
+        // ══ PHASE: IDLE / SCAN ══
+        if (rescue.phase === "idle") return (
           <div>
-            <Rw g={14}>
-              <Stat label="Discrepancies Found" value={discrepancies.length} color={discrepancies.length > 0 ? C.red : C.grn} />
-              <Stat label="Overstated Value" value={fmt$(totalOverstated)} sub="more stock than expected" color={totalOverstated > 0 ? C.wrn : C.grn} />
-              <Stat label="Understated Value" value={fmt$(totalUnderstated)} sub="less stock than expected" color={totalUnderstated > 0 ? C.red : C.grn} />
-              <Stat label="Items Audited" value={items.length} color={C.blu} />
-            </Rw>
-
-            {fixed && <div style={{marginTop:16,padding:"14px 20px",background:C.grn+"12",border:`1px solid ${C.grn}33`,borderRadius:10,fontWeight:700,color:C.grn,textAlign:"center"}}>All stock levels corrected successfully. Refresh to verify.</div>}
-
-            {dupeCount > 0 && <div style={{marginTop:16,padding:"12px 16px",background:C.red+"10",border:`1px solid ${C.red}33`,borderRadius:10}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:4}}>⚠️ {dupeCount} duplicate receive log entries detected and excluded</div>
-              <div style={{fontSize:12,color:C.t2}}>The race condition that was fixed caused some receives to be logged twice. The audit has automatically excluded these duplicates from the calculation.</div>
+            <div style={{...softCard, borderLeft:`5px solid ${mismatched.length?C.wrn:C.grn}`}}>
+              <div style={{fontSize:22,fontWeight:900,fontFamily:BC}}>🛟 INVENTORY RESCUE</div>
+              <div style={{fontSize:13,color:C.t2,marginTop:6,lineHeight:1.6}}>This walks you through your inventory one item at a time — like checking a bank statement. For each item you'll see its full history, fix anything that looks wrong right on the line where it happened, then confirm what's actually on the shelf. When you finish, your numbers are <strong>verified correct</strong>.</div>
+              <div style={{marginTop:16}}><Rw g={14}>
+                <Stat label="Items that match perfectly" value={items.length - mismatched.length} color={C.grn} />
+                <Stat label="Items with a mismatch" value={mismatched.length} color={mismatched.length?C.red:C.grn} />
+                <Stat label="Value of mismatches" value={fmt$(dollarsOff)} color={mismatched.length?C.red:C.grn} />
+                {verifiedRecent>0 && <Stat label="Verified in last 30 days" value={verifiedRecent} color={C.blu} />}
+              </Rw></div>
+              {missingLabels.length>0 && <div style={{marginTop:14,background:"#EEF4FF",border:`1px solid ${C.blu}44`,borderRadius:10,padding:"10px 14px",fontSize:12,lineHeight:1.6}}>
+                ℹ️ <strong>{missingLabels.length} order{missingLabels.length>1?"s were":" was"} deleted after approval</strong> ({missingLabels.map(m=>m.label).join(", ")}). Their exact amounts are unknown — <strong>your shelf counts below automatically absorb and correct this.</strong> Nothing extra to do.
+              </div>}
+              <div style={{display:"flex",gap:12,marginTop:18,flexWrap:"wrap"}}>
+                {mismatched.length>0 && <button onClick={()=>startRescue(mismatched.map(s=>s.it.id))} style={bigBtn}>▶ Fix the {mismatched.length} mismatched item{mismatched.length>1?"s":""}</button>}
+                <button onClick={()=>startRescue(items.map(i=>i.id))} style={{...bigBtn, background: mismatched.length? C.card : C.ac, color: mismatched.length? C.txt : C.w, border: mismatched.length?`1px solid ${C.brd}`:"none"}}>Verify ALL {items.length} items</button>
+              </div>
+              {mismatched.length===0 && <div style={{marginTop:12,color:C.grn,fontWeight:800,fontSize:14}}>✅ Every item's history matches its stock number. A full verify is optional peace of mind.</div>}
+            </div>
+            {mismatched.length>0 && <div style={{...softCard, marginTop:16, padding:0}}>
+              <div style={{padding:"14px 20px",fontWeight:800,fontFamily:BC,fontSize:15}}>What's off (you'll walk through these)</div>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr>{["Item","History says","System shows","Difference","$ impact"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+                <tbody>{mismatched.map(s=>(<tr key={s.it.id} style={{borderBottom:`1px solid ${C.brd}`}}>
+                  <td style={{...tdS,fontWeight:700}}>{s.it.name}</td>
+                  <td style={{...tdS,fontFamily:MN}}>{s.L.expectedTotal}</td>
+                  <td style={{...tdS,fontFamily:MN}}>{s.L.currentTotal}</td>
+                  <td style={{...tdS,fontFamily:MN,fontWeight:800,color:s.diff<0?C.red:C.wrn}}>{s.diff>0?"+":""}{s.diff}</td>
+                  <td style={{...tdS,fontFamily:MN,color:C.t2}}>{fmt$(Math.abs(s.diff)*(s.it.wacCost||0))}</td>
+                </tr>))}</tbody>
+              </table>
             </div>}
+          </div>
+        );
 
-            {discrepancies.length === 0 && !fixed && <div style={{...crd,marginTop:16,padding:30,textAlign:"center"}}><CheckCircle size={40} color={C.grn} style={{marginBottom:12}}/><div style={{fontSize:18,fontWeight:700,marginBottom:4}}>Inventory is clean</div><div style={{color:C.t2,fontSize:13}}>All current stock levels match the calculated values from receives, orders, returns, and shrinkage.</div></div>}
-
-            {discrepancies.length > 0 && <>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16,marginBottom:8}}>
-                <div style={{fontSize:14,fontWeight:700,color:C.red}}>{discrepancies.length} items need correction</div>
-                <button onClick={fixAll} disabled={fixing || fixed} style={{...bD,borderRadius:10,padding:"10px 20px",fontSize:13,opacity:fixing||fixed?0.5:1}}>{fixing ? "Fixing..." : fixed ? "Fixed!" : "Fix All Discrepancies"}</button>
+        // ══ PHASE: WALK ══
+        if (rescue.phase === "walk") {
+          const it = items.find(i => i.id === rescue.queue[rescue.idx]);
+          if (!it) return (
+            <div style={{...crd,padding:24,textAlign:"center"}}>
+              <div style={{fontWeight:800,fontSize:15,marginBottom:10}}>This item was deleted while the rescue was running.</div>
+              <button onClick={()=>advance(null)} style={{...bP,padding:"12px 20px"}}>Skip to next item ▶</button>
+            </div>
+          );
+          const L = buildLedger(it);
+          const opts = Object.keys(L.currentByOpt).sort();
+          const unexplained = L.currentTotal - L.expectedTotal;
+          return (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div style={{fontWeight:900,fontFamily:BC,fontSize:16}}>Item {rescue.idx+1} of {rescue.queue.length}</div>
+                <div style={{flex:1,margin:"0 16px",height:8,background:C.brd,borderRadius:6,overflow:"hidden"}}><div style={{width:`${(rescue.idx)/rescue.queue.length*100}%`,height:"100%",background:C.ac}}/></div>
+                <button onClick={()=>{ if(confirm("Stop the rescue? Progress on verified items is already saved.")) setRescue(r=>({...r,phase:"done"})); }} style={{...bS,padding:"6px 12px",fontSize:12}}>Stop</button>
               </div>
-
-              <div style={{...crd,padding:0}}><div style={{overflowX:"auto",maxHeight:600}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead><tr>{["Item","Current","Expected","Diff","WAC","$ Impact","Status","Set To",""].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
-                  <tbody>{discrepancies.map((d,i) => {
-                    const expData = expected[d.itemId + ":" + d.option];
-                    const isOpen = auditDetail && auditDetail.itemId === d.itemId && auditDetail.option === d.option;
-                    return (<React.Fragment key={i}>
-                    <tr style={{borderBottom:`1px solid ${C.brd}`,background:d.diff>0?C.wrn+"08":C.red+"08",cursor:"pointer"}} onClick={()=>setAuditDetail(isOpen?null:{itemId:d.itemId,option:d.option,name:d.name})}>
-                      <td style={{...tdS,fontWeight:700}}>{isOpen?"▼ ":"▶ "}{d.name}</td>
-                      <td style={{...tdS,fontFamily:MN,fontWeight:700}}>{d.currentQty}</td>
-                      <td style={{...tdS,fontFamily:MN,fontWeight:700,color:C.blu}}>{d.expectedQty}</td>
-                      <td style={{...tdS,fontFamily:MN,fontWeight:800,color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "+" : ""}{d.diff}</td>
-                      <td style={{...tdS,fontFamily:MN}}>{fmt$(d.wac)}</td>
-                      <td style={{...tdS,fontFamily:MN,fontWeight:700,color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "+" : ""}{fmt$(d.dollarImpact)}</td>
-                      <td style={{...tdS}}><span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:5,background:d.diff>0?C.wrn+"15":C.red+"15",color:d.diff>0?C.wrn:C.red}}>{d.diff > 0 ? "OVER" : "UNDER"}</span></td>
-                      <td style={{...tdS}}><input id={"fix_"+i} type="number" defaultValue={d.expectedQty} onFocus={(e)=>e.target.select()} onClick={(e)=>e.stopPropagation()} style={{width:60,padding:"4px 6px",borderRadius:6,border:`1px solid ${C.brd}`,fontFamily:MN,fontSize:12,textAlign:"center"}}/></td>
-                      <td style={{...tdS}}><button onClick={(e)=>{e.stopPropagation();const v=document.getElementById("fix_"+i).value;fixOne(d,v);}} style={{padding:"4px 10px",borderRadius:6,border:"none",background:NAVY,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Fix</button></td>
-                    </tr>
-                    {isOpen && expData && <tr><td colSpan={9} style={{padding:"12px 20px",background:C.sf,borderBottom:`2px solid ${C.brd}`}}>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-                        <div>
-                          <div style={{fontSize:11,fontWeight:800,color:C.grn,marginBottom:6,textTransform:"uppercase"}}>Receives ({expData.receives.length} entries, total +{expData.receives.reduce((s,r)=>s+r.qty,0)})</div>
-                          {expData.receives.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>+{r.qty} @ {fmt$(r.cost)} — {fD(r.date)} {r.note&&<span style={{color:C.t2}}>({r.note})</span>}</div>)}
-                          {!expData.receives.length&&<div style={{fontSize:11,color:C.t2}}>No receives logged</div>}
-                        </div>
-                        <div>
-                          <div style={{fontSize:11,fontWeight:800,color:C.red,marginBottom:6,textTransform:"uppercase"}}>Orders ({expData.orders.length} entries, total -{expData.orders.reduce((s,r)=>s+r.qty,0)})</div>
-                          {expData.orders.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>-{r.qty} — {r.job||"No job"} {r.po&&`(${r.po})`} — {fD(r.date)}</div>)}
-                          {!expData.orders.length&&<div style={{fontSize:11,color:C.t2}}>No orders</div>}
-                        </div>
-                        <div>
-                          <div style={{fontSize:11,fontWeight:800,color:C.blu,marginBottom:6,textTransform:"uppercase"}}>Returns ({expData.returns.length} entries, total +{expData.returns.reduce((s,r)=>s+r.qty,0)})</div>
-                          {expData.returns.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>+{r.qty} — {r.job||"No job"} — {fD(r.date)}</div>)}
-                          {!expData.returns.length&&<div style={{fontSize:11,color:C.t2}}>No returns</div>}
-                        </div>
-                        <div>
-                          <div style={{fontSize:11,fontWeight:800,color:C.wrn,marginBottom:6,textTransform:"uppercase"}}>Shrinkage/Damage ({expData.shrinkage.length} entries)</div>
-                          {expData.shrinkage.map((r,ri)=><div key={ri} style={{fontSize:11,padding:"3px 0",borderBottom:`1px solid ${C.brd}22`}}>{r.qty>0?"+":""}{r.qty} — {r.reason||r.type} — {fD(r.date)}</div>)}
-                          {!expData.shrinkage.length&&<div style={{fontSize:11,color:C.t2}}>None</div>}
-                        </div>
-                      </div>
-                      <div style={{marginTop:10,padding:"8px 12px",background:NAVY+"08",borderRadius:8,fontSize:11,fontFamily:MN}}>
-                        <strong>Math:</strong> {expData.receives.reduce((s,r)=>s+r.qty,0)} received − {expData.orders.reduce((s,r)=>s+r.qty,0)} ordered + {expData.returns.reduce((s,r)=>s+r.qty,0)} returned − {Math.abs(expData.shrinkage.filter(r=>r.qty<0).reduce((s,r)=>s+r.qty,0))} shrinkage = {d.expectedQty} expected vs {d.currentQty} actual
-                      </div>
-                    </td></tr>}
-                    </React.Fragment>);
-                  })}</tbody>
-                </table>
-              </div></div>
-
-              <div style={{marginTop:14,padding:"12px 16px",background:C.wrn+"10",border:`1px solid ${C.wrn}33`,borderRadius:10}}>
-                <div style={{fontSize:12,fontWeight:700,color:C.wrn,marginBottom:4}}>⚠️ Why some numbers may be off</div>
-                <div style={{fontSize:12,color:C.t2}}>The audit calculates expected stock from all logged receives, approved orders, returns, and shrinkage. Any inventory that existed BEFORE the receive logging system was built will not appear as receives — the audit thinks those items were never received. For those items, use the "Set To" field to enter the correct quantity and click Fix individually.</div>
-              </div>
-
-              {/* ── STOCK REPLAY ── */}
-              <div style={{marginTop:24}}>
-                <div style={{fontSize:18,fontWeight:800,marginBottom:12,fontFamily:BC}}>Stock Replay — Over-Approval Detection</div>
-                <div style={{fontSize:12,color:C.t2,marginBottom:16}}>Replays every transaction in chronological order. Flags any moment an order deducted more than available stock.</div>
-                {(() => {
-                  // Build ALL transactions across all items chronologically
-                  const allTx = [];
-
-                  // Receives (deduplicated)
-                  dedupedLog.forEach(r => {
-                    allTx.push({ type: "receive", itemId: r.itemId, option: r.option || "_default", qty: +(r.qty)||0, date: r.date, label: "Received", detail: `+${+(r.qty)||0} @ ${fmt$(+(r.unitCost)||0)}` });
-                  });
-
-                  // Approved orders
-                  allApproved.filter(o => o.type === "order").forEach(o => {
-                    (o.lines || []).forEach(l => {
-                      allTx.push({ type: "order", itemId: l.itemId, option: l.option || "_default", qty: -(+(l.qty)||0), date: o.approvedDate || o.date, label: o.jobName || "No job", detail: `-${+(l.qty)||0}`, po: o.poNumber || "", job: o.jobName || "" });
-                    });
-                  });
-
-                  // Approved returns
-                  allApproved.filter(o => o.type === "return").forEach(o => {
-                    (o.lines || []).forEach(l => {
-                      allTx.push({ type: "return", itemId: l.itemId, option: l.option || "_default", qty: +(l.qty)||0, date: o.approvedDate || o.date, label: (o.jobName || "No job") + " Return", detail: `+${+(l.qty)||0}`, po: o.poNumber || "" });
-                    });
-                  });
-
-                  // Shrinkage
-                  (shrinkLog || []).forEach(r => {
-                    const qty = r.type === "found" ? (+(r.qty)||0) : -(+(r.qty)||0);
-                    allTx.push({ type: "shrinkage", itemId: r.itemId, option: r.option || "_default", qty, date: r.date, label: r.reason || "Shrinkage", detail: `${qty > 0 ? "+" : ""}${qty}` });
-                  });
-
-                  // Sort by date
-                  allTx.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-                  // Replay per item/option
-                  const violations = []; // { itemId, option, name, job, po, date, orderQty, stockBefore, stockAfter, overdrawn }
-                  const runningStock = {};
-
-                  allTx.forEach(tx => {
-                    const k = tx.itemId + ":" + tx.option;
-                    if (!runningStock[k]) runningStock[k] = 0;
-                    const before = runningStock[k];
-                    runningStock[k] += tx.qty;
-                    if (tx.type === "order" && runningStock[k] < 0) {
-                      const it = items.find(i => i.id === tx.itemId);
-                      const name = (it?.name || "?") + (tx.option !== "_default" ? ` (${tx.option})` : "");
-                      violations.push({
-                        name, job: tx.job || tx.label, po: tx.po || "", date: tx.date,
-                        orderQty: Math.abs(tx.qty), stockBefore: before,
-                        stockAfter: runningStock[k],
-                        overdrawn: Math.abs(runningStock[k])
-                      });
-                      runningStock[k] = 0; // Math.max(0) — what the system actually did
-                    }
-                  });
-
-                  const totalOverdrawn = violations.reduce((s, v) => s + v.overdrawn, 0);
-
-                  return (
-                    <div>
-                      <Rw g={14}>
-                        <Stat label="Over-Approvals Found" value={violations.length} color={violations.length > 0 ? C.red : C.grn} />
-                        <Stat label="Total Units Over-Deducted" value={totalOverdrawn} color={totalOverdrawn > 0 ? C.red : C.grn} />
-                      </Rw>
-
-                      {violations.length === 0 && <div style={{...crd,marginTop:16,padding:30,textAlign:"center"}}><CheckCircle size={40} color={C.grn} style={{marginBottom:12}}/><div style={{fontSize:18,fontWeight:700}}>No over-approvals detected</div><div style={{color:C.t2,fontSize:13}}>Every order had sufficient stock at the time of approval.</div></div>}
-
-                      {violations.length > 0 && <div style={{...crd,padding:0,marginTop:16}}><div style={{overflowX:"auto",maxHeight:500}}>
-                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                          <thead><tr>{["Item","Job","PO","Date","Order Qty","Stock Before","Overdrawn"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
-                          <tbody>{violations.map((v,i) => (
-                            <tr key={i} style={{borderBottom:`1px solid ${C.brd}`,background:C.red+"08"}}>
-                              <td style={{...tdS,fontWeight:700}}>{v.name}</td>
-                              <td style={{...tdS}}>{v.job}</td>
-                              <td style={{...tdS,fontSize:11,color:C.t2}}>{v.po||"—"}</td>
-                              <td style={{...tdS,fontSize:11}}>{fD(v.date)}</td>
-                              <td style={{...tdS,fontFamily:MN,fontWeight:700}}>{v.orderQty}</td>
-                              <td style={{...tdS,fontFamily:MN,fontWeight:700,color:C.wrn}}>{v.stockBefore}</td>
-                              <td style={{...tdS,fontFamily:MN,fontWeight:800,color:C.red}}>-{v.overdrawn}</td>
-                            </tr>
-                          ))}</tbody>
-                        </table>
-                      </div></div>}
-
-                      {violations.length > 0 && <div style={{marginTop:12,fontSize:11,color:C.t2,fontStyle:"italic"}}>
-                        These orders were approved when stock was insufficient. The system set stock to 0 instead of going negative. The "Overdrawn" column shows how many units were deducted beyond what was available. This cannot happen going forward — the stock check at approval now blocks insufficient stock.
-                      </div>}
-                    </div>
-                  );
-                })()}
-              </div>
-            </>}
-
-            {/* ── 🕵️ MISTAKE FINDER — combined detectors, yes/no format ── */}
-            {(() => {
-              const imD = Object.fromEntries(items.map(i => [i.id, i]));
-              const busy = !!detBusy;
-
-              // ---- D1: duplicate orders ----
-              const eligible = orders.filter(o => (o.status === "approved" || o.status === "pending") && (o.lines||[]).length);
-              const clusters = {};
-              eligible.forEach(o => {
-                const jobKey = o.jnJobId || o.jobName || "(no job)";
-                const sig = (o.lines||[]).map(l => `${l.itemId}|${l.option||"_default"}|${l.qty}`).sort().join("~");
-                (clusters[jobKey + "::" + sig] = clusters[jobKey + "::" + sig] || []).push(o);
-              });
-              const dupClusters = Object.values(clusters).filter(g => g.length > 1)
-                .map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date)))
-                .filter(g => (new Date(g[g.length-1].date) - new Date(g[0].date)) < 48*3600000)
-                .filter(g => !ignores["dup:" + g.map(o=>o.id).sort().join(",")]);
-
-              // ---- D2: duplicate receives ----
-              const rGroups = {};
-              invLog.forEach(e => {
-                const k = `${e.itemId}|${e.option||"_default"}|${e.qty}|${e.unitCost}|${(e.date||"").slice(0,10)}`;
-                (rGroups[k] = rGroups[k] || []).push(e);
-              });
-              const dupReceives = Object.values(rGroups).filter(g => g.length > 1)
-                .map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date)))
-                .filter(g => !ignores["rcv:" + g.map(e=>e.id).sort().join(",")]);
-
-              // ---- D3: orphaned / mismatched approvals ----
-              const approveEntries = auditTrail.filter(a => typeof a.action === "string" && a.action.startsWith("Approve order"));
-              const byLabel = {};
-              approveEntries.forEach(a => {
-                const label = a.action.replace(/^Approve order( \(retry\))?: /, "");
-                (byLabel[label] = byLabel[label] || []).push(a);
-              });
-              const orphans = [];
-              Object.entries(byLabel).forEach(([label, entries]) => {
-                if (ignores["orph:" + label]) return;
-                const matches = orders.filter(o => o.id === label || o.jobName === label);
-                const accounted = matches.filter(o => o.approvedDate);
-                const rejectedAfter = matches.filter(o => o.status === "rejected" && o.approvedDate && !(+o.auditStockRestored));
-                if (matches.length === 0) orphans.push({ kind: "missing", label, entries });
-                else if (entries.length > accounted.length) {
-                  const extra = entries.length - accounted.length;
-                  if (accounted.length === 1 && (+accounted[0].auditExtraFixed||0) < extra) orphans.push({ kind: "extra", label, entries, order: accounted[0], extra });
-                  else if (accounted.length !== 1) orphans.push({ kind: "extraManual", label, entries, extra });
-                }
-                rejectedAfter.forEach(o => orphans.push({ kind: "rejected", label, entries, order: o }));
-              });
-
-              const totalQ = dupClusters.length + dupReceives.length + orphans.length;
-              const qBadge = { display:"inline-block", background:C.red, color:"#fff", borderRadius:20, padding:"2px 10px", fontSize:12, fontWeight:800, marginLeft:8 };
-              const card = { border:`2px solid ${C.wrn}66`, background:"#FFFDF5", borderRadius:14, padding:18, marginBottom:16 };
-              const qStyle = { fontSize:16, fontWeight:900, fontFamily:BC, marginBottom:8 };
-              const factStyle = { fontSize:12, color:C.t2, marginBottom:10 };
-              const itemsBox = { background:"#fff", border:`1px solid ${C.brd}`, borderRadius:10, padding:"10px 12px", fontSize:12, fontFamily:MN, marginBottom:12, lineHeight:1.7 };
-              const yesBtn = { ...bS, color:C.grn, borderColor:C.grn+"88", fontWeight:800, padding:"10px 16px", fontSize:13 };
-              const noBtn = { ...bD, fontWeight:800, padding:"10px 16px", fontSize:13 };
-              const rowBtns = { display:"flex", gap:10, flexWrap:"wrap" };
-
-              return (
-                <div style={{marginTop:24}}>
-                  <div style={{...crd, padding:20, borderLeft:`5px solid ${totalQ>0?C.red:C.grn}`}}>
-                    <div style={{fontSize:20,fontWeight:900,fontFamily:BC}}>🕵️ MISTAKE FINDER</div>
-                    <div style={{fontSize:13,color:C.t2,marginTop:4}}>We checked {orders.length} orders, {invLog.length} receive notes, and the last {auditTrail.length} activity entries.</div>
-                    <div style={{fontSize:15,fontWeight:800,marginTop:10,color:totalQ>0?C.red:C.grn}}>
-                      {totalQ === 0 ? "✅ No questions — everything we can check looks right." : `⚠️ ${totalQ} question${totalQ>1?"s":""} below. Each one is a simple YES or NO.`}
-                    </div>
-                    {totalQ>0 && <div style={{fontSize:12,color:C.t2,marginTop:6}}>Green button = "this is fine, hide it." Red button = "it was a mistake, fix it" — and it tells you exactly what will change before it does anything. Hidden questions stay hidden on this computer only.</div>}
-                  </div>
-
-                  {dupClusters.map((g, gi) => {
-                    const first = g[0];
-                    const words = lineWords(first.lines, imD);
-                    const hrsApart = Math.round((new Date(g[g.length-1].date)-new Date(first.date))/3600000*10)/10;
-                    const igKey = "dup:" + g.map(o=>o.id).sort().join(",");
-                    return (
-                      <div key={igKey} style={card}>
-                        <div style={qStyle}>❓ Did you really order the SAME materials {g.length} times for “{first.jobName || "(no job)"}”?</div>
-                        <div style={factStyle}>{g.length} orders with identical items, submitted {hrsApart < 1 ? "minutes" : hrsApart + " hours"} apart. This is what a double-click glitch looks like — but it could also be a real re-order.</div>
-                        <div style={itemsBox}><strong style={{fontFamily:"inherit"}}>Each order contains exactly:</strong><br/>{words.map((w,i)=><span key={i}>• {w}<br/></span>)}</div>
-                        {g.map((o, oi) => (
-                          <div key={o.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:oi===0?"#F0FFF4":"#fff",border:`1px solid ${C.brd}`,borderRadius:8,marginBottom:6}}>
-                            <div style={{fontSize:12}}>
-                              <strong>{o.poNumber || "no PO"}</strong> · {new Date(o.date).toLocaleString()} · by {o.userName||"?"} · <span style={{fontWeight:800,color:o.status==="approved"?C.grn:C.wrn}}>{o.status.toUpperCase()}</span>
-                              {oi===0 && <span style={{color:C.grn,fontWeight:800}}> ← the original (keep this one)</span>}
-                            </div>
-                            {oi>0 && <button disabled={busy} onClick={async () => {
-                              const puts = o.status==="approved" ? `\n\nThis puts BACK into stock:\n${words.map(w=>"  + "+w).join("\n")}` : "\n\nIt is PENDING, so stock does not change at all.";
-                              if (!confirm(`Delete the duplicate ${o.poNumber||"order"}?${puts}\n\nThe original from ${new Date(g[0].date).toLocaleString()} stays.`)) return;
-                              setDetBusy(o.id); try { await auditDeleteOrder(o.id); } finally { setDetBusy(null); }
-                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ NO — delete this duplicate</button>}
-                          </div>
-                        ))}
-                        <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore(igKey)} style={yesBtn}>✓ YES — these are real separate orders (hide this)</button></div>
-                      </div>
-                    );
-                  })}
-
-                  {dupReceives.map((g) => {
-                    const e0 = g[0];
-                    const igKey = "rcv:" + g.map(e=>e.id).sort().join(",");
-                    return (
-                      <div key={igKey} style={card}>
-                        <div style={qStyle}>❓ Did you really receive “{e0.qty}× {e0.itemName}” {g.length} times on {fD(e0.date)}?</div>
-                        <div style={factStyle}>Same item, same amount, same cost ({fmt$(e0.unitCost)} each), logged {g.length} times that day. <strong>Your stock number is safe either way</strong> — this only cleans up the history notes.</div>
-                        {g.map((e, ei) => (
-                          <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:ei===0?"#F0FFF4":"#fff",border:`1px solid ${C.brd}`,borderRadius:8,marginBottom:6}}>
-                            <div style={{fontSize:12,fontFamily:MN}}>{new Date(e.date).toLocaleString()}{ei===0 && <span style={{color:C.grn,fontWeight:800,fontFamily:"inherit"}}> ← keep (first one)</span>}</div>
-                            {ei>0 && <button disabled={busy} onClick={async () => {
-                              if (!confirm("Remove this duplicate note?\n\nStock numbers do NOT change — only the history entry goes away.")) return;
-                              await removeInvLogEntry(e.id);
-                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ NO — remove duplicate note</button>}
-                          </div>
-                        ))}
-                        <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore(igKey)} style={yesBtn}>✓ YES — we really received it twice (hide this)</button></div>
-                      </div>
-                    );
-                  })}
-
-                  {orphans.map((p, pi) => {
-                    const words = p.order ? lineWords(p.order.lines, imD) : [];
-                    return (
-                      <div key={pi + p.kind + p.label} style={{...card, borderColor:C.red+"66", background:"#FFF7F7"}}>
-                        {p.kind === "missing" && <>
-                          <div style={qStyle}>❓ “{p.label}” was approved, but the order is GONE.</div>
-                          <div style={factStyle}>Stock was taken out when it was approved ({p.entries.map(e=>fD(e.date)).join(", ")}), and then the order record was deleted. We don’t know the exact items anymore, so there is no automatic fix.</div>
-                          <div style={{...itemsBox, background:"#EEF4FF", fontFamily:"inherit"}}>👉 <strong>Do this:</strong> physically count the materials used on this job, then set them in <strong>Physical Count</strong>. That makes them right again.</div>
-                          <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ Done / this is fine (hide this)</button></div>
-                        </>}
-                        {p.kind === "extra" && <>
-                          <div style={qStyle}>❓ “{p.order.poNumber||p.label}” had stock taken out {p.entries.length} times — but it’s ONE order.</div>
-                          <div style={factStyle}>An old glitch approved it more than once, so {p.extra} extra deduction{p.extra>1?"s":""} hit your stock.</div>
-                          <div style={itemsBox}><strong style={{fontFamily:"inherit"}}>Fixing puts back ({p.extra}× extra):</strong><br/>{words.map((w,i)=><span key={i}>• {w}{p.extra>1?`  (×${p.extra})`:""}<br/></span>)}</div>
-                          <div style={rowBtns}>
-                            <button disabled={busy} onClick={async () => {
-                              if (!confirm(`Fix it?\n\nThis puts BACK into stock (${p.extra}× extra):\n${words.map(w=>"  + "+w).join("\n")}\n\nIt can only be done once — the button disappears after.`)) return;
-                              await restoreOrderStock(p.order.id, p.extra, "auditExtraFixed");
-                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ FIX IT — put the extra stock back</button>
-                            <button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ This is fine (hide this)</button>
-                          </div>
-                        </>}
-                        {p.kind === "extraManual" && <>
-                          <div style={qStyle}>❓ “{p.label}” has more approvals than orders.</div>
-                          <div style={factStyle}>{p.entries.length} approvals are logged, but several orders share this job name, so we can’t tell which one was double-hit.</div>
-                          <div style={{...itemsBox, background:"#EEF4FF", fontFamily:"inherit"}}>👉 <strong>Do this:</strong> physically count this job’s materials and set them in <strong>Physical Count</strong>.</div>
-                          <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ Done / this is fine (hide this)</button></div>
-                        </>}
-                        {p.kind === "rejected" && <>
-                          <div style={qStyle}>❓ “{p.order.poNumber||p.label}” was APPROVED (stock taken out) — then marked REJECTED.</div>
-                          <div style={factStyle}>The stock never came back when it flipped to rejected. One click puts it back.</div>
-                          <div style={itemsBox}><strong style={{fontFamily:"inherit"}}>Fixing puts back:</strong><br/>{words.map((w,i)=><span key={i}>• {w}<br/></span>)}</div>
-                          <div style={rowBtns}>
-                            <button disabled={busy} onClick={async () => {
-                              if (!confirm(`Fix it?\n\nThis puts BACK into stock:\n${words.map(w=>"  + "+w).join("\n")}\n\nIt can only be done once.`)) return;
-                              await restoreOrderStock(p.order.id, 1, "auditStockRestored");
-                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ FIX IT — put the stock back</button>
-                            <button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ This is fine (hide this)</button>
-                          </div>
-                        </>}
-                      </div>
-                    );
-                  })}
+              <div style={softCard}>
+                <div style={{fontSize:20,fontWeight:900,fontFamily:BC}}>{it.name}</div>
+                <div style={{fontSize:12,color:C.t2,marginBottom:12}}>{it.category} · {it.unit||"units"}</div>
+                <div style={{marginBottom:12, padding:"10px 14px", borderRadius:10, fontSize:13, fontWeight:700,
+                  background: unexplained===0 ? "#F0FFF4" : "#FFF7F0", border:`1px solid ${unexplained===0?C.grn:C.wrn}55`, color: unexplained===0?C.grn:C.wrn}}>
+                  {unexplained===0 ? "✓ History fully explains the current stock number." : `⚠ ${Math.abs(unexplained)} unit${Math.abs(unexplained)>1?"s":""} ${unexplained>0?"MORE":"FEWER"} in the system than history explains — your shelf count below settles it.`}
                 </div>
-              );
-            })()}
+                <div style={{maxHeight:320,overflowY:"auto",border:`1px solid ${C.brd}`,borderRadius:10}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead><tr>{["Date","What happened","Change","Running"].map(h=><th key={h} style={thS}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {L.rows.length===0 && <tr><td colSpan={4} style={{...tdS,textAlign:"center",color:C.t2,padding:20}}>No history for this item yet.</td></tr>}
+                      {L.rows.map((r,ri)=>(<tr key={ri} style={{borderBottom:`1px solid ${C.brd}`, background: r.badge? C.wrn+"0E" : "transparent"}}>
+                        <td style={{...tdS,whiteSpace:"nowrap",fontFamily:MN,fontSize:11}}>{fD(r.date)}</td>
+                        <td style={tdS}>
+                          {r.label}{r.opt!=="_default" && <span style={{color:C.t2}}> ({r.opt})</span>}
+                          {r.badge && <div style={{color:C.wrn,fontWeight:700,fontSize:11,marginTop:2}}>⚠ {r.badge}</div>}
+                          {r.fix && <button disabled={busy} onClick={r.fix.run} style={{...bS,color:C.red,borderColor:C.red+"66",padding:"4px 10px",fontSize:11,marginTop:4,opacity:busy?0.5:1}}>{r.fix.text}</button>}
+                        </td>
+                        <td style={{...tdS,fontFamily:MN,fontWeight:700,color:r.delta>0?C.grn:r.delta<0?C.red:C.t2}}>{r.delta>0?"+":""}{r.delta}</td>
+                        <td style={{...tdS,fontFamily:MN}}>{r.running}</td>
+                      </tr>))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:800,marginTop:10}}>
+                  <span>History total: <span style={{fontFamily:MN}}>{L.expectedTotal}</span></span>
+                  <span>System shows: <span style={{fontFamily:MN}}>{L.currentTotal}</span></span>
+                </div>
+              </div>
+              <div style={{...softCard, marginTop:14, borderLeft:`5px solid ${C.ac}`}}>
+                <div style={{fontSize:16,fontWeight:900,fontFamily:BC,marginBottom:4}}>📦 How many are on the shelf RIGHT NOW?</div>
+                <div style={{fontSize:12,color:C.t2,marginBottom:12}}>Numbers are pre-filled with what the system shows. If the shelf matches, just hit Verify. If not, type what you actually count — the difference gets logged automatically.</div>
+                {opts.map(opt => (
+                  <div key={opt} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 0",borderBottom:`1px solid ${C.brd}`}}>
+                    <div style={{flex:1,fontWeight:700,fontSize:13}}>{opt==="_default"?"(standard)":opt}</div>
+                    <div style={{fontSize:11,color:C.t2}}>system: <span style={{fontFamily:MN,fontWeight:700}}>{L.currentByOpt[opt]}</span></div>
+                    <input type="number" min="0" value={countVals[opt] ?? String(L.currentByOpt[opt])}
+                      onChange={e=>setCountVals(cv=>({...cv,[opt]:e.target.value}))}
+                      style={{...inp,width:110,textAlign:"center",fontFamily:MN,fontWeight:800,fontSize:15,
+                        borderColor: (countVals[opt]!==undefined && countVals[opt]!=="" && +countVals[opt]!==L.currentByOpt[opt]) ? C.wrn : C.brd}}/>
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:10,marginTop:16,flexWrap:"wrap"}}>
+                  {rescue.idx>0 && <button disabled={busy} onClick={()=>{setCountVals({});setRescue(r=>({...r,idx:r.idx-1}));}} style={{...bS,padding:"12px 18px"}}>◀ Back</button>}
+                  <button disabled={busy} onClick={()=>advance(null)} style={{...bS,padding:"12px 18px"}}>Skip this item</button>
+                  <button disabled={busy} onClick={()=>saveVerify(it, L)} style={{...bigBtn,background:C.grn,opacity:busy?0.6:1}}>✓ Save & Verify → next</button>
+                </div>
+              </div>
+            </div>
+          );
+        }
 
+        // ══ PHASE: DONE ══
+        const adj = rescue.results.filter(r=>r.deltas.length);
+        const shrinkVal = adj.reduce((s,r)=>s + r.deltas.filter(d=>d.delta<0).reduce((a,d)=>a+Math.abs(d.value),0), 0);
+        const foundVal = adj.reduce((s,r)=>s + r.deltas.filter(d=>d.delta>0).reduce((a,d)=>a+d.value,0), 0);
+        return (
+          <div style={{...softCard, borderLeft:`5px solid ${C.grn}`, textAlign:"center"}}>
+            <CheckCircle size={48} color={C.grn} style={{marginBottom:10}}/>
+            <div style={{fontSize:24,fontWeight:900,fontFamily:BC}}>RESCUE COMPLETE</div>
+            <div style={{fontSize:13,color:C.t2,marginTop:6}}>Clean baseline locked in {rescue.startedAt?`— ${new Date(rescue.startedAt).toLocaleDateString()}`:""}. From here, the portal's guards keep it true.</div>
+            <div style={{marginTop:18,display:"flex",justifyContent:"center"}}><Rw g={14}>
+              <Stat label="Items verified" value={rescue.results.length} color={C.grn} />
+              <Stat label="Items adjusted" value={adj.length} color={adj.length?C.wrn:C.grn} />
+              <Stat label="Shrinkage logged" value={"-"+fmt$(shrinkVal)} color={shrinkVal?C.red:C.grn} />
+              <Stat label="Found logged" value={"+"+fmt$(foundVal)} color={foundVal?C.grn:C.t2} />
+              <Stat label="Glitch fixes applied" value={rescue.fixes} color={rescue.fixes?C.blu:C.t2} />
+            </Rw></div>
+            {adj.length>0 && <div style={{textAlign:"left",maxWidth:560,margin:"18px auto 0",fontSize:12}}>
+              {adj.map(r=>(<div key={r.itemId} style={{padding:"8px 12px",borderBottom:`1px solid ${C.brd}`}}>
+                <strong>{r.name}</strong>: {r.deltas.map(d=>`${d.opt==="_default"?"":d.opt+" "}${d.from}→${d.to} (${d.delta>0?"+":""}${d.delta})`).join(", ")}
+              </div>))}
+            </div>}
+            <button onClick={()=>setRescue({phase:"idle",queue:[],idx:0,results:[],fixes:0,startedAt:null})} style={{...bigBtn,marginTop:20}}>Back to start</button>
           </div>
         );
       })()}
