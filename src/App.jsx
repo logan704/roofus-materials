@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v52 - forensic detectors: duplicate orders, duplicate receives, orphaned approvals
+// v52b - Mistake Finder: yes/no cards, item previews, one-click stock fixes
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
 const DELIVERY_SURCHARGE = 10 / 3; // $3.33 per bundle — $10/square, 3 bundles per square
@@ -984,7 +984,7 @@ export default function App() {
         {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
         {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
-        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} auditDeleteOrder={auditDeleteOrder} />}
+        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} auditDeleteOrder={auditDeleteOrder} atomicUpdateOrder={atomicUpdateOrder} />}
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
@@ -4100,7 +4100,7 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
 }
 
 // ═══ REPORTS ═══
-function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder }) {
+function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder, atomicUpdateOrder }) {
   const [tab, setTab] = useState("dash");
   const [range, setRange] = useState("30");
   const [catF, setCatF] = useState("All");
@@ -4138,6 +4138,33 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
         if (rb !== null && JSON.stringify(rb) === sig) { setInvLog(next); return true; }
       }
       alert("Could not remove log entry — check your internet."); return false;
+    } finally { setDetBusy(null); }
+  };
+  const IGN_KEY = "roofus_audit_ignores";
+  const [ignores, setIgnores] = useState(() => { try { return JSON.parse(localStorage.getItem(IGN_KEY)) || {}; } catch { return {}; } });
+  const addIgnore = (k) => { const n = { ...ignores, [k]: new Date().toISOString() }; setIgnores(n); try { localStorage.setItem(IGN_KEY, JSON.stringify(n)); } catch {} };
+  const lineWords = (lines, im) => (lines||[]).map(l => `${l.qty}× ${(im[l.itemId]?.name)||"Unknown item"}${l.option && l.option!=="_default" ? " ("+l.option+")" : ""}`);
+  // One-click stock restoration for Detector 3 — idempotent via flag on the order, fresh-verified
+  const restoreOrderStock = async (orderId, timesWanted, flagField) => {
+    if (detBusy) return false; setDetBusy(orderId + flagField);
+    try {
+      let fresh;
+      try { const fo = await ldStrict("orders"); fresh = fo.find(o => o.id === orderId); } catch(e) { alert("Cannot verify order — check your internet."); return false; }
+      if (!fresh) { alert("That order no longer exists."); return false; }
+      const already = +fresh[flagField] || 0;
+      const remaining = timesWanted - already;
+      if (remaining <= 0) { alert("This was already fixed — nothing to do."); return false; }
+      const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
+        const ls = (fresh.lines||[]).filter(l => l.itemId === it.id);
+        if (!ls.length) return it;
+        const v = { ...(it.variants || getVariants(it)) };
+        ls.forEach(l => { const k = l.option || "_default"; if (v[k]) { const delta = l.qty * remaining; v[k] = { ...v[k], qty: fresh.type === "order" ? (v[k].qty||0) + delta : Math.max(0, (v[k].qty||0) - delta) }; } });
+        return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s,x)=>s+(x.qty||0),0) };
+      }));
+      if (!stockResult) { alert("Stock restoration failed — nothing was changed. Check your internet."); return false; }
+      const flagged = await atomicUpdateOrder(orderId, (o) => ({ ...o, [flagField]: (+o[flagField]||0) + remaining }), "Audit fix: restored stock ×" + remaining);
+      if (!flagged) alert("Stock was restored, but marking it as fixed failed. Do NOT click the fix button again for this one — refresh first.");
+      return true;
     } finally { setDetBusy(null); }
   };
 
@@ -5673,110 +5700,173 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
               </div>
             </>}
 
-            {/* ── DETECTOR 1: POSSIBLE DUPLICATE ORDERS ── */}
+            {/* ── 🕵️ MISTAKE FINDER — combined detectors, yes/no format ── */}
             {(() => {
+              const imD = Object.fromEntries(items.map(i => [i.id, i]));
+              const busy = !!detBusy;
+
+              // ---- D1: duplicate orders ----
               const eligible = orders.filter(o => (o.status === "approved" || o.status === "pending") && (o.lines||[]).length);
               const clusters = {};
               eligible.forEach(o => {
                 const jobKey = o.jnJobId || o.jobName || "(no job)";
                 const sig = (o.lines||[]).map(l => `${l.itemId}|${l.option||"_default"}|${l.qty}`).sort().join("~");
-                const k = jobKey + "::" + sig;
-                (clusters[k] = clusters[k] || []).push(o);
+                (clusters[jobKey + "::" + sig] = clusters[jobKey + "::" + sig] || []).push(o);
               });
-              const dupClusters = Object.values(clusters).filter(g => g.length > 1).map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date))).filter(g => (new Date(g[g.length-1].date) - new Date(g[0].date)) < 48*3600000);
-              return (
-                <div style={{...crd, marginTop:20, padding:20}}>
-                  <div style={{fontSize:18,fontWeight:800,marginBottom:4,fontFamily:BC}}>🔁 Possible Duplicate Orders</div>
-                  <div style={{fontSize:12,color:C.t2,marginBottom:14}}>Orders on the same job with identical line items submitted within 48 hours — the double-submit glitch signature. Deleting an approved duplicate automatically restores its stock.</div>
-                  {dupClusters.length === 0 && <div style={{padding:16,textAlign:"center",color:C.grn,fontWeight:700,fontSize:14}}><CheckCircle size={28} style={{marginBottom:6}}/><div>No duplicate orders detected.</div></div>}
-                  {dupClusters.map((g, gi) => (
-                    <div key={gi} style={{border:`1px solid ${C.wrn}55`,background:C.wrn+"08",borderRadius:10,padding:14,marginBottom:12}}>
-                      <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>{g[0].jobName || "(no job)"} — {g.length} identical orders · {(g[0].lines||[]).length} items each</div>
-                      {g.map(o => (
-                        <div key={o.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}>
-                          <div style={{fontSize:12}}>
-                            <strong>{o.poNumber || "—"}</strong> · {fD(o.date)} · by {o.userName || "?"} · <span style={{fontWeight:700,color:o.status==="approved"?C.grn:C.wrn}}>{o.status.toUpperCase()}</span>
-                            {o.status==="pending" && <span style={{color:C.t2}}> (no stock impact yet)</span>}
-                          </div>
-                          <button disabled={!!detBusy} onClick={async () => {
-                            if (detBusy) return;
-                            if (!confirm(`Delete ${o.poNumber || "this order"}?\n\n${o.status==="approved" ? "It is APPROVED — its stock will be restored to inventory." : "It is pending — no stock impact."}\n\nOnly do this if you are sure it is a duplicate.`)) return;
-                            setDetBusy(o.id);
-                            try { await auditDeleteOrder(o.id); } finally { setDetBusy(null); }
-                          }} style={{...bD,padding:"6px 12px",fontSize:12,opacity:detBusy?0.5:1}}><Trash2 size={13}/> Delete this one</button>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
+              const dupClusters = Object.values(clusters).filter(g => g.length > 1)
+                .map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date)))
+                .filter(g => (new Date(g[g.length-1].date) - new Date(g[0].date)) < 48*3600000)
+                .filter(g => !ignores["dup:" + g.map(o=>o.id).sort().join(",")]);
 
-            {/* ── DETECTOR 2: DUPLICATE RECEIVE LOG ENTRIES ── */}
-            {(() => {
-              const groups = {};
+              // ---- D2: duplicate receives ----
+              const rGroups = {};
               invLog.forEach(e => {
-                const day = (e.date||"").slice(0,10);
-                const k = `${e.itemId}|${e.option||"_default"}|${e.qty}|${e.unitCost}|${day}`;
-                (groups[k] = groups[k] || []).push(e);
+                const k = `${e.itemId}|${e.option||"_default"}|${e.qty}|${e.unitCost}|${(e.date||"").slice(0,10)}`;
+                (rGroups[k] = rGroups[k] || []).push(e);
               });
-              const dupGroups = Object.values(groups).filter(g => g.length > 1).map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date)));
-              return (
-                <div style={{...crd, marginTop:20, padding:20}}>
-                  <div style={{fontSize:18,fontWeight:800,marginBottom:4,fontFamily:BC}}>📥 Duplicate Receive Log Entries</div>
-                  <div style={{fontSize:12,color:C.t2,marginBottom:14}}>Identical receives (same item, qty, cost) logged on the same day — the old double-save glitch. Removing an extra entry cleans the log ONLY; stock is not touched (the audit math already ignores these duplicates). Keep the earliest, remove the extras.</div>
-                  {dupGroups.length === 0 && <div style={{padding:16,textAlign:"center",color:C.grn,fontWeight:700,fontSize:14}}><CheckCircle size={28} style={{marginBottom:6}}/><div>No duplicate receive entries detected.</div></div>}
-                  {dupGroups.map((g, gi) => (
-                    <div key={gi} style={{border:`1px solid ${C.wrn}55`,background:C.wrn+"08",borderRadius:10,padding:14,marginBottom:12}}>
-                      <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>{g[0].itemName} — +{g[0].qty} @ {fmt$(g[0].unitCost)} logged {g.length}× on {fD(g[0].date)}</div>
-                      {g.map((e, ei) => (
-                        <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}>
-                          <div style={{fontSize:12,fontFamily:MN}}>{new Date(e.date).toLocaleString()} {ei===0 && <span style={{color:C.grn,fontWeight:700,fontFamily:"inherit"}}>← keep (earliest)</span>}</div>
-                          {ei>0 && <button disabled={!!detBusy} onClick={async () => {
-                            if (detBusy) return;
-                            if (!confirm("Remove this duplicate log entry? Stock will NOT change — this only cleans the receive history.")) return;
-                            await removeInvLogEntry(e.id);
-                          }} style={{...bS,color:C.red,borderColor:C.red+"55",padding:"6px 12px",fontSize:12,opacity:detBusy?0.5:1}}><Trash2 size={13}/> Remove duplicate</button>}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
+              const dupReceives = Object.values(rGroups).filter(g => g.length > 1)
+                .map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date)))
+                .filter(g => !ignores["rcv:" + g.map(e=>e.id).sort().join(",")]);
 
-            {/* ── DETECTOR 3: ORPHANED / MISMATCHED APPROVALS ── */}
-            {(() => {
+              // ---- D3: orphaned / mismatched approvals ----
               const approveEntries = auditTrail.filter(a => typeof a.action === "string" && a.action.startsWith("Approve order"));
               const byLabel = {};
               approveEntries.forEach(a => {
                 const label = a.action.replace(/^Approve order( \(retry\))?: /, "");
                 (byLabel[label] = byLabel[label] || []).push(a);
               });
-              const problems = [];
+              const orphans = [];
               Object.entries(byLabel).forEach(([label, entries]) => {
+                if (ignores["orph:" + label]) return;
                 const matches = orders.filter(o => o.id === label || o.jobName === label);
                 const accounted = matches.filter(o => o.approvedDate);
-                const rejectedAfter = matches.filter(o => o.status === "rejected" && o.approvedDate);
-                if (matches.length === 0) problems.push({ label, entries, kind: "missing", detail: `${entries.length} approval${entries.length>1?"s":""} logged but NO matching order exists — deleted after approval; its stock deduction was never restored.` });
-                else if (entries.length > accounted.length) problems.push({ label, entries, kind: "extra", detail: `${entries.length} approvals logged for ${accounted.length} approved order${accounted.length!==1?"s":""} — possible double-approval (stock hit ${entries.length}×).` });
-                else if (rejectedAfter.length) problems.push({ label, entries, kind: "rejected", detail: `Order was approved (stock deducted) and later flipped to REJECTED — stock was never restored.` });
+                const rejectedAfter = matches.filter(o => o.status === "rejected" && o.approvedDate && !(+o.auditStockRestored));
+                if (matches.length === 0) orphans.push({ kind: "missing", label, entries });
+                else if (entries.length > accounted.length) {
+                  const extra = entries.length - accounted.length;
+                  if (accounted.length === 1 && (+accounted[0].auditExtraFixed||0) < extra) orphans.push({ kind: "extra", label, entries, order: accounted[0], extra });
+                  else if (accounted.length !== 1) orphans.push({ kind: "extraManual", label, entries, extra });
+                }
+                rejectedAfter.forEach(o => orphans.push({ kind: "rejected", label, entries, order: o }));
               });
+
+              const totalQ = dupClusters.length + dupReceives.length + orphans.length;
+              const qBadge = { display:"inline-block", background:C.red, color:"#fff", borderRadius:20, padding:"2px 10px", fontSize:12, fontWeight:800, marginLeft:8 };
+              const card = { border:`2px solid ${C.wrn}66`, background:"#FFFDF5", borderRadius:14, padding:18, marginBottom:16 };
+              const qStyle = { fontSize:16, fontWeight:900, fontFamily:BC, marginBottom:8 };
+              const factStyle = { fontSize:12, color:C.t2, marginBottom:10 };
+              const itemsBox = { background:"#fff", border:`1px solid ${C.brd}`, borderRadius:10, padding:"10px 12px", fontSize:12, fontFamily:MN, marginBottom:12, lineHeight:1.7 };
+              const yesBtn = { ...bS, color:C.grn, borderColor:C.grn+"88", fontWeight:800, padding:"10px 16px", fontSize:13 };
+              const noBtn = { ...bD, fontWeight:800, padding:"10px 16px", fontSize:13 };
+              const rowBtns = { display:"flex", gap:10, flexWrap:"wrap" };
+
               return (
-                <div style={{...crd, marginTop:20, padding:20}}>
-                  <div style={{fontSize:18,fontWeight:800,marginBottom:4,fontFamily:BC}}>👻 Orphaned / Mismatched Approvals</div>
-                  <div style={{fontSize:12,color:C.t2,marginBottom:14}}>Cross-references the activity log (last 500 actions) against existing orders. These are display-only — exact quantities from lost orders are unrecoverable, so for flagged jobs, physically count those items and set them with Physical Count.</div>
-                  {problems.length === 0 && <div style={{padding:16,textAlign:"center",color:C.grn,fontWeight:700,fontSize:14}}><CheckCircle size={28} style={{marginBottom:6}}/><div>Every logged approval matches an existing order.</div></div>}
-                  {problems.map((p, pi) => (
-                    <div key={pi} style={{border:`1px solid ${C.red}55`,background:C.red+"08",borderRadius:10,padding:14,marginBottom:12}}>
-                      <div style={{fontWeight:800,fontSize:13}}>{p.label}</div>
-                      <div style={{fontSize:12,color:C.red,fontWeight:600,marginTop:4}}>{p.detail}</div>
-                      <div style={{fontSize:11,color:C.t2,fontFamily:MN,marginTop:6}}>Logged: {p.entries.map(e=>new Date(e.date).toLocaleString()+" by "+(e.user||"?")).join(" · ")}</div>
+                <div style={{marginTop:24}}>
+                  <div style={{...crd, padding:20, borderLeft:`5px solid ${totalQ>0?C.red:C.grn}`}}>
+                    <div style={{fontSize:20,fontWeight:900,fontFamily:BC}}>🕵️ MISTAKE FINDER</div>
+                    <div style={{fontSize:13,color:C.t2,marginTop:4}}>We checked {orders.length} orders, {invLog.length} receive notes, and the last {auditTrail.length} activity entries.</div>
+                    <div style={{fontSize:15,fontWeight:800,marginTop:10,color:totalQ>0?C.red:C.grn}}>
+                      {totalQ === 0 ? "✅ No questions — everything we can check looks right." : `⚠️ ${totalQ} question${totalQ>1?"s":""} below. Each one is a simple YES or NO.`}
                     </div>
-                  ))}
+                    {totalQ>0 && <div style={{fontSize:12,color:C.t2,marginTop:6}}>Green button = "this is fine, hide it." Red button = "it was a mistake, fix it" — and it tells you exactly what will change before it does anything. Hidden questions stay hidden on this computer only.</div>}
+                  </div>
+
+                  {dupClusters.map((g, gi) => {
+                    const first = g[0];
+                    const words = lineWords(first.lines, imD);
+                    const hrsApart = Math.round((new Date(g[g.length-1].date)-new Date(first.date))/3600000*10)/10;
+                    const igKey = "dup:" + g.map(o=>o.id).sort().join(",");
+                    return (
+                      <div key={igKey} style={card}>
+                        <div style={qStyle}>❓ Did you really order the SAME materials {g.length} times for “{first.jobName || "(no job)"}”?</div>
+                        <div style={factStyle}>{g.length} orders with identical items, submitted {hrsApart < 1 ? "minutes" : hrsApart + " hours"} apart. This is what a double-click glitch looks like — but it could also be a real re-order.</div>
+                        <div style={itemsBox}><strong style={{fontFamily:"inherit"}}>Each order contains exactly:</strong><br/>{words.map((w,i)=><span key={i}>• {w}<br/></span>)}</div>
+                        {g.map((o, oi) => (
+                          <div key={o.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:oi===0?"#F0FFF4":"#fff",border:`1px solid ${C.brd}`,borderRadius:8,marginBottom:6}}>
+                            <div style={{fontSize:12}}>
+                              <strong>{o.poNumber || "no PO"}</strong> · {new Date(o.date).toLocaleString()} · by {o.userName||"?"} · <span style={{fontWeight:800,color:o.status==="approved"?C.grn:C.wrn}}>{o.status.toUpperCase()}</span>
+                              {oi===0 && <span style={{color:C.grn,fontWeight:800}}> ← the original (keep this one)</span>}
+                            </div>
+                            {oi>0 && <button disabled={busy} onClick={async () => {
+                              const puts = o.status==="approved" ? `\n\nThis puts BACK into stock:\n${words.map(w=>"  + "+w).join("\n")}` : "\n\nIt is PENDING, so stock does not change at all.";
+                              if (!confirm(`Delete the duplicate ${o.poNumber||"order"}?${puts}\n\nThe original from ${new Date(g[0].date).toLocaleString()} stays.`)) return;
+                              setDetBusy(o.id); try { await auditDeleteOrder(o.id); } finally { setDetBusy(null); }
+                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ NO — delete this duplicate</button>}
+                          </div>
+                        ))}
+                        <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore(igKey)} style={yesBtn}>✓ YES — these are real separate orders (hide this)</button></div>
+                      </div>
+                    );
+                  })}
+
+                  {dupReceives.map((g) => {
+                    const e0 = g[0];
+                    const igKey = "rcv:" + g.map(e=>e.id).sort().join(",");
+                    return (
+                      <div key={igKey} style={card}>
+                        <div style={qStyle}>❓ Did you really receive “{e0.qty}× {e0.itemName}” {g.length} times on {fD(e0.date)}?</div>
+                        <div style={factStyle}>Same item, same amount, same cost ({fmt$(e0.unitCost)} each), logged {g.length} times that day. <strong>Your stock number is safe either way</strong> — this only cleans up the history notes.</div>
+                        {g.map((e, ei) => (
+                          <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:ei===0?"#F0FFF4":"#fff",border:`1px solid ${C.brd}`,borderRadius:8,marginBottom:6}}>
+                            <div style={{fontSize:12,fontFamily:MN}}>{new Date(e.date).toLocaleString()}{ei===0 && <span style={{color:C.grn,fontWeight:800,fontFamily:"inherit"}}> ← keep (first one)</span>}</div>
+                            {ei>0 && <button disabled={busy} onClick={async () => {
+                              if (!confirm("Remove this duplicate note?\n\nStock numbers do NOT change — only the history entry goes away.")) return;
+                              await removeInvLogEntry(e.id);
+                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ NO — remove duplicate note</button>}
+                          </div>
+                        ))}
+                        <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore(igKey)} style={yesBtn}>✓ YES — we really received it twice (hide this)</button></div>
+                      </div>
+                    );
+                  })}
+
+                  {orphans.map((p, pi) => {
+                    const words = p.order ? lineWords(p.order.lines, imD) : [];
+                    return (
+                      <div key={pi + p.kind + p.label} style={{...card, borderColor:C.red+"66", background:"#FFF7F7"}}>
+                        {p.kind === "missing" && <>
+                          <div style={qStyle}>❓ “{p.label}” was approved, but the order is GONE.</div>
+                          <div style={factStyle}>Stock was taken out when it was approved ({p.entries.map(e=>fD(e.date)).join(", ")}), and then the order record was deleted. We don’t know the exact items anymore, so there is no automatic fix.</div>
+                          <div style={{...itemsBox, background:"#EEF4FF", fontFamily:"inherit"}}>👉 <strong>Do this:</strong> physically count the materials used on this job, then set them in <strong>Physical Count</strong>. That makes them right again.</div>
+                          <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ Done / this is fine (hide this)</button></div>
+                        </>}
+                        {p.kind === "extra" && <>
+                          <div style={qStyle}>❓ “{p.order.poNumber||p.label}” had stock taken out {p.entries.length} times — but it’s ONE order.</div>
+                          <div style={factStyle}>An old glitch approved it more than once, so {p.extra} extra deduction{p.extra>1?"s":""} hit your stock.</div>
+                          <div style={itemsBox}><strong style={{fontFamily:"inherit"}}>Fixing puts back ({p.extra}× extra):</strong><br/>{words.map((w,i)=><span key={i}>• {w}{p.extra>1?`  (×${p.extra})`:""}<br/></span>)}</div>
+                          <div style={rowBtns}>
+                            <button disabled={busy} onClick={async () => {
+                              if (!confirm(`Fix it?\n\nThis puts BACK into stock (${p.extra}× extra):\n${words.map(w=>"  + "+w).join("\n")}\n\nIt can only be done once — the button disappears after.`)) return;
+                              await restoreOrderStock(p.order.id, p.extra, "auditExtraFixed");
+                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ FIX IT — put the extra stock back</button>
+                            <button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ This is fine (hide this)</button>
+                          </div>
+                        </>}
+                        {p.kind === "extraManual" && <>
+                          <div style={qStyle}>❓ “{p.label}” has more approvals than orders.</div>
+                          <div style={factStyle}>{p.entries.length} approvals are logged, but several orders share this job name, so we can’t tell which one was double-hit.</div>
+                          <div style={{...itemsBox, background:"#EEF4FF", fontFamily:"inherit"}}>👉 <strong>Do this:</strong> physically count this job’s materials and set them in <strong>Physical Count</strong>.</div>
+                          <div style={rowBtns}><button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ Done / this is fine (hide this)</button></div>
+                        </>}
+                        {p.kind === "rejected" && <>
+                          <div style={qStyle}>❓ “{p.order.poNumber||p.label}” was APPROVED (stock taken out) — then marked REJECTED.</div>
+                          <div style={factStyle}>The stock never came back when it flipped to rejected. One click puts it back.</div>
+                          <div style={itemsBox}><strong style={{fontFamily:"inherit"}}>Fixing puts back:</strong><br/>{words.map((w,i)=><span key={i}>• {w}<br/></span>)}</div>
+                          <div style={rowBtns}>
+                            <button disabled={busy} onClick={async () => {
+                              if (!confirm(`Fix it?\n\nThis puts BACK into stock:\n${words.map(w=>"  + "+w).join("\n")}\n\nIt can only be done once.`)) return;
+                              await restoreOrderStock(p.order.id, 1, "auditStockRestored");
+                            }} style={{...noBtn,opacity:busy?0.5:1}}>✗ FIX IT — put the stock back</button>
+                            <button disabled={busy} onClick={()=>addIgnore("orph:"+p.label)} style={yesBtn}>✓ This is fine (hide this)</button>
+                          </div>
+                        </>}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })()}
+
           </div>
         );
       })()}
