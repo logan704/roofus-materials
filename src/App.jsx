@@ -3,8 +3,10 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50N - fix white screen crash, double approval fix, savings fix
+// v50R - surcharge in all savings reports, invoice, sync fixes
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
+const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
+const DELIVERY_SURCHARGE = 10 / 3; // $3.33 per bundle — $10/square, 3 bundles per square
 const UNITS = ["bundle","roll","sheet","piece","box","tube","lb","ft","sq ft","each","gallon","bag","square","case"];
 const PERMS = [
   { key: "approve_orders", label: "Approve / Reject Orders" },
@@ -163,28 +165,34 @@ function generateOrderHTML(order, items) {
   const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
   const ls = order.lines || [];
   const tCost = ls.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
-  const tSell = ls.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
   const tSupplier = ls.reduce((s, l) => s + l.qty * (l.supplierCost || 0), 0);
-  const marginPct = tSell > 0 ? ((1 - tCost / tSell) * 100).toFixed(1) : "0";
-  const savingsVsMarkup = tSell - tCost;
-  const savingsVsSupplier = tSupplier - tCost;
+  let tSurcharge = 0;
+  let tSavings = 0;
   const rows = ls.map((l) => {
-    const it = iMap[l.itemId] || { name: "?", unit: "" };
+    const it = iMap[l.itemId] || { name: "?", unit: "", category: "" };
     const opt = l.option && l.option !== "_default" ? l.option : "—";
-    return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r" style="background:#FFFF00;font-weight:700">${fmt$(l.markupCost)}</td><td class="r">${fmt$(l.supplierCost||0)}</td><td class="r">${fmt$(l.qty*l.unitCost)}</td><td class="r" style="font-weight:700;background:#FFFF00">${fmt$(l.qty*l.markupCost)}</td></tr>`;
+    const isShingle = SHINGLE_CATS.includes(it.category);
+    const surcharge = isShingle ? l.qty * DELIVERY_SURCHARGE : 0;
+    tSurcharge += surcharge;
+    const supplierExt = l.qty * (l.supplierCost || 0);
+    const costExt = l.qty * (l.unitCost || 0);
+    const lineSavings = supplierExt - costExt - surcharge;
+    tSavings += lineSavings;
+    const savColor = lineSavings >= 0 ? "#1E8449" : "#B22234";
+    const savSign = lineSavings >= 0 ? "+" : "";
+    return `<tr><td style="font-weight:700">${it.name}</td><td>${opt}</td><td class="r">${l.qty} ${it.unit||""}</td><td class="r">${fmt$(l.unitCost)}</td><td class="r">${fmt$(l.supplierCost||0)}</td><td class="r">${fmt$(costExt)}</td><td class="r" style="color:${savColor};font-weight:700">${savSign}${fmt$(lineSavings)}</td></tr>`;
   }).join("");
   return `<!DOCTYPE html><html><head><title>${(order.poNumber||"Order")} Material Order</title>
-<style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#666}td{padding:6px;border-bottom:1px solid #ddd;font-size:11px}.r{text-align:right}.hd{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234}.tot{margin-top:14px;padding:12px;background:#f0f2f5;border-radius:5px;border-left:4px solid #B22234}.tr{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}.trb{font-size:14px;font-weight:800;border-top:2px solid #1B2A4A;padding-top:7px;margin-top:5px}.sav{margin-top:10px;padding:10px;background:#d4edda;border-radius:4px;font-size:11px}@media print{body{padding:20px}@page{margin:0.5in}}</style></head><body>
+<style>*{box-sizing:border-box;margin:0;padding:0;font-family:Helvetica,Arial,sans-serif}body{padding:36px;color:#1a1a1a;font-size:12px;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th{text-align:left;padding:7px 6px;border-bottom:2px solid #1B2A4A;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#666}td{padding:6px;border-bottom:1px solid #ddd;font-size:11px}.r{text-align:right}.hd{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:3px solid #B22234}.tot{margin-top:14px;padding:12px;background:#f0f2f5;border-radius:5px;border-left:4px solid #B22234}.tr{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}.trb{font-size:14px;font-weight:800;border-top:2px solid #1B2A4A;padding-top:7px;margin-top:5px}@media print{body{padding:20px}@page{margin:0.5in}}</style></head><body>
 <div class="hd"><div><div style="font-size:24px;font-weight:900;letter-spacing:-0.02em">ROOFUS<span style="color:#B22234">.</span></div><div style="font-size:10px;color:#666;margin-top:2px">Construction, LLC · Columbia, MO</div></div>
 <div style="text-align:right;font-size:11px;color:#666"><div style="font-weight:800;font-size:13px;color:#1B2A4A">${order.type==="return"?"RETURN":"MATERIAL ORDER"}</div><div style="margin-top:3px">PO: <strong style="color:#1a1a1a">${order.poNumber||"—"}</strong></div><div>Date: ${fD(order.date)}</div><div>By: ${order.userName||"—"}</div>
 <div style="margin-top:4px"><span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;background:${order.status==="approved"?"#d4edda":"#fff3cd"};color:${order.status==="approved"?"#155724":"#856404"}">${(order.status||"pending").toUpperCase()}</span></div></div></div>
 ${order.jobName?`<div style="margin-bottom:12px;font-size:12px"><strong>Job:</strong> ${order.jobName}${order.jobAddress?" — "+order.jobAddress:""}</div>`:""}
-<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r" style="background:#FFFF00">Sell Price</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r" style="background:#FFFF00">Sell Ext</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Item</th><th>Color/Style</th><th class="r">Qty</th><th class="r">Our Cost</th><th class="r">Supplier $</th><th class="r">Cost Ext</th><th class="r">Savings</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="tot"><div class="tr"><span>Total (Our Cost):</span><span>${fmt$(tCost)}</span></div>
-<div class="tr trb" style="background:#FFFF00;padding:8px;margin:6px -12px 0;border-radius:4px"><span>Total (Sell Price):</span><span>${fmt$(tSell)}</span></div>
-<div class="tr"><span>Gross Margin:</span><span style="color:#1E8449">${fmt$(savingsVsMarkup)} (${marginPct}%)</span></div>
-${tSupplier > 0 ? `<div class="tr" style="border-top:1px solid #ccc;padding-top:4px;margin-top:4px"><span>Total (Supplier Would Charge):</span><span>${fmt$(tSupplier)}</span></div>
-<div class="tr"><span>Savings vs Supplier:</span><span style="color:${savingsVsSupplier >= 0 ? '#1E8449' : '#B22234'}">${savingsVsSupplier >= 0 ? '+' : ''}${fmt$(savingsVsSupplier)}</span></div>` : ''}
+${tSupplier > 0 ? `<div class="tr"><span>Supplier Would Charge:</span><span>${fmt$(tSupplier)}</span></div>
+${tSurcharge > 0 ? `<div class="tr"><span>Delivery Surcharge (${Math.round(tSurcharge/DELIVERY_SURCHARGE)} bundles × $${DELIVERY_SURCHARGE.toFixed(2)}):</span><span>-${fmt$(tSurcharge)}</span></div>` : ''}
+<div class="tr trb"><span>Total Savings vs Supplier:</span><span style="color:${tSavings >= 0 ? '#1E8449' : '#B22234'};font-weight:800">${tSavings >= 0 ? '+' : ''}${fmt$(tSavings)}</span></div>` : ''}
 </div>
 ${order.notes?`<div style="margin-top:14px;padding:8px;background:#f5f5f5;border-radius:4px;font-size:11px"><strong>Notes:</strong> ${order.notes}</div>`:""}
 <div style="margin-top:30px;text-align:center;font-size:8px;color:#bbb">Roofus Construction, LLC · Columbia, MO</div></body></html>`;
@@ -280,11 +288,20 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
     return { ...l, unitCost: wac, markupCost: sell, supplierCost: it.supplierCost || 0 };
   });
   const tCost = ls.reduce((s, l) => s + l.qty * (l.unitCost || 0), 0);
-  const tSell = ls.reduce((s, l) => s + l.qty * (l.markupCost || 0), 0);
   const tSupplier = ls.reduce((s, l) => s + l.qty * (l.supplierCost || 0), 0);
-  const savingsVsMarkup = tSell - tCost;
-  const savingsVsSupplier = tSupplier - tCost;
-  const marginPct = tSell > 0 ? ((1 - tCost / tSell) * 100).toFixed(1) : "0";
+  let tSurcharge = 0;
+  let tSavings = 0;
+  const lineCalc = ls.map(l => {
+    const it2 = iMap[l.itemId] || { name: "?", category: "" };
+    const isShingle = SHINGLE_CATS.includes(it2.category);
+    const surcharge = isShingle ? l.qty * DELIVERY_SURCHARGE : 0;
+    tSurcharge += surcharge;
+    const supplierExt = l.qty * (l.supplierCost || 0);
+    const costExt = l.qty * (l.unitCost || 0);
+    const lineSavings = supplierExt - costExt - surcharge;
+    tSavings += lineSavings;
+    return { surcharge, lineSavings };
+  });
   const [showDeleteWarn, setShowDeleteWarn] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editLines, setEditLines] = useState([]);
@@ -335,22 +352,22 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
       <div style={{ overflowX: "auto", marginBottom: 14 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead><tr style={{ borderBottom: `1px solid ${C.brdL}` }}>
-            {["Item", "Color/Style", "Qty", "Our Cost", "Margin", "Supplier $", "Cost Ext", "Sell Ext"].map((h) => (
+            {["Item", "Color/Style", "Qty", "Our Cost", "Supplier $", "Cost Ext", "Savings"].map((h) => (
               <th key={h} style={{ padding: "8px", textAlign: ["Item", "Color/Style"].includes(h) ? "left" : "right", fontWeight: 700, color: C.t2, fontSize: 10, textTransform: "uppercase" }}>{h}</th>
             ))}
           </tr></thead>
           <tbody>{ls.map((l, i) => {
             const it = iMap[l.itemId] || { name: "?", unit: "" };
+            const lc = lineCalc[i];
             return (
               <tr key={i} style={{ borderBottom: `1px solid ${C.brd}` }}>
                 <td style={{ padding: "7px 8px", fontWeight: 600 }}>{it.name}</td>
                 <td style={{ padding: "7px 8px", color: C.t2 }}>{l.option && l.option !== "_default" ? l.option : "—"}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{l.qty} {it.unit}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{fmt$(l.unitCost)}</td>
-                <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{fmt$(l.markupCost)}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN, color: C.blu }}>{fmt$(l.supplierCost || 0)}</td>
                 <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN }}>{fmt$(l.qty * l.unitCost)}</td>
-                <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN, fontWeight: 700, color: C.ac }}>{fmt$(l.qty * l.markupCost)}</td>
+                <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: MN, fontWeight: 700, color: lc.lineSavings >= 0 ? C.grn : C.red }}>{lc.lineSavings >= 0 ? "+" : ""}{fmt$(lc.lineSavings)}</td>
               </tr>
             );
           })}</tbody>
@@ -359,19 +376,11 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
       {/* TOTALS & SAVINGS */}
       <div style={{ background: C.sf, borderRadius: 8, padding: 14, marginBottom: 14, borderLeft: `4px solid ${C.ac}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>Our Cost</span><span style={{ fontFamily: MN }}>{fmt$(tCost)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, borderTop: `2px solid ${C.brdL}`, paddingTop: 8, marginTop: 6 }}><span>Sell Price</span><span style={{ fontFamily: MN, color: C.ac }}>{fmt$(tSell)}</span></div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.grn, marginTop: 4 }}><span>Gross Margin</span><span style={{ fontFamily: MN }}>{fmt$(savingsVsMarkup)} ({marginPct}%)</span></div>
-        {tSupplier > 0 && (
-          <>
-            <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 8, paddingTop: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>Supplier Would Charge</span><span style={{ fontFamily: MN }}>{fmt$(tSupplier)}</span></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: savingsVsSupplier >= 0 ? C.grn : C.red, marginTop: 2 }}>
-                <span>Savings vs Supplier</span>
-                <span style={{ fontFamily: MN, fontWeight: 700 }}>{savingsVsSupplier >= 0 ? "+" : ""}{fmt$(savingsVsSupplier)}</span>
-              </div>
-            </div>
-          </>
-        )}
+        {tSupplier > 0 && <>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>Supplier Would Charge</span><span style={{ fontFamily: MN }}>{fmt$(tSupplier)}</span></div>
+          {tSurcharge > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.t2, marginBottom: 4 }}><span>Delivery Surcharge ({Math.round(tSurcharge / DELIVERY_SURCHARGE)} bundles × ${DELIVERY_SURCHARGE.toFixed(2)})</span><span style={{ fontFamily: MN }}>-{fmt$(tSurcharge)}</span></div>}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, borderTop: `2px solid ${C.brdL}`, paddingTop: 8, marginTop: 6 }}><span>Total Savings vs Supplier</span><span style={{ fontFamily: MN, color: tSavings >= 0 ? C.grn : C.red }}>{tSavings >= 0 ? "+" : ""}{fmt$(tSavings)}</span></div>
+        </>}
       </div>
       {order.notes && <div style={{ fontSize: 12, color: C.t2, marginBottom: 14, padding: 10, background: C.sf, borderRadius: 6 }}><strong>Notes:</strong> {order.notes}</div>}
 
@@ -389,7 +398,7 @@ function OrderPDF({ order, items, onClose, onDelete, onEdit }) {
                     onBlur={(e) => { if (!e.target.value || +e.target.value < 1) { const n = [...editLines]; n[i] = { ...n[i], qty: 1 }; setEditLines(n); } }}
                     style={{ ...inp, padding: "6px 10px", textAlign: "center", fontSize: 14, width: 80 }} />
                 </div>
-                <div style={{ fontSize: 12, fontFamily: MN, color: C.t2, flex: 1 }}>{fmt$(l.qty * l.markupCost)}</div>
+                <div style={{ fontSize: 12, fontFamily: MN, color: C.t2, flex: 1 }}>{fmt$(l.qty * (l.unitCost || 0))}</div>
                 <button onClick={() => setEditLines(editLines.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: C.red, cursor: "pointer" }}><Trash2 size={14} /></button>
               </div>
             );
@@ -577,13 +586,13 @@ export default function App() {
     vp.content = "width=device-width, initial-scale=1, maximum-scale=1";
   }, []);
 
-  // ═══ REAL-TIME SYNC — poll Supabase every 2 seconds ═══
+  // ═══ REAL-TIME SYNC — safe for multiple tabs ═══
   const lastSync = useRef({});
-  const syncPaused = useRef(false);
+  const syncPaused = useRef(0);
   useEffect(() => {
     if (!rdy) return;
     const poll = async () => {
-      if (syncPaused.current || savingRef.current) return;
+      if (syncPaused.current > 0 || savingRef.current) return;
       if (document.hidden) return;
       try {
         const [freshItems, freshOrders, freshJobs, freshUsers, freshTemplates, freshShrink] = await Promise.all([
@@ -594,7 +603,15 @@ export default function App() {
           const sig = JSON.stringify(fresh);
           if (lastSync.current[key] !== sig) {
             lastSync.current[key] = sig;
-            if (Array.isArray(fresh)) setter(fresh);
+            if (Array.isArray(fresh)) {
+              setter(prev => {
+                if (fresh.length === 0 && prev.length > 0) {
+                  console.warn("Sync: " + key + " returned empty but has " + prev.length + " — skipped");
+                  return prev;
+                }
+                return fresh;
+              });
+            }
           }
         };
         check("items", freshItems, setItems);
@@ -606,10 +623,12 @@ export default function App() {
       } catch(e) {}
     };
     lastSync.current = {};
-    // First poll runs immediately to populate hashes
     poll();
-    const interval = setInterval(poll, 2000);
-    return () => clearInterval(interval);
+    const interval = setInterval(poll, 5000);
+    // When tab becomes visible again, catch up immediately
+    const onVisible = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, [rdy]);
 
   const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
@@ -643,7 +662,7 @@ export default function App() {
 
   // Core guarded save — queued, validated, backed up, verified
   const guardedSave = useCallback((key, setFn, transformFn, audit) => {
-    syncPaused.current = true; // pause polling IMMEDIATELY when save is queued
+    syncPaused.current++; // pause polling — counter ensures nested saves stay paused
     const job = saveQueue.current.then(async () => {
       setSaving(true);
       savingRef.current = true;
@@ -705,7 +724,7 @@ export default function App() {
       } finally {
         setSaving(false);
         savingRef.current = false;
-        syncPaused.current = false; // resume polling after save completes
+        syncPaused.current = Math.max(0, syncPaused.current - 1);
       }
     });
     saveQueue.current = job.catch(() => {});
@@ -1482,7 +1501,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
   const approve = async (id) => {
     if (approvingIds.current.has(id)) return; // already approving this order
     approvingIds.current.add(id);
-    syncPaused.current = true; // pause polling for ENTIRE approval
+    syncPaused.current++; // pause polling for ENTIRE approval
     try {
     const order = orders.find((o) => o.id === id);
     if (!order) return;
@@ -1595,7 +1614,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
     } finally {
       approvingIds.current.delete(id);
-      syncPaused.current = false;
+      syncPaused.current = Math.max(0, syncPaused.current - 1);
     }
   };
   const reject = async (id) => { if (confirm("Reject this order?")) await updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
@@ -4825,20 +4844,23 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
             const capturedSc = l.supplierCost || 0;
             if (!capturedSc) return;
             const k = l.itemId;
-            if (!periodByItem[k]) periodByItem[k] = { name: it.name, category: it.category, qty: 0, ourCost: 0, supplierWouldHaveCharged: 0 };
+            const isShingle = SHINGLE_CATS.includes(it.category);
+            if (!periodByItem[k]) periodByItem[k] = { name: it.name, category: it.category, qty: 0, ourCost: 0, supplierWouldHaveCharged: 0, surcharge: 0 };
             periodByItem[k].qty += l.qty * mult;
             periodByItem[k].ourCost += l.qty * (l.unitCost || 0) * mult;
             periodByItem[k].supplierWouldHaveCharged += l.qty * capturedSc * mult;
+            periodByItem[k].surcharge += isShingle ? l.qty * DELIVERY_SURCHARGE * mult : 0;
           });
         });
         const periodData = Object.values(periodByItem).map((d) => ({
-          ...d, savings: d.supplierWouldHaveCharged - d.ourCost,
+          ...d, savings: d.supplierWouldHaveCharged - d.ourCost - d.surcharge,
           avgOurCost: d.qty > 0 ? d.ourCost / d.qty : 0,
           avgSupplierCost: d.qty > 0 ? d.supplierWouldHaveCharged / d.qty : 0,
         })).sort((a, b) => b.savings - a.savings);
         const totalSavings = periodData.reduce((s, d) => s + d.savings, 0);
         const totalOurCost = periodData.reduce((s, d) => s + d.ourCost, 0);
         const totalSupplierCost = periodData.reduce((s, d) => s + d.supplierWouldHaveCharged, 0);
+        const totalSurcharge = periodData.reduce((s, d) => s + d.surcharge, 0);
         const itemsOverpaying = periodData.filter((d) => d.savings < 0);
         const ordersWithSupplier = allApprovedRange.filter((o) => o.lines.some((l) => l.supplierCost > 0));
 
@@ -4854,9 +4876,10 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
               </div>
             </div>
             <Rw g={14}>
-              <Stat label="Total Savings" value={fmt$(totalSavings)} sub={`${ordersWithSupplier.length} orders with supplier pricing`} color={totalSavings >= 0 ? C.grn : C.red} />
+              <Stat label="Total Savings (after surcharge)" value={fmt$(totalSavings)} sub={`${ordersWithSupplier.length} orders with supplier pricing`} color={totalSavings >= 0 ? C.grn : C.red} />
               <Stat label="We Paid" value={fmt$(totalOurCost)} color={NAVY} />
               <Stat label="Supplier Would've Charged" value={fmt$(totalSupplierCost)} color={C.t2} />
+              {totalSurcharge > 0 && <Stat label="Delivery Surcharge" value={fmt$(totalSurcharge)} sub={`$${DELIVERY_SURCHARGE.toFixed(2)}/bundle on shingles`} color={C.wrn} />}
               {itemsOverpaying.length > 0 && <Stat label="Items We Overpaid" value={itemsOverpaying.length} sub="Our cost was higher" color={C.red} />}
             </Rw>
 
@@ -4893,8 +4916,6 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
 
       {/* ── SHINGLES VS ACCESSORIES ── */}
       {tab === "sva" && (() => {
-        const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
-
         const now2 = Date.now();
         const ytd2 = new Date(new Date().getFullYear(), 0, 1).getTime();
         const presetMs = {all:0,"30":30*86400000,"90":90*86400000,"180":180*86400000,"365":365*86400000,"ytd":now2-ytd2};
@@ -4911,38 +4932,42 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
         };
 
         const allApproved = orders.filter(o => o.status === "approved" && inRange(o));
-        const shingle = { qty: 0, wac: 0, supplier: 0, items: {} };
-        const accessory = { qty: 0, wac: 0, supplier: 0, items: {} };
+        const shingle = { qty: 0, wac: 0, supplier: 0, surcharge: 0, items: {} };
+        const accessory = { qty: 0, wac: 0, supplier: 0, surcharge: 0, items: {} };
 
         allApproved.forEach(o => {
           const mult = o.type === "return" ? -1 : 1;
           (o.lines || []).forEach(l => {
             const it = iMap[l.itemId];
             if (!it) return;
-            if (!(l.supplierCost || 0)) return; // skip lines without supplier cost — matches Savings vs Supplier
-            const cat = SHINGLE_CATS.includes(it.category) ? shingle : accessory;
+            if (!(l.supplierCost || 0)) return;
+            const isShingle = SHINGLE_CATS.includes(it.category);
+            const cat = isShingle ? shingle : accessory;
             const q = l.qty * mult;
             const wacCost = q * (l.unitCost || 0);
             const supCost = q * (l.supplierCost || 0);
+            const lineSurcharge = isShingle ? q * DELIVERY_SURCHARGE : 0;
             cat.qty += q;
             cat.wac += wacCost;
             cat.supplier += supCost;
+            cat.surcharge += lineSurcharge;
             const ik = l.itemId;
-            if (!cat.items[ik]) cat.items[ik] = { name: it.name, category: it.category, qty: 0, wac: 0, supplier: 0 };
+            if (!cat.items[ik]) cat.items[ik] = { name: it.name, category: it.category, qty: 0, wac: 0, supplier: 0, surcharge: 0 };
             cat.items[ik].qty += q;
             cat.items[ik].wac += wacCost;
             cat.items[ik].supplier += supCost;
+            cat.items[ik].surcharge += lineSurcharge;
           });
         });
 
-        const shSavings = shingle.supplier - shingle.wac;
+        const shSavings = shingle.supplier - shingle.wac - shingle.surcharge;
         const acSavings = accessory.supplier - accessory.wac;
         const totalSavings = shSavings + acSavings;
         const shPct = shingle.supplier > 0 ? (shSavings / shingle.supplier * 100) : 0;
         const acPct = accessory.supplier > 0 ? (acSavings / accessory.supplier * 100) : 0;
         const totalPct = (shingle.supplier + accessory.supplier) > 0 ? (totalSavings / (shingle.supplier + accessory.supplier) * 100) : 0;
 
-        const shItems = Object.values(shingle.items).sort((a,b) => (b.supplier-b.wac) - (a.supplier-a.wac));
+        const shItems = Object.values(shingle.items).sort((a,b) => (b.supplier-b.wac-b.surcharge) - (a.supplier-a.wac-a.surcharge));
         const acItems = Object.values(accessory.items).sort((a,b) => (b.supplier-b.wac) - (a.supplier-a.wac));
 
         return (
@@ -4987,7 +5012,7 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                   <thead><tr>{["Item","Category","Qty","Our Cost (WAC)","Supplier Would Charge","Savings $","Savings %"].map(h=><th key={h} style={{padding:"10px 10px",textAlign:["Item","Category"].includes(h)?"left":"right",fontWeight:700,color:C.t2,fontSize:10,textTransform:"uppercase",borderBottom:`1px solid ${C.brdL}`}}>{h}</th>)}</tr></thead>
-                  <tbody>{shItems.map((d,i)=>{const sav=d.supplier-d.wac;const pct=d.supplier>0?(sav/d.supplier*100):0;return(
+                  <tbody>{shItems.map((d,i)=>{const sav=d.supplier-d.wac-(d.surcharge||0);const pct=d.supplier>0?(sav/d.supplier*100):0;return(
                     <tr key={i} style={{borderBottom:`1px solid ${C.brd}`}}>
                       <td style={{padding:"8px 10px",fontWeight:600}}>{d.name}</td>
                       <td style={{padding:"8px 10px",color:C.t2}}>{d.category}</td>
