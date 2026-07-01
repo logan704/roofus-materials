@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v50R - surcharge in all savings reports, invoice, sync fixes
+// v52 - forensic detectors: duplicate orders, duplicate receives, orphaned approvals
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
 const DELIVERY_SURCHARGE = 10 / 3; // $3.33 per bundle — $10/square, 3 bundles per square
@@ -492,9 +492,34 @@ export default function App() {
         if (retryOrders.length > 0) { o.splice(0, o.length, ...retryOrders); }
       }
       if (!u.length) {
-        const a = { id: uid(), name: "Logan", email: "logan@usaroof.com", pw: hP("admin"), role: "admin", created: new Date().toISOString() };
-        u.push(a);
-        await sv("users", u);
+        // USERS RESTORE CHECK — a failed read must NEVER trigger admin seeding (would wipe real users)
+        const backupUsers = localStorage.getItem("roofus_backup_users");
+        let recovered = false;
+        if (backupUsers) {
+          try {
+            const parsed = JSON.parse(backupUsers);
+            if (parsed.length > 0) {
+              const retryU = await ld("users", []);
+              if (retryU.length > 0) { u.splice(0, u.length, ...retryU); recovered = true; }
+              else if (confirm("Database returned 0 users but a local backup has " + parsed.length + " users. Restore from backup?")) {
+                u.splice(0, u.length, ...parsed); await sv("users", u); recovered = true;
+              }
+            }
+          } catch(e) {}
+        }
+        if (!recovered && !u.length) {
+          // Only seed the default admin if the DB is VERIFIABLY empty (ldStrict throws on read failure)
+          try {
+            const verified = await ldStrict("users");
+            if (verified.length === 0) {
+              const a = { id: uid(), name: "Logan", email: "logan@usaroof.com", pw: hP("admin"), role: "admin", created: new Date().toISOString() };
+              u.push(a);
+              await sv("users", u);
+            } else { u.splice(0, u.length, ...verified); }
+          } catch(e) {
+            console.error("STARTUP: users read failed — skipping admin seed to protect existing accounts");
+          }
+        }
       }
       setUsers(u); setItems(it); setOrders(o); setTemplates(t); setShrinkLog(sh); setTrackedJobs(tj);
       // LOCAL BACKUP — save last known good state to localStorage as insurance
@@ -502,6 +527,7 @@ export default function App() {
         if (it.length > 0) localStorage.setItem("roofus_backup_items", JSON.stringify(it));
         if (o.length > 0) localStorage.setItem("roofus_backup_orders", JSON.stringify(o));
         if (tj.length > 0) localStorage.setItem("roofus_backup_jobs", JSON.stringify(tj));
+        if (u.length > 0) localStorage.setItem("roofus_backup_users", JSON.stringify(u));
         localStorage.setItem("roofus_backup_date", new Date().toISOString());
       } catch(e) {}
       // DATA VALIDATION — if DB returned empty but localStorage has data, warn
@@ -647,7 +673,7 @@ export default function App() {
 
   // Warn before closing tab during save
   useEffect(() => {
-    const handler = (e) => { if (savingRef.current) { e.preventDefault(); e.returnValue = "Save in progress — are you sure you want to leave?"; } };
+    const handler = (e) => { if (savingRef.current || syncPaused.current > 0) { e.preventDefault(); e.returnValue = "Save in progress — are you sure you want to leave?"; } };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
@@ -703,7 +729,7 @@ export default function App() {
         if (audit) auditLog(audit);
         // 9. UPDATE LOCAL BACKUP
         try {
-          if (Array.isArray(result) && result.length > 0 && (key === "items" || key === "orders" || key === "tracked_jobs")) {
+          if (Array.isArray(result) && result.length > 0 && (key === "items" || key === "orders" || key === "tracked_jobs" || key === "users")) {
             localStorage.setItem("roofus_backup_" + key.replace("tracked_", ""), JSON.stringify(result));
             localStorage.setItem("roofus_backup_date", new Date().toISOString());
           }
@@ -739,6 +765,31 @@ export default function App() {
   const atomicAddOrder = useCallback((newOrd) => guardedSave("orders", setOrders, (cur) => [...cur, newOrd], "Submit order: " + (newOrd.jobName || "")), [guardedSave]);
   const atomicUpdateOrder = useCallback((id, updFn, audit) => guardedSave("orders", setOrders, (cur) => cur.map(o => o.id === id ? updFn(o) : o), audit), [guardedSave]);
   const atomicRemoveOrder = useCallback((id) => guardedSave("orders", setOrders, (cur) => cur.filter(o => o.id !== id), "Delete order"), [guardedSave]);
+
+  // AUDIT-TOOL DELETE — same fresh-state guarantees as the inline delete; returns true/false
+  const auditDeleteOrder = useCallback(async (id) => {
+    let freshOrd;
+    try {
+      const freshOrders = await ldStrict("orders");
+      freshOrd = freshOrders.find(o => o.id === id);
+      if (!freshOrd) { alert("This order no longer exists — it may have already been deleted."); return false; }
+    } catch(e) { alert("Cannot verify order — check your internet."); return false; }
+    if (freshOrd.jnFileId) deleteFromJN(freshOrd.jnFileId);
+    if (freshOrd.osbNoteId) deleteOSBNote(freshOrd.osbNoteId);
+    if (freshOrd.status === "approved") {
+      const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
+        const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
+        if (!ls.length) return it;
+        const v = { ...(it.variants || getVariants(it)) };
+        ls.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: freshOrd.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
+        return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
+      }));
+      if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return false; }
+    }
+    const removed = await atomicRemoveOrder(id);
+    if (!removed) { alert("Order removal failed — stock may have been restored. Refresh and check before retrying."); return false; }
+    return true;
+  }, [atomicUpdateItems, atomicRemoveOrder]);
 
   const atomicUpdateJobs = useCallback((transformFn, audit) => guardedSave("tracked_jobs", setTrackedJobs, transformFn, audit), [guardedSave]);
   const atomicAddJobs = useCallback((newJobs) => guardedSave("tracked_jobs", setTrackedJobs, (cur) => {
@@ -933,50 +984,59 @@ export default function App() {
         {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
         {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
-        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} />}
+        {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} auditDeleteOrder={auditDeleteOrder} />}
         {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
         onDelete={canDeleteOrders ? async (id) => {
-          const ord = orders.find((o) => o.id === id);
-          if (ord) {
-            if (ord.jnFileId) deleteFromJN(ord.jnFileId);
-            if (ord.osbNoteId) deleteOSBNote(ord.osbNoteId);
-            // Only restore stock if order was approved — await before removing order
-            if (ord.status === "approved") {
-              const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-                const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
-                if (!ls.length) return it;
-                const v = { ...(it.variants || getVariants(it)) };
-                ls.forEach((l) => {
-                  const optKey = l.option || "_default";
-                  if (v[optKey]) {
-                    if (ord.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
-                    else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
-                  }
-                });
-                const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
-                return { ...it, variants: v, qtyOnHand: totalQ };
-              }));
-              if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return; }
-            }
+          // GUARD: read FRESH order — status may have changed since page load
+          let freshOrd;
+          try {
+            const freshOrders = await ldStrict("orders");
+            freshOrd = freshOrders.find(o => o.id === id);
+            if (!freshOrd) { alert("This order was already deleted by someone else."); setVOrd(null); return; }
+          } catch(e) { alert("Cannot verify order — check your internet."); return; }
+          if (freshOrd.jnFileId) deleteFromJN(freshOrd.jnFileId);
+          if (freshOrd.osbNoteId) deleteOSBNote(freshOrd.osbNoteId);
+          // Only restore stock if FRESH status is approved — await before removing order
+          if (freshOrd.status === "approved") {
+            const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
+              const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
+              if (!ls.length) return it;
+              const v = { ...(it.variants || getVariants(it)) };
+              ls.forEach((l) => {
+                const optKey = l.option || "_default";
+                if (v[optKey]) {
+                  if (freshOrd.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
+                  else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
+                }
+              });
+              const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
+              return { ...it, variants: v, qtyOnHand: totalQ };
+            }));
+            if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return; }
           }
           await atomicRemoveOrder(id); setVOrd(null);
         } : null}
         onEdit={canEditOrders ? async (id, newLines, newNotes) => {
-          const ord = orders.find((o) => o.id === id);
-          if (!ord) return;
-          // Only adjust stock if order was already approved — await before updating order
-          if (ord.status === "approved") {
+          // GUARD: read FRESH order — someone may have approved/edited it since page load
+          let freshOrd;
+          try {
+            const freshOrders = await ldStrict("orders");
+            freshOrd = freshOrders.find(o => o.id === id);
+            if (!freshOrd) { alert("This order was deleted by someone else."); setVOrd(null); return; }
+          } catch(e) { alert("Cannot verify order — check your internet."); return; }
+          // Only adjust stock if FRESH status is approved — reverse FRESH lines (what was actually deducted)
+          if (freshOrd.status === "approved") {
             const stockResult = await atomicUpdateItems((freshItems) => {
               let updated = freshItems.map((it) => {
-                const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
+                const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
                 if (!ls.length) return it;
                 const v = { ...(it.variants || getVariants(it)) };
                 ls.forEach((l) => {
                   const optKey = l.option || "_default";
                   if (v[optKey]) {
-                    if (ord.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
+                    if (freshOrd.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
                     else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
                   }
                 });
@@ -990,7 +1050,7 @@ export default function App() {
                 ls.forEach((l) => {
                   const optKey = l.option || "_default";
                   if (v[optKey]) {
-                    if (ord.type === "order") v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
+                    if (freshOrd.type === "order") v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
                     else v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
                   }
                 });
@@ -1001,7 +1061,8 @@ export default function App() {
             });
             if (!stockResult) { alert("Stock update failed — order NOT edited."); return; }
           }
-          const updatedOrd = { ...ord, lines: newLines, notes: newNotes !== undefined ? newNotes : (ord.notes || "") };
+          // Build from FRESH order — preserves status/jnFileId/osbNoteId set by others
+          const updatedOrd = { ...freshOrd, lines: newLines, notes: newNotes !== undefined ? newNotes : (freshOrd.notes || "") };
           await atomicUpdateOrder(id, () => updatedOrd);
           setVOrd(updatedOrd);
           // Re-upload to JN if linked
@@ -1232,7 +1293,9 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
   const osbQty = osbLines.reduce((s,l) => s + l.qty, 0);
   const osbUnit = iMap[osbLines[0]?.itemId]?.unit || "sheet";
 
+  const submitBusy = useRef(false);
   const submit = async () => {
+    if (submitBusy.current) return; // in-flight guard — double-click would create duplicate orders
     if (!lines.length || !allOptionsSet) return;
     // BUG #9: Validate all line quantities are positive numbers
     const badLine = lines.find(l => !l.qty || +l.qty <= 0 || isNaN(+l.qty));
@@ -1270,9 +1333,12 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
     const autoPoNumber = jobTrim ? `${jobTrim} ${poLabel} #${existingCount + 1}` : "";
     const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: Math.max(1, Math.round(+l.qty)), option: l.option, unitCost: Math.max(0, +l.unitCost || 0), markupCost: Math.max(0, +l.markupCost || 0), supplierCost: Math.max(0, +l.supplierCost || 0) })) };
     // Stock is NOT deducted at submit — only at approval
-    const saved = await addOrder(ord);
-    if (saved) setDone(true);
-    else alert("Order failed to save — check your internet and try again.");
+    submitBusy.current = true;
+    try {
+      const saved = await addOrder(ord);
+      if (saved) setDone(true);
+      else alert("Order failed to save — check your internet and try again.");
+    } finally { submitBusy.current = false; }
   };
 
   if (done) return (
@@ -1503,25 +1569,25 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     approvingIds.current.add(id);
     syncPaused.current++; // pause polling for ENTIRE approval
     try {
-    const order = orders.find((o) => o.id === id);
-    if (!order) return;
-    // GUARD: Read fresh order from DB to verify it's still pending (prevents double-approval)
+    // GUARD: Read fresh order from DB — verify still pending AND use it as the basis
+    // (someone may have edited lines/notes since page load; stale basis would erase their edit)
+    let fresh;
     try {
       const freshOrders = await ldStrict("orders");
-      const freshOrder = freshOrders.find(o => o.id === id);
-      if (!freshOrder || freshOrder.status !== "pending") {
-        alert("This order was already " + (freshOrder?.status || "processed") + " by someone else.");
+      fresh = freshOrders.find(o => o.id === id);
+      if (!fresh || fresh.status !== "pending") {
+        alert("This order was already " + (fresh?.status || "deleted") + " by someone else.");
         return;
       }
     } catch(e) { alert("Cannot verify order status — check your internet."); return; }
 
     // GUARD: If this is a return linked to a job, cap qty at total ordered minus already returned
-    if (order.type === "return" && order.jnJobId) {
+    if (fresh.type === "return" && fresh.jnJobId) {
       try {
         const freshOrders2 = await ldStrict("orders");
         // Sum total ordered per item+option for this job
-        const jobOrders = freshOrders2.filter(o => o.jnJobId === order.jnJobId && o.status === "approved" && o.type === "order");
-        const jobReturns = freshOrders2.filter(o => o.jnJobId === order.jnJobId && o.status === "approved" && o.type === "return" && o.id !== id);
+        const jobOrders = freshOrders2.filter(o => o.jnJobId === fresh.jnJobId && o.status === "approved" && o.type === "order");
+        const jobReturns = freshOrders2.filter(o => o.jnJobId === fresh.jnJobId && o.status === "approved" && o.type === "return" && o.id !== id);
         const orderedQty = {}; // key: itemId:option → total ordered
         jobOrders.forEach(o => (o.lines||[]).forEach(l => {
           const k = l.itemId + ":" + (l.option || "_default");
@@ -1534,7 +1600,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
         }));
         const iMap = Object.fromEntries(items.map(i => [i.id, i]));
         const overLines = [];
-        order.lines.forEach(l => {
+        fresh.lines.forEach(l => {
           const k = l.itemId + ":" + (l.option || "_default");
           const maxReturn = (orderedQty[k] || 0) - (returnedQty[k] || 0);
           if (l.qty > maxReturn) {
@@ -1555,7 +1621,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     let freshItems = items;
     try { freshItems = await ldStrict("items"); } catch(e) { /* fall back to state */ }
     // Lock WAC at approval time — recalculate costs from FRESH variant WAC
-    const updatedLines = order.lines.map((l) => {
+    const updatedLines = fresh.lines.map((l) => {
       const it = freshItems.find((i) => i.id === l.itemId);
       if (!it) return l;
       const v = getVariants(it);
@@ -1563,10 +1629,10 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       const wac = vd.wac || it.wacCost || 0;
       return { ...l, unitCost: wac, markupCost: (it.markup || 0) >= 100 ? wac : wac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
     });
-    const approvedOrder = { ...order, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
+    const approvedOrder = { ...fresh, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
 
     // STOCK CHECK — block approval if any line would go negative (orders only, returns add stock)
-    if (order.type === "order") {
+    if (fresh.type === "order") {
       const shortages = [];
       updatedLines.forEach((l) => {
         const it = freshItems.find((i) => i.id === l.itemId);
@@ -1593,7 +1659,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       ls.forEach((l) => {
         const k = l.option || "_default";
         if (v[k]) {
-          if (order.type === "order") v[k] = { ...v[k], qty: Math.max(0, (v[k].qty || 0) - l.qty) };
+          if (fresh.type === "order") v[k] = { ...v[k], qty: Math.max(0, (v[k].qty || 0) - l.qty) };
           else v[k] = { ...v[k], qty: (v[k].qty || 0) + l.qty };
         }
       });
@@ -1604,37 +1670,62 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     // Upload to JobNimbus if linked
     let jnFileId = null;
     if (approvedOrder.jnJobId) {
-      jnFileId = await uploadToJN(approvedOrder, items);
+      try { jnFileId = await uploadToJN(approvedOrder, items); } catch(e) { console.error("JN upload failed (approval continues):", e); }
     }
     // Create OSB note in JN if applicable
     let osbNoteId = null;
     if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
-      osbNoteId = await createOSBNote(approvedOrder);
+      try { osbNoteId = await createOSBNote(approvedOrder); } catch(e) { console.error("OSB note failed (approval continues):", e); }
     }
-    await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (order.jobName || order.id));
+    // COMPLETE APPROVAL — verified write; retry once; on total failure REVERSE the stock deduction
+    let updResult = await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (fresh.jobName || fresh.id));
+    if (!updResult) updResult = await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order (retry): " + (fresh.jobName || fresh.id));
+    if (!updResult) {
+      // Order still pending in DB but stock was deducted — reverse it so nothing is half-done
+      const reversed = await atomicUpdateItems((freshIt) => freshIt.map((it) => {
+        const lsRev = updatedLines.filter((l) => l.itemId === it.id);
+        if (!lsRev.length) return it;
+        const v = { ...(it.variants || getVariants(it)) };
+        lsRev.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: fresh.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
+        return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
+      }));
+      if (reversed) alert("Approval could not be saved — stock changes were rolled back. Nothing was changed. Check your internet and try again.");
+      else alert("⚠️ APPROVAL INCOMPLETE: stock was deducted but the order still shows PENDING and rollback failed. DO NOT re-approve. Refresh, then delete this order and re-submit it.");
+      return;
+    }
     } finally {
       approvingIds.current.delete(id);
       syncPaused.current = Math.max(0, syncPaused.current - 1);
     }
   };
-  const reject = async (id) => { if (confirm("Reject this order?")) await updateOrder(id, (o) => ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order"); };
-  const deleteOrder = async (id) => {
-    const ord = orders.find((o) => o.id === id);
-    // GUARD: Verify order still exists in DB
+  const reject = async (id) => {
+    if (!confirm("Reject this order?")) return;
+    // GUARD: verify still pending in DB — someone may have approved it (stock deducted)
     try {
       const freshOrders = await ldStrict("orders");
       const freshOrd = freshOrders.find(o => o.id === id);
+      if (!freshOrd) { alert("This order was already deleted by someone else."); return; }
+      if (freshOrd.status !== "pending") { alert("This order was already " + freshOrd.status + " by someone else — cannot reject."); return; }
+    } catch(e) { alert("Cannot verify order status — check your internet."); return; }
+    await updateOrder(id, (o) => o.status !== "pending" ? o : ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order");
+  };
+  const deleteOrder = async (id) => {
+    // GUARD: read FRESH order — status/lines may have changed (approval deducts stock)
+    let freshOrd;
+    try {
+      const freshOrders = await ldStrict("orders");
+      freshOrd = freshOrders.find(o => o.id === id);
       if (!freshOrd) { alert("This order was already deleted by someone else."); setDeleteWarn(null); return; }
     } catch(e) { alert("Cannot verify order — check your internet."); setDeleteWarn(null); return; }
-    if (ord?.jnFileId) deleteFromJN(ord.jnFileId);
-    if (ord?.osbNoteId) deleteOSBNote(ord.osbNoteId);
-    // Only restore stock if order was approved (pending orders never deducted)
-    if (ord && ord.status === "approved") {
+    if (freshOrd.jnFileId) deleteFromJN(freshOrd.jnFileId);
+    if (freshOrd.osbNoteId) deleteOSBNote(freshOrd.osbNoteId);
+    // Only restore stock if FRESH status is approved (pending orders never deducted)
+    if (freshOrd.status === "approved") {
       const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-        const ls = (ord.lines || []).filter((l) => l.itemId === it.id);
+        const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
         if (!ls.length) return it;
         const v = { ...(it.variants || getVariants(it)) };
-        ls.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: ord.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
+        ls.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: freshOrd.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
         return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
       }));
       if (!stockResult) { alert("Stock restoration failed — order NOT deleted. Check your internet."); setDeleteWarn(null); return; }
@@ -1938,12 +2029,20 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
 
   useEffect(() => { (async () => { setLog(await ld("inv_log", [])); })(); }, []);
   const svLog = useCallback(async (transformFn) => {
-    // ATOMIC: read fresh log from DB, apply transform, write back
+    // ATOMIC + VERIFIED: read fresh, transform, write, read back to confirm, retry once
     try {
       const fresh = await ld("inv_log", []);
       const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
-      if (Array.isArray(result)) { await sv("inv_log", result); setLog(result); }
-    } catch(e) { console.error("Log save error:", e); }
+      if (!Array.isArray(result)) return false;
+      const sig = JSON.stringify(result);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await sv("inv_log", result);
+        const readBack = await ld("inv_log", null);
+        if (readBack !== null && JSON.stringify(readBack) === sig) { setLog(result); return true; }
+      }
+      alert("Warning: receive log failed to save after retry. Stock is correct, but the Audit report may show a discrepancy for this receive.");
+      return false;
+    } catch(e) { console.error("Log save error:", e); return false; }
   }, []);
 
   const cats = ["All", ...new Set(items.map((i) => i.category))];
@@ -1967,8 +2066,12 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
   const totalUnits = validLines.reduce((s, l) => s + (+l.qty), 0);
   const totalCostVal = validLines.reduce((s, l) => s + (+l.qty) * (+l.cost), 0);
 
+  const receiveBusy = useRef(false);
   const receiveAll = async () => {
+    if (receiveBusy.current) return; // in-flight guard — receives are ADDITIVE; a double-click would double stock
     if (!validLines.length) return;
+    receiveBusy.current = true;
+    try {
     const newLogEntries = [];
 
     const stockResult = await atomicUpdateItems((freshItems) => {
@@ -1997,6 +2100,7 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
     await svLog((fresh) => [...newLogEntries, ...fresh]);
     setDone(true);
     setTimeout(() => { setDone(false); setLines([]); setNote(""); }, 2000);
+    } finally { receiveBusy.current = false; }
   };
 
   return (
@@ -2571,9 +2675,12 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
   const totalShrinkage = variances.filter((v) => v.variance < 0).reduce((s, v) => s + Math.abs(v.variance) * v.wac, 0);
   const totalFound = variances.filter((v) => v.variance > 0).reduce((s, v) => s + v.variance * v.wac, 0);
 
+  const countBusy = useRef(false);
   const saveCount = async () => {
+    if (countBusy.current) return; // double-click would duplicate shrinkage/found log entries
     if (!variances.length) return;
-
+    countBusy.current = true;
+    try {
     // Adjust inventory for each variance — MUST complete before logging
     const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
       const v = { ...(it.variants || getVariants(it)) };
@@ -2612,6 +2719,7 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
     await atomicUpdateShrinkage((cur) => [...newEntries, ...cur]);
     setSaved(true);
     setCounting(false);
+    } finally { countBusy.current = false; }
   };
 
   const totalLost = shrinkLog.filter((r) => r.type !== "found").reduce((s, r) => s + (r.lostValue || 0), 0);
@@ -3432,7 +3540,8 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
     setCDesc(""); setCAmt(""); setCCat("labor"); setClosedExpenseConfirm(null);
   };
   const deleteCost = async (jid,cid) => {
-    await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j));
+    const result = await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,costs:(j.costs||[]).filter(c=>c.id!==cid)}:j));
+    if (!result) { alert("Failed to delete cost — check your internet."); return; }
     if (editJob && editJob.id === jid) setEditJob({...editJob, costs: (editJob.costs||[]).filter(c=>c.id!==cid)});
   };
   const startEditCost = (jid, c) => { setEditingCost({ jid, cid: c.id, category: c.category, description: c.description, amount: c.amount }); };
@@ -3444,19 +3553,28 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
     if (editJob && editJob.id === jid) setEditJob({...editJob, costs: (editJob.costs||[]).map(c => c.id === cid ? { ...c, category, description, amount: +amount||0 } : c)});
     setEditingCost(null);
   };
-  const addAddlCharge = (jid) => {
+  const addAddlCharge = async (jid) => {
     if (!acDesc.trim()||!acAmt) return;
     const job = jobs.find(j=>j.id===jid);
     if (job && job.status === "closed" && !closedExpenseConfirm) {
       setClosedExpenseConfirm({ type: "charge", jid }); return;
     }
-    atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]}:j)).then(result => { if (result) { setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null); } else { alert("Failed to save charge."); } });
+    const newCharge = {id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()};
+    const result = await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:[...(j.additionalCharges||[]),newCharge]}:j));
+    if (!result) { alert("Failed to save charge."); return; }
+    if (editJob && editJob.id === jid) setEditJob({...editJob, additionalCharges: [...(editJob.additionalCharges||[]), newCharge]});
+    setAcDesc(""); setAcAmt(""); setClosedExpenseConfirm(null);
   };
-  const deleteAddlCharge = (jid,cid) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j)); };
-  const updateJob = (jid,upd) => { atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,...upd}:j)); };
+  const deleteAddlCharge = async (jid,cid) => {
+    const result = await atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,additionalCharges:(j.additionalCharges||[]).filter(c=>c.id!==cid)}:j));
+    if (!result) { alert("Failed to delete charge — check your internet."); return; }
+    if (editJob && editJob.id === jid) setEditJob({...editJob, additionalCharges: (editJob.additionalCharges||[]).filter(c=>c.id!==cid)});
+  };
+  const updateJob = (jid,upd) => atomicUpdateJobs((cur) => cur.map(j=>j.id===jid?{...j,...upd}:j));
   const hideInvoice = async (jid, invId) => {
     const result = await atomicUpdateJobs((cur) => cur.map(j => j.id === jid ? { ...j, hiddenInvoices: [...(j.hiddenInvoices||[]), invId] } : j));
     if (!result) { alert("Failed to hide invoice."); return; }
+    if (editJob && editJob.id === jid) setEditJob({...editJob, hiddenInvoices: [...(editJob.hiddenInvoices||[]), invId]});
     setHideInvConfirm(null);
   };
 
@@ -3483,7 +3601,8 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
                     if (jnJob) upd.leadSource = jnJob.lead_source || jnJob.source || "";
                   } catch(e2) {}
                 }
-                updateJob(j.id, upd);
+                const result = await updateJob(j.id, upd);
+                if (!result) { alert("Failed to update job status — check your internet."); return; }
                 if (newStatus === "closed") { setEditJob(null); } else { setEditJob({...editJob, status: newStatus}); }
               }} style={{...inp,padding:"8px 12px",fontSize:12,width:"auto",borderRadius:10,fontWeight:700,background:sc.bg,color:sc.c,cursor:"pointer"}}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
             </div>
@@ -3513,9 +3632,9 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
             <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
               <input value={acDesc} onChange={(e)=>setAcDesc(e.target.value)} placeholder="Description (e.g. Plywood)" style={{...inp,flex:2,borderRadius:10,padding:"8px 12px",fontSize:13}}/>
               <input type="number" value={acAmt} onChange={(e)=>setAcAmt(e.target.value)} placeholder="$" onFocus={(e)=>e.target.select()} style={{...inp,width:100,borderRadius:10,padding:"8px 12px",fontSize:13,fontFamily:MN}}/>
-              <button onClick={()=>{addAddlCharge(j.id); setEditJob({...editJob,additionalCharges:[...(editJob.additionalCharges||[]),{id:uid(),description:acDesc.trim(),amount:+acAmt||0,date:new Date().toISOString()}]});}} disabled={!acDesc.trim()||!acAmt} style={{...bP,borderRadius:10,padding:"8px 14px",fontSize:13,background:C.red,opacity:(!acDesc.trim()||!acAmt)?0.4:1}}><Plus size={14}/></button>
+              <button onClick={()=>addAddlCharge(j.id)} disabled={!acDesc.trim()||!acAmt} style={{...bP,borderRadius:10,padding:"8px 14px",fontSize:13,background:C.red,opacity:(!acDesc.trim()||!acAmt)?0.4:1}}><Plus size={14}/></button>
             </div>
-            {(j.additionalCharges||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14,color:C.grn}}>+{fmt$(c.amount)}</span><button onClick={()=>{deleteAddlCharge(j.id,c.id); setEditJob({...editJob,additionalCharges:(editJob.additionalCharges||[]).filter(x=>x.id!==c.id)});}} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
+            {(j.additionalCharges||[]).map(c=>(<div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}><div><span style={{fontSize:13,fontWeight:600}}>{c.description}</span><span style={{fontSize:11,color:C.t2,marginLeft:8}}>{fD(c.date)}</span></div><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontFamily:MN,fontWeight:700,fontSize:14,color:C.grn}}>+{fmt$(c.amount)}</span><button onClick={()=>deleteAddlCharge(j.id,c.id)} style={{background:"none",border:"none",color:C.t2,cursor:"pointer"}}><Trash2 size={13}/></button></div></div>))}
             {j.addlTotal>0&&<div style={{fontSize:12,color:C.t2,marginTop:6}}>Total Contract: {fmt$(j.contractAmount||0)} + {fmt$(j.addlTotal)} = <strong style={{color:C.txt}}>{fmt$(j.fullContract)}</strong></div>}
             <div style={{marginTop:10,padding:"12px 16px",background:NAVY+"08",borderRadius:10,border:`1px solid ${NAVY}22`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <span style={{fontSize:12,fontWeight:700,color:NAVY,textTransform:"uppercase",letterSpacing:".06em"}}>Full Contract Value</span>
@@ -3981,7 +4100,7 @@ function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
 }
 
 // ═══ REPORTS ═══
-function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
+function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder }) {
   const [tab, setTab] = useState("dash");
   const [range, setRange] = useState("30");
   const [catF, setCatF] = useState("All");
@@ -4004,7 +4123,23 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
   const [fixed, setFixed] = useState(false);
   const [auditDetail, setAuditDetail] = useState(null); // {itemId, option, name}
 
-  useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); })(); }, []);
+  useEffect(() => { (async () => { setInvLog(await ld("inv_log", [])); setAuditTrail(await ld("audit_log", [])); })(); }, []);
+  const [auditTrail, setAuditTrail] = useState([]);
+  const [detBusy, setDetBusy] = useState(null);
+  const removeInvLogEntry = async (entryId) => {
+    if (detBusy) return false; setDetBusy(entryId);
+    try {
+      const fresh = await ld("inv_log", []);
+      const next = fresh.filter(e => e.id !== entryId);
+      const sig = JSON.stringify(next);
+      for (let a = 0; a < 2; a++) {
+        await sv("inv_log", next);
+        const rb = await ld("inv_log", null);
+        if (rb !== null && JSON.stringify(rb) === sig) { setInvLog(next); return true; }
+      }
+      alert("Could not remove log entry — check your internet."); return false;
+    } finally { setDetBusy(null); }
+  };
 
   const cut = new Date(); cut.setDate(cut.getDate() - +range);
   const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
@@ -5537,6 +5672,111 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems }) {
                 })()}
               </div>
             </>}
+
+            {/* ── DETECTOR 1: POSSIBLE DUPLICATE ORDERS ── */}
+            {(() => {
+              const eligible = orders.filter(o => (o.status === "approved" || o.status === "pending") && (o.lines||[]).length);
+              const clusters = {};
+              eligible.forEach(o => {
+                const jobKey = o.jnJobId || o.jobName || "(no job)";
+                const sig = (o.lines||[]).map(l => `${l.itemId}|${l.option||"_default"}|${l.qty}`).sort().join("~");
+                const k = jobKey + "::" + sig;
+                (clusters[k] = clusters[k] || []).push(o);
+              });
+              const dupClusters = Object.values(clusters).filter(g => g.length > 1).map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date))).filter(g => (new Date(g[g.length-1].date) - new Date(g[0].date)) < 48*3600000);
+              return (
+                <div style={{...crd, marginTop:20, padding:20}}>
+                  <div style={{fontSize:18,fontWeight:800,marginBottom:4,fontFamily:BC}}>🔁 Possible Duplicate Orders</div>
+                  <div style={{fontSize:12,color:C.t2,marginBottom:14}}>Orders on the same job with identical line items submitted within 48 hours — the double-submit glitch signature. Deleting an approved duplicate automatically restores its stock.</div>
+                  {dupClusters.length === 0 && <div style={{padding:16,textAlign:"center",color:C.grn,fontWeight:700,fontSize:14}}><CheckCircle size={28} style={{marginBottom:6}}/><div>No duplicate orders detected.</div></div>}
+                  {dupClusters.map((g, gi) => (
+                    <div key={gi} style={{border:`1px solid ${C.wrn}55`,background:C.wrn+"08",borderRadius:10,padding:14,marginBottom:12}}>
+                      <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>{g[0].jobName || "(no job)"} — {g.length} identical orders · {(g[0].lines||[]).length} items each</div>
+                      {g.map(o => (
+                        <div key={o.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}>
+                          <div style={{fontSize:12}}>
+                            <strong>{o.poNumber || "—"}</strong> · {fD(o.date)} · by {o.userName || "?"} · <span style={{fontWeight:700,color:o.status==="approved"?C.grn:C.wrn}}>{o.status.toUpperCase()}</span>
+                            {o.status==="pending" && <span style={{color:C.t2}}> (no stock impact yet)</span>}
+                          </div>
+                          <button disabled={!!detBusy} onClick={async () => {
+                            if (detBusy) return;
+                            if (!confirm(`Delete ${o.poNumber || "this order"}?\n\n${o.status==="approved" ? "It is APPROVED — its stock will be restored to inventory." : "It is pending — no stock impact."}\n\nOnly do this if you are sure it is a duplicate.`)) return;
+                            setDetBusy(o.id);
+                            try { await auditDeleteOrder(o.id); } finally { setDetBusy(null); }
+                          }} style={{...bD,padding:"6px 12px",fontSize:12,opacity:detBusy?0.5:1}}><Trash2 size={13}/> Delete this one</button>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* ── DETECTOR 2: DUPLICATE RECEIVE LOG ENTRIES ── */}
+            {(() => {
+              const groups = {};
+              invLog.forEach(e => {
+                const day = (e.date||"").slice(0,10);
+                const k = `${e.itemId}|${e.option||"_default"}|${e.qty}|${e.unitCost}|${day}`;
+                (groups[k] = groups[k] || []).push(e);
+              });
+              const dupGroups = Object.values(groups).filter(g => g.length > 1).map(g => g.sort((a,b)=>new Date(a.date)-new Date(b.date)));
+              return (
+                <div style={{...crd, marginTop:20, padding:20}}>
+                  <div style={{fontSize:18,fontWeight:800,marginBottom:4,fontFamily:BC}}>📥 Duplicate Receive Log Entries</div>
+                  <div style={{fontSize:12,color:C.t2,marginBottom:14}}>Identical receives (same item, qty, cost) logged on the same day — the old double-save glitch. Removing an extra entry cleans the log ONLY; stock is not touched (the audit math already ignores these duplicates). Keep the earliest, remove the extras.</div>
+                  {dupGroups.length === 0 && <div style={{padding:16,textAlign:"center",color:C.grn,fontWeight:700,fontSize:14}}><CheckCircle size={28} style={{marginBottom:6}}/><div>No duplicate receive entries detected.</div></div>}
+                  {dupGroups.map((g, gi) => (
+                    <div key={gi} style={{border:`1px solid ${C.wrn}55`,background:C.wrn+"08",borderRadius:10,padding:14,marginBottom:12}}>
+                      <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>{g[0].itemName} — +{g[0].qty} @ {fmt$(g[0].unitCost)} logged {g.length}× on {fD(g[0].date)}</div>
+                      {g.map((e, ei) => (
+                        <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.brd}`}}>
+                          <div style={{fontSize:12,fontFamily:MN}}>{new Date(e.date).toLocaleString()} {ei===0 && <span style={{color:C.grn,fontWeight:700,fontFamily:"inherit"}}>← keep (earliest)</span>}</div>
+                          {ei>0 && <button disabled={!!detBusy} onClick={async () => {
+                            if (detBusy) return;
+                            if (!confirm("Remove this duplicate log entry? Stock will NOT change — this only cleans the receive history.")) return;
+                            await removeInvLogEntry(e.id);
+                          }} style={{...bS,color:C.red,borderColor:C.red+"55",padding:"6px 12px",fontSize:12,opacity:detBusy?0.5:1}}><Trash2 size={13}/> Remove duplicate</button>}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* ── DETECTOR 3: ORPHANED / MISMATCHED APPROVALS ── */}
+            {(() => {
+              const approveEntries = auditTrail.filter(a => typeof a.action === "string" && a.action.startsWith("Approve order"));
+              const byLabel = {};
+              approveEntries.forEach(a => {
+                const label = a.action.replace(/^Approve order( \(retry\))?: /, "");
+                (byLabel[label] = byLabel[label] || []).push(a);
+              });
+              const problems = [];
+              Object.entries(byLabel).forEach(([label, entries]) => {
+                const matches = orders.filter(o => o.id === label || o.jobName === label);
+                const accounted = matches.filter(o => o.approvedDate);
+                const rejectedAfter = matches.filter(o => o.status === "rejected" && o.approvedDate);
+                if (matches.length === 0) problems.push({ label, entries, kind: "missing", detail: `${entries.length} approval${entries.length>1?"s":""} logged but NO matching order exists — deleted after approval; its stock deduction was never restored.` });
+                else if (entries.length > accounted.length) problems.push({ label, entries, kind: "extra", detail: `${entries.length} approvals logged for ${accounted.length} approved order${accounted.length!==1?"s":""} — possible double-approval (stock hit ${entries.length}×).` });
+                else if (rejectedAfter.length) problems.push({ label, entries, kind: "rejected", detail: `Order was approved (stock deducted) and later flipped to REJECTED — stock was never restored.` });
+              });
+              return (
+                <div style={{...crd, marginTop:20, padding:20}}>
+                  <div style={{fontSize:18,fontWeight:800,marginBottom:4,fontFamily:BC}}>👻 Orphaned / Mismatched Approvals</div>
+                  <div style={{fontSize:12,color:C.t2,marginBottom:14}}>Cross-references the activity log (last 500 actions) against existing orders. These are display-only — exact quantities from lost orders are unrecoverable, so for flagged jobs, physically count those items and set them with Physical Count.</div>
+                  {problems.length === 0 && <div style={{padding:16,textAlign:"center",color:C.grn,fontWeight:700,fontSize:14}}><CheckCircle size={28} style={{marginBottom:6}}/><div>Every logged approval matches an existing order.</div></div>}
+                  {problems.map((p, pi) => (
+                    <div key={pi} style={{border:`1px solid ${C.red}55`,background:C.red+"08",borderRadius:10,padding:14,marginBottom:12}}>
+                      <div style={{fontWeight:800,fontSize:13}}>{p.label}</div>
+                      <div style={{fontSize:12,color:C.red,fontWeight:600,marginTop:4}}>{p.detail}</div>
+                      <div style={{fontSize:11,color:C.t2,fontFamily:MN,marginTop:6}}>Logged: {p.entries.map(e=>new Date(e.date).toLocaleString()+" by "+(e.user||"?")).join(" · ")}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
