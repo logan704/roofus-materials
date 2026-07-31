@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
 import { ld, sv, ldL, svL } from "./storage.js";
-// v53 - Inventory Rescue wizard replaces audit tab
+// v54 - cross-tab write lock + self-healing order journal (lost-update fix)
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
 const DELIVERY_SURCHARGE = 10 / 3; // $3.33 per bundle — $10/square, 3 bundles per square
@@ -80,6 +80,34 @@ async function svStrict(k, v) {
     throw new Error("Write mismatch for " + k + ": wrote " + v.length + " records but read back " + check.length);
   }
 }
+// ═══ CROSS-TAB WRITE LOCK — serializes saves across tabs on the SAME device ═══
+const TAB_ID = Math.random().toString(36).slice(2);
+async function acquireWriteLock() {
+  const KEY = "roofus_write_lock";
+  for (let i = 0; i < 80; i++) {
+    try {
+      const raw = localStorage.getItem(KEY);
+      const cur = raw ? JSON.parse(raw) : null;
+      if (!cur || (Date.now() - cur.ts) > 5000 || cur.tab === TAB_ID) {
+        localStorage.setItem(KEY, JSON.stringify({ tab: TAB_ID, ts: Date.now() }));
+        const chk = JSON.parse(localStorage.getItem(KEY) || "{}");
+        if (chk.tab === TAB_ID) return true;
+      }
+    } catch(e) { return true; }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return true;
+}
+function releaseWriteLock() { try { const c = JSON.parse(localStorage.getItem("roofus_write_lock")||"{}"); if (c.tab === TAB_ID) localStorage.removeItem("roofus_write_lock"); } catch(e) {} }
+
+// ═══ INTENT JOURNAL — per-device receipts so cross-device lost-updates SELF-HEAL ═══
+const jGet = (k) => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; } };
+const jSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v.slice(-80))); } catch {} };
+const JC = "roofus_j_creates", JA = "roofus_j_approves", JD = "roofus_j_deletes";
+const journalCreate  = (ord) => jSet(JC, [...jGet(JC).filter(e => e.id !== ord.id), { id: ord.id, ord, ts: Date.now(), tries: 0 }]);
+const journalApprove = (ord) => jSet(JA, [...jGet(JA).filter(e => e.id !== ord.id), { id: ord.id, ord, ts: Date.now(), tries: 0 }]);
+const journalDelete  = (id)  => { jSet(JD, [...jGet(JD).filter(e => e.id !== id), { id, ts: Date.now(), tries: 0 }]); jSet(JC, jGet(JC).filter(e => e.id !== id)); jSet(JA, jGet(JA).filter(e => e.id !== id)); };
+
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 // Compress and resize photo from file input → base64 string
@@ -646,6 +674,7 @@ export default function App() {
         check("users", freshUsers, setUsers);
         check("templates", freshTemplates, setTemplates);
         check("shrinkage", freshShrink, setShrinkLog);
+        reconcileOrders(freshOrders);
       } catch(e) {}
     };
     lastSync.current = {};
@@ -692,6 +721,7 @@ export default function App() {
     const job = saveQueue.current.then(async () => {
       setSaving(true);
       savingRef.current = true;
+      await acquireWriteLock();
       setSaveError(null);
       try {
         // 1. READ fresh from DB — using ldStrict which THROWS on failure
@@ -748,6 +778,7 @@ export default function App() {
         try { const fresh = await ld(key, []); if (Array.isArray(fresh) && fresh.length > 0) setFn(fresh); } catch(e2) {}
         return null;
       } finally {
+        releaseWriteLock();
         setSaving(false);
         savingRef.current = false;
         syncPaused.current = Math.max(0, syncPaused.current - 1);
@@ -762,7 +793,11 @@ export default function App() {
   const atomicAddItem = useCallback((newItem) => guardedSave("items", setItems, (cur) => [...cur, newItem], "Add item: " + (newItem.name || "")), [guardedSave]);
   const atomicRemoveItem = useCallback((id) => guardedSave("items", setItems, (cur) => cur.filter(i => i.id !== id), "Delete item"), [guardedSave]);
 
-  const atomicAddOrder = useCallback((newOrd) => guardedSave("orders", setOrders, (cur) => [...cur, newOrd], "Submit order: " + (newOrd.jobName || "")), [guardedSave]);
+  const atomicAddOrder = useCallback(async (newOrd) => {
+    const r = await guardedSave("orders", setOrders, (cur) => cur.some(o => o.id === newOrd.id) ? cur : [...cur, newOrd], "Submit order: " + (newOrd.jobName || ""));
+    if (r) journalCreate(newOrd);
+    return r;
+  }, [guardedSave]);
   const atomicUpdateOrder = useCallback((id, updFn, audit) => guardedSave("orders", setOrders, (cur) => cur.map(o => o.id === id ? updFn(o) : o), audit), [guardedSave]);
   const atomicRemoveOrder = useCallback((id) => guardedSave("orders", setOrders, (cur) => cur.filter(o => o.id !== id), "Delete order"), [guardedSave]);
 
@@ -788,8 +823,53 @@ export default function App() {
     }
     const removed = await atomicRemoveOrder(id);
     if (!removed) { alert("Order removal failed — stock may have been restored. Refresh and check before retrying."); return false; }
+    journalDelete(id);
     return true;
   }, [atomicUpdateItems, atomicRemoveOrder]);
+
+  // ═══ SELF-HEAL: cross-device lost-update recovery for orders ═══
+  const reconRunning = useRef(false);
+  const reconcileOrders = useCallback(async (freshOrders) => {
+    if (reconRunning.current || syncPaused.current > 0) return;
+    reconRunning.current = true;
+    try {
+      const now = Date.now(); const AGE = 7 * 86400000; const MAXTRIES = 3;
+      const ids = new Set(freshOrders.map(o => o.id));
+      let creates = jGet(JC), approves = jGet(JA), deletes = jGet(JD);
+      const deletedHere = new Set(deletes.map(e => e.id));
+
+      // [1] Lost CREATES — an order this device submitted vanished (and we didn't delete it)
+      for (const e of creates) {
+        if ((now - e.ts) >= AGE || (e.tries||0) >= MAXTRIES) continue;
+        if (!e.ord || ids.has(e.id) || deletedHere.has(e.id)) continue;
+        e.tries = (e.tries||0) + 1; jSet(JC, creates);
+        console.warn("SYNC-HEAL: restoring lost order " + (e.ord.poNumber || e.id));
+        await guardedSave("orders", setOrders, (cur) => cur.some(o => o.id === e.id) ? cur : [...cur, e.ord], "SYNC-HEAL restore lost order: " + (e.ord.poNumber || e.id));
+      }
+      // [2] Lost APPROVALS — this device approved it, but it shows pending again (record-only; stock untouched)
+      for (const e of approves) {
+        if ((now - e.ts) >= AGE || (e.tries||0) >= MAXTRIES) continue;
+        const cur = freshOrders.find(o => o.id === e.id);
+        if (!cur || cur.status !== "pending" || !e.ord) continue;
+        e.tries = (e.tries||0) + 1; jSet(JA, approves);
+        console.warn("SYNC-HEAL: re-applying lost approval record " + (e.ord.poNumber || e.id));
+        await atomicUpdateOrder(e.id, (o) => o.status === "pending" ? e.ord : o, "SYNC-HEAL re-apply approval: " + (e.ord.poNumber || e.id));
+      }
+      // [3] Lost DELETES — this device deleted it (stock already handled), but it came back
+      for (const e of deletes) {
+        if ((now - e.ts) >= AGE || (e.tries||0) >= MAXTRIES) continue;
+        if (!ids.has(e.id)) continue;
+        e.tries = (e.tries||0) + 1; jSet(JD, deletes);
+        console.warn("SYNC-HEAL: re-removing resurrected order " + e.id);
+        await atomicRemoveOrder(e.id);
+      }
+      // [4] Prune satisfied / expired receipts
+      jSet(JC, jGet(JC).filter(e => !ids.has(e.id) && (now - e.ts) < AGE && (e.tries||0) < MAXTRIES && !deletedHere.has(e.id)));
+      jSet(JA, jGet(JA).filter(e => { const c = freshOrders.find(o => o.id === e.id); return c && c.status === "pending" && (now - e.ts) < AGE && (e.tries||0) < MAXTRIES; }));
+      jSet(JD, jGet(JD).filter(e => ids.has(e.id) && (now - e.ts) < AGE && (e.tries||0) < MAXTRIES));
+    } catch(err) { console.error("SYNC-HEAL error:", err); }
+    finally { reconRunning.current = false; }
+  }, [guardedSave, atomicUpdateOrder, atomicRemoveOrder]);
 
   const atomicUpdateJobs = useCallback((transformFn, audit) => guardedSave("tracked_jobs", setTrackedJobs, transformFn, audit), [guardedSave]);
   const atomicAddJobs = useCallback((newJobs) => guardedSave("tracked_jobs", setTrackedJobs, (cur) => {
@@ -1016,7 +1096,7 @@ export default function App() {
             }));
             if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return; }
           }
-          await atomicRemoveOrder(id); setVOrd(null);
+          const rem = await atomicRemoveOrder(id); if (rem) journalDelete(id); setVOrd(null);
         } : null}
         onEdit={canEditOrders ? async (id, newLines, newNotes) => {
           // GUARD: read FRESH order — someone may have approved/edited it since page load
@@ -1680,6 +1760,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
     // COMPLETE APPROVAL — verified write; retry once; on total failure REVERSE the stock deduction
     let updResult = await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (fresh.jobName || fresh.id));
     if (!updResult) updResult = await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order (retry): " + (fresh.jobName || fresh.id));
+    if (updResult) journalApprove({ ...approvedOrder, jnFileId: jnFileId || approvedOrder.jnFileId || "", osbNoteId: osbNoteId || "" });
     if (!updResult) {
       // Order still pending in DB but stock was deducted — reverse it so nothing is half-done
       const reversed = await atomicUpdateItems((freshIt) => freshIt.map((it) => {
@@ -1730,7 +1811,8 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       }));
       if (!stockResult) { alert("Stock restoration failed — order NOT deleted. Check your internet."); setDeleteWarn(null); return; }
     }
-    await removeOrder(id);
+    const rem = await removeOrder(id);
+    if (rem) journalDelete(id);
     setDeleteWarn(null);
   };
 
