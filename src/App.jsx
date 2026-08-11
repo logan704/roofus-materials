@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import { Package, Plus, Search, Trash2, Edit3, X, Check, ArrowLeft, Users, FileText, RotateCcw, LogOut, Eye, EyeOff, ChevronRight, ChevronDown, Layers, Clock, CheckCircle, XCircle, Printer, Archive, Home, BarChart2, Copy, GripVertical, AlertTriangle, DollarSign, Settings, Download, Camera, ArrowUp, ArrowDown, Image } from "lucide-react";
 
-import { ld, sv, ldL, svL } from "./storage.js";
+import { ld, sv, ldL, svL, refresh, ldFresh, ConflictError, AmbiguousWriteError, loadSnapshot, commitSnapshot } from "./storage.js";
+import { transactBlobs } from "./blobTransaction.js";
 // v54 - cross-tab write lock + self-healing order journal (lost-update fix)
 const CATS = ["Shingles","Underlayment","Flashing","Ridge/Hip","Drip Edge","Starter Strip","Ice & Water Shield","Pipe Boots","Vents","Step Flashing","Lumber","Plywood","Gutters","Downspouts","Fasteners","Adhesives/Sealants","Metal/Trim","Other"];
 const SHINGLE_CATS = ["Shingles","Ridge/Hip","Starter Strip"];
@@ -65,20 +66,18 @@ const BC = `'Barlow Condensed',sans-serif`;
 
 // Strict read — detects ld failures using sentinel (works with both window.storage and storage.js)
 async function ldStrict(k) {
+  // Use ldFresh so a real network/RLS error THROWS rather than being masked as "empty".
   const sentinel = "__RUSA_READ_FAIL_" + Date.now() + "__";
-  const result = await ld(k, sentinel);
+  const result = await ldFresh(k, sentinel);
   if (result === sentinel) throw new Error("Database read failed for: " + k);
   return result;
 }
-// Strict write — writes then verifies (detects silent sv failures)
+// Strict write under server-enforced CAS. A successful RPC response is the authoritative
+// commit proof. Do NOT require a post-commit whole-blob equality read: another legitimate
+// writer may commit a later version before that read, which would make a successful save
+// look like a failure. storage.js separately reconciles the true lost-ACK case.
 async function svStrict(k, v) {
-  await sv(k, v);
-  const sentinel = "__RUSA_VERIFY_FAIL_" + Date.now() + "__";
-  const check = await ld(k, sentinel);
-  if (check === sentinel) throw new Error("Write verification failed for: " + k);
-  if (Array.isArray(v) && Array.isArray(check) && check.length !== v.length) {
-    throw new Error("Write mismatch for " + k + ": wrote " + v.length + " records but read back " + check.length);
-  }
+  return sv(k, v);
 }
 // ═══ CROSS-TAB WRITE LOCK — serializes saves across tabs on the SAME device ═══
 const TAB_ID = Math.random().toString(36).slice(2);
@@ -504,6 +503,7 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+     try {
       const [u, it, o, t, sh, tj] = await Promise.all([ld("users", []), ld("items", []), ld("orders", []), ld("templates", []), ld("shrinkage", []), ld("tracked_jobs", [])]);
       // STARTUP VALIDATION: if we've used the portal before, data shouldn't all be empty
       // Check if this is genuinely a first-time load vs a failed read
@@ -511,8 +511,8 @@ export default function App() {
       if (hasExistingData && it.length === 0 && o.length === 0) {
         // Portal has been used before but items AND orders are empty — likely a read failure
         // Try one more time
-        const retryItems = await ld("items", []);
-        const retryOrders = await ld("orders", []);
+        const retryItems = await ldFresh("items", []);
+        const retryOrders = await ldFresh("orders", []);
         if (retryItems.length === 0 && retryOrders.length === 0) {
           console.error("STARTUP: Items and orders both empty despite prior usage — possible read failure");
         }
@@ -527,25 +527,24 @@ export default function App() {
           try {
             const parsed = JSON.parse(backupUsers);
             if (parsed.length > 0) {
-              const retryU = await ld("users", []);
+              const retryU = await ldFresh("users", []);
               if (retryU.length > 0) { u.splice(0, u.length, ...retryU); recovered = true; }
-              else if (confirm("Database returned 0 users but a local backup has " + parsed.length + " users. Restore from backup?")) {
-                u.splice(0, u.length, ...parsed); await sv("users", u); recovered = true;
+              else {
+                console.error("STARTUP: users read returned 0 but a local backup exists — NOT auto-restoring (P0-6: backup has no DB-version relationship).");
               }
             }
           } catch(e) {}
         }
         if (!recovered && !u.length) {
-          // Only seed the default admin if the DB is VERIFIABLY empty (ldStrict throws on read failure)
+          // FAIL CLOSED: never manufacture a default "admin/admin" account from a browser.
+          // This portal already has production users; an empty authoritative users row is an
+          // operational/security incident that must be repaired deliberately in Supabase.
           try {
             const verified = await ldStrict("users");
-            if (verified.length === 0) {
-              const a = { id: uid(), name: "Logan", email: "logan@usaroof.com", pw: hP("admin"), role: "admin", created: new Date().toISOString() };
-              u.push(a);
-              await sv("users", u);
-            } else { u.splice(0, u.length, ...verified); }
+            if (verified.length > 0) u.splice(0, u.length, ...verified);
+            else console.error("STARTUP: authoritative users list is empty — automatic admin seeding is disabled.");
           } catch(e) {
-            console.error("STARTUP: users read failed — skipping admin seed to protect existing accounts");
+            console.error("STARTUP: users read failed — skipping any seed to protect existing accounts");
           }
         }
       }
@@ -566,13 +565,13 @@ export default function App() {
           if (parsed.length > 5) {
             console.error("WARNING: DB returned 0 items but localStorage has " + parsed.length + " items backed up");
             // Retry the read to distinguish between genuine empty and network glitch
-            const retryItems = await ld("items", []);
-            const retryOrders = await ld("orders", []);
+            const retryItems = await ldFresh("items", []);
+            const retryOrders = await ldFresh("orders", []);
             if (retryItems.length > 0) { setItems(retryItems); }
             else if (parsed.length > 0) {
               // DB is genuinely empty but we had data before — restore from backup
-              if (confirm("Database returned 0 items but a local backup has " + parsed.length + " items. Restore from backup?")) {
-                setItems(parsed); await sv("items", parsed);
+              {
+                console.error("STARTUP: items read returned 0 but a local backup has " + parsed.length + " — NOT auto-restoring (P0-6).");
               }
             }
           }
@@ -584,10 +583,10 @@ export default function App() {
         try {
           const parsed = JSON.parse(backupOrders);
           if (parsed.length > 0) {
-            const retryO = await ld("orders", []);
+            const retryO = await ldFresh("orders", []);
             if (retryO.length > 0) { setOrders(retryO); }
-            else if (confirm("Database returned 0 orders but a local backup has " + parsed.length + " orders. Restore from backup?")) {
-              setOrders(parsed); await sv("orders", parsed);
+            else {
+              console.error("STARTUP: orders read returned 0 but a local backup has " + parsed.length + " — NOT auto-restoring (P0-6).");
             }
           }
         } catch(e) {}
@@ -598,34 +597,39 @@ export default function App() {
         try {
           const parsed = JSON.parse(backupJobs);
           if (parsed.length > 0) {
-            const retryJ = await ld("tracked_jobs", []);
+            const retryJ = await ldFresh("tracked_jobs", []);
             if (retryJ.length > 0) { setTrackedJobs(retryJ); }
-            else if (confirm("Database returned 0 jobs but a local backup has " + parsed.length + " jobs. Restore from backup?")) {
-              setTrackedJobs(parsed); await sv("tracked_jobs", parsed);
+            else {
+              console.error("STARTUP: jobs read returned 0 but a local backup has " + parsed.length + " — NOT auto-restoring (P0-6).");
             }
           }
         } catch(e) {}
       }
       // Migrate users to granular permissions
       const migrated2 = u.map(migratePerms);
-      if (JSON.stringify(migrated2) !== JSON.stringify(u)) { setUsers(migrated2); await sv("users", migrated2); }
-      // One-time shrinkage reset for v47
-      const migrated = await ld("v47_shrink_reset", false);
-      if (!migrated) {
-        setShrinkLog([]);
-        await sv("shrinkage", []);
-        await sv("v47_shrink_reset", true);
+      if (JSON.stringify(migrated2) !== JSON.stringify(u)) {
+        // Compatibility migration is UI-only. Do NOT mutate production data merely because
+        // a browser opened; concurrent startup writes caused needless CAS conflicts and made
+        // client boot an implicit data-migration mechanism.
+        u.splice(0, u.length, ...migrated2);
+        setUsers(migrated2);
+        console.warn("Legacy user permissions mapped in memory only; no startup DB write performed.");
       }
-      // One-time migration: change markup from 30 to 25 (gross margin)
-      const mgMigrated = await ld("v47_margin_migrate", false);
-      if (!mgMigrated && it.length) {
-        const updated = it.map(i => i.markup === 30 ? { ...i, markup: 25 } : i);
-        setItems(updated);
-        await sv("items", updated);
-        await sv("v47_margin_migrate", true);
-      }
+      // One-time shrinkage reset for v47 — REMOVED (P0-7). A destructive one-time migration
+      // must never live in every browser's startup: a failed/missing flag read could wipe
+      // shrinkage history. Such migrations belong in a controlled server-side script.
+      // Legacy one-time browser migrations are intentionally disabled in the concurrency
+      // patch. Data migrations must be run once, deliberately, server-side — never by
+      // every browser at startup. `v47_margin_migrate` is preserved only as historical data.
       try { const s = await ldL("sess", null); if (s) { const f = u.find((x) => x.id === s.uid); if (f) setUser(f); } } catch {}
       setRdy(true);
+     } catch (e) {
+      // A startup migration write may be refused if another tab/user booted at the same
+      // instant (ConflictError) — that's harmless here (no data lost), and boot must still
+      // complete. Never let startup housekeeping white-screen the app.
+      console.warn("Startup housekeeping skipped:", e && e.message);
+      setRdy(true);
+     }
     })();
   }, []);
 
@@ -650,21 +654,17 @@ export default function App() {
       if (document.hidden) return;
       try {
         const [freshItems, freshOrders, freshJobs, freshUsers, freshTemplates, freshShrink] = await Promise.all([
-          ld("items", []), ld("orders", []), ld("tracked_jobs", []),
-          ld("users", []), ld("templates", []), ld("shrinkage", [])
+          ldFresh("items", []), ldFresh("orders", []), ldFresh("tracked_jobs", []),
+          ldFresh("users", []), ldFresh("templates", []), ldFresh("shrinkage", [])
         ]);
         const check = (key, fresh, setter) => {
           const sig = JSON.stringify(fresh);
           if (lastSync.current[key] !== sig) {
             lastSync.current[key] = sig;
             if (Array.isArray(fresh)) {
-              setter(prev => {
-                if (fresh.length === 0 && prev.length > 0) {
-                  console.warn("Sync: " + key + " returned empty but has " + prev.length + " — skipped");
-                  return prev;
-                }
-                return fresh;
-              });
+              // ldFresh throws on a read failure, so a successful [] is authoritative.
+              // Do not preserve stale UI state merely because the last record was deleted.
+              setter(() => fresh);
             }
           }
         };
@@ -686,12 +686,7 @@ export default function App() {
     return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, [rdy]);
 
-  const sU = useCallback((u) => { setUsers(u); sv("users", u); }, []);
-  const sI = useCallback((i) => { setItems(i); sv("items", i); }, []);
-  const sO = useCallback((o) => { setOrders(typeof o === "function" ? o : () => o); sv("orders", typeof o === "function" ? o(orders) : o); }, [orders]);
-  const sT = useCallback((t) => { setTemplates(t); sv("templates", t); }, []);
-  const sSh = useCallback((s) => { setShrinkLog(s); sv("shrinkage", s); }, []);
-  const sTJ = useCallback((j) => { setTrackedJobs(j); sv("tracked_jobs", j); }, []);
+  // Legacy fire-and-forget setters removed. All mounted UI writes use guarded CAS helpers.
 
   // ═══ GUARDED ATOMIC SAVE SYSTEM ═══
   const [saving, setSaving] = useState(false);
@@ -707,12 +702,52 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
+  // Concurrent-save guard: storage.js fires "roofus:save-conflict" when a save was
+  // refused because someone else saved first (nothing was overwritten). We tell the
+  // user to reload and redo — this is the "hold up, resubmit" prompt. It fires at most
+  // once per few seconds so a burst of conflicts doesn't stack alerts.
+  const lastConflictAt = useRef(0);
+  useEffect(() => {
+    const onConflict = (e) => {
+      // Auxiliary append-style logs retry/handle their own CAS conflicts. Never reload the
+      // whole portal or tell the user their BUSINESS action failed because an audit/log append
+      // raced another writer after the business transaction already committed.
+      const auxKey = e?.detail?.key;
+      if (["audit_log", "inv_log", "adj_log"].includes(auxKey)) return;
+      const now = Date.now();
+      if (now - lastConflictAt.current < 4000) return;
+      lastConflictAt.current = now;
+      const whatMap = {
+        orders: "an order", items: "the item catalog", users: "a user",
+        templates: "a template", shrinkage: "the shrinkage log", tracked_jobs: "a job",
+      };
+      const what = whatMap[e?.detail?.key] || "this data";
+      alert(
+        "Hold up — someone else saved changes to " + what + " while you were working.\n\n" +
+        "Your change was NOT saved (and their change was NOT lost). " +
+        "The page will now reload the latest version. Please re-enter your change and save again."
+      );
+      // Reload so the screen shows current data + current version, then the retry will stick.
+      window.location.reload();
+    };
+    window.addEventListener("roofus:save-conflict", onConflict);
+    return () => window.removeEventListener("roofus:save-conflict", onConflict);
+  }, []);
+
   // Audit log helper
   const auditLog = useCallback(async (action) => {
-    try {
-      const log = await ld("audit_log", []);
-      await sv("audit_log", [{ action, user: user?.name || "?", date: new Date().toISOString() }, ...log].slice(0, 500));
-    } catch(e) {}
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const log = await ldFresh("audit_log", []);
+        await sv("audit_log", [{ action, user: user?.name || "?", date: new Date().toISOString() }, ...log].slice(0, 500));
+        return;
+      } catch(e) {
+        if (e instanceof ConflictError) continue;
+        console.warn("Audit log write skipped:", e?.message || e);
+        return;
+      }
+    }
+    console.warn("Audit log write skipped after concurrent conflicts");
   }, [user]);
 
   // Core guarded save — queued, validated, backed up, verified
@@ -740,18 +775,14 @@ export default function App() {
           throw new Error("Write would erase " + current.length + " records from " + key + " — aborting");
         }
 
-        // 5. BACKUP — save current state before overwriting
-        try { await sv(key + "_backup", current); } catch(e) {}
+        // 5. BACKUP — REMOVED (P0-6). Writing a "<key>_backup" blob to Supabase on every
+        // save doubled write load and is meaningless under CAS. Local backups still exist.
 
         // 6. WRITE to Supabase FIRST — using svStrict which THROWS on failure
         await svStrict(key, result);
 
-        // 7. VERIFY — read back and confirm
-        let verified = false;
-        try {
-          const readBack = await ldStrict(key);
-          verified = Array.isArray(readBack) && readBack.length === result.length;
-        } catch(e) { /* verification failed but write may have succeeded */ }
+        // 7. svStrict already performed a fresh full-content verification.
+        const verified = true;
 
         // 8. UPDATE UI only after successful write
         setFn(result);
@@ -771,11 +802,15 @@ export default function App() {
 
         return result;
       } catch (e) {
-        const msg = "SAVE FAILED — " + (e.message || "check your internet and try again");
+        const ambiguous = e instanceof AmbiguousWriteError;
+        const msg = ambiguous
+          ? "SAVE OUTCOME UNKNOWN — do not re-enter this action until the page refreshes and you verify whether it is present."
+          : "SAVE FAILED — " + (e.message || "check your internet and try again");
         setSaveError(msg);
         console.error("Save error:", key, e);
-        // Revert UI to what's actually in DB
-        try { const fresh = await ld(key, []); if (Array.isArray(fresh) && fresh.length > 0) setFn(fresh); } catch(e2) {}
+        // Show the authoritative server state if we can read it. Never use cached ld() here.
+        try { const fresh = await ldFresh(key, []); if (Array.isArray(fresh)) setFn(fresh); } catch(e2) {}
+        if (ambiguous) alert(msg);
         return null;
       } finally {
         releaseWriteLock();
@@ -791,84 +826,101 @@ export default function App() {
   // ═══ ALL ATOMIC OPERATIONS (using guarded wrapper) ═══
   const atomicUpdateItems = useCallback((transformFn, audit) => guardedSave("items", setItems, transformFn, audit), [guardedSave]);
   const atomicAddItem = useCallback((newItem) => guardedSave("items", setItems, (cur) => [...cur, newItem], "Add item: " + (newItem.name || "")), [guardedSave]);
-  const atomicRemoveItem = useCallback((id) => guardedSave("items", setItems, (cur) => cur.filter(i => i.id !== id), "Delete item"), [guardedSave]);
 
   const atomicAddOrder = useCallback(async (newOrd) => {
-    const r = await guardedSave("orders", setOrders, (cur) => cur.some(o => o.id === newOrd.id) ? cur : [...cur, newOrd], "Submit order: " + (newOrd.jobName || ""));
+    const r = await guardedSave("orders", setOrders, (cur) => {
+      const existing = cur.find(o => o.id === newOrd.id);
+      if (!existing) return [...cur, newOrd];
+      if (JSON.stringify(existing) !== JSON.stringify(newOrd)) throw new Error("ORDER_ID_PAYLOAD_MISMATCH");
+      return cur; // exact replay of a committed submit = idempotent success
+    }, "Submit order: " + (newOrd.jobName || ""));
     if (r) journalCreate(newOrd);
     return r;
   }, [guardedSave]);
-  const atomicUpdateOrder = useCallback((id, updFn, audit) => guardedSave("orders", setOrders, (cur) => cur.map(o => o.id === id ? updFn(o) : o), audit), [guardedSave]);
-  const atomicRemoveOrder = useCallback((id) => guardedSave("orders", setOrders, (cur) => cur.filter(o => o.id !== id), "Delete order"), [guardedSave]);
+  const atomicUpdateOrder = useCallback((id, updFn, audit) => guardedSave("orders", setOrders, (cur) => {
+    let found = false;
+    const next = cur.map(o => { if (o.id !== id) return o; found = true; return updFn(o); });
+    if (!found) throw new Error("ORDER_NOT_FOUND");
+    return next;
+  }, audit), [guardedSave]);
+  const atomicRemoveOrder = useCallback((id) => guardedSave("orders", setOrders, (cur) => {
+    if (!cur.some(o => o.id === id)) throw new Error("ORDER_NOT_FOUND");
+    return cur.filter(o => o.id !== id);
+  }, "Delete order"), [guardedSave]);
 
-  // AUDIT-TOOL DELETE — same fresh-state guarantees as the inline delete; returns true/false
-  const auditDeleteOrder = useCallback(async (id) => {
-    let freshOrd;
+  // One authoritative delete path for NON-APPROVED orders. Approved history is immutable
+  // in this emergency patch because a correct reversal must preserve historical inventory VALUE,
+  // not merely units. Keeping the transaction orders-only also avoids needless conflicts with
+  // unrelated inventory activity while deleting a pending/rejected order.
+  const deleteOrderWithStock = useCallback(async (id) => {
+    let deletedOrder = null;
+    let next;
     try {
-      const freshOrders = await ldStrict("orders");
-      freshOrd = freshOrders.find(o => o.id === id);
-      if (!freshOrd) { alert("This order no longer exists — it may have already been deleted."); return false; }
-    } catch(e) { alert("Cannot verify order — check your internet."); return false; }
-    if (freshOrd.jnFileId) deleteFromJN(freshOrd.jnFileId);
-    if (freshOrd.osbNoteId) deleteOSBNote(freshOrd.osbNoteId);
-    if (freshOrd.status === "approved") {
-      const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-        const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
-        if (!ls.length) return it;
-        const v = { ...(it.variants || getVariants(it)) };
-        ls.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: freshOrd.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
-        return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
-      }));
-      if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return false; }
+      next = await transactBlobs(["orders"], { orders: [] }, (cur) => {
+        const curOrders = cur.orders || [];
+        const ord = curOrders.find(o => o.id === id);
+        if (!ord) throw new Error("ORDER_NOT_FOUND");
+        if (ord.status === "approved") throw new Error("APPROVED_DELETE_DISABLED");
+        deletedOrder = ord;
+        return { orders: curOrders.filter(o => o.id !== id) };
+      });
+    } catch (e) {
+      if (e instanceof AmbiguousWriteError) {
+        try {
+          const freshOrders = await ldFresh("orders", []);
+          if (!freshOrders.some(o => o.id === id)) {
+            setOrders(freshOrders);
+            journalDelete(id);
+            return deletedOrder;
+          }
+        } catch (_) {}
+      }
+      throw e;
     }
-    const removed = await atomicRemoveOrder(id);
-    if (!removed) { alert("Order removal failed — stock may have been restored. Refresh and check before retrying."); return false; }
+    setOrders(next.orders);
     journalDelete(id);
+    return deletedOrder;
+  }, []);
+
+  const auditDeleteOrder = useCallback(async (id) => {
+    let deleted;
+    try { deleted = await deleteOrderWithStock(id); }
+    catch (e) {
+      const msg=String(e?.message||e);
+      if (e instanceof AmbiguousWriteError) alert("DELETE OUTCOME UNKNOWN. Do not retry yet. Refresh and verify whether the order is still present.");
+      else if (e?.name === "ConflictError") alert("This order changed while you were deleting it. Nothing was changed. Refresh and try again.");
+      else if (msg === "ORDER_NOT_FOUND") alert("This order no longer exists.");
+      else if (msg === "APPROVED_DELETE_DISABLED") alert("Approved-order deletion is temporarily disabled to protect historical inventory quantity/value. Pending/rejected orders can still be deleted.");
+      else if (msg.startsWith("DEPENDENT_RETURNS_EXIST")) alert("Cannot delete this approved outgoing order because approved returns depend on it. Reverse/delete the returns first.");
+      else if (msg.startsWith("INSUFFICIENT_STOCK")) alert("Cannot delete this approved return because some returned stock has already been used. Nothing was changed.");
+      else alert("Delete failed. Nothing was changed. Refresh and try again.");
+      return false;
+    }
+    if (deleted?.jnFileId) { try { deleteFromJN(deleted.jnFileId); } catch(e) {} }
+    if (deleted?.osbNoteId) { try { deleteOSBNote(deleted.osbNoteId); } catch(e) {} }
     return true;
-  }, [atomicUpdateItems, atomicRemoveOrder]);
+  }, [deleteOrderWithStock]);
 
   // ═══ SELF-HEAL: cross-device lost-update recovery for orders ═══
   const reconRunning = useRef(false);
   const reconcileOrders = useCallback(async (freshOrders) => {
-    if (reconRunning.current || syncPaused.current > 0) return;
-    reconRunning.current = true;
+    // DISABLED (P0-5): this self-heal journal used to auto-recreate "lost" orders and
+    // re-apply approvals/deletes from per-device localStorage. Under server-enforced CAS a
+    // missing order is almost always an INTENTIONAL deletion by another device, so
+    // resurrecting it corrupts shared state. Journals are now forensic-only.
     try {
-      const now = Date.now(); const AGE = 7 * 86400000; const MAXTRIES = 3;
-      const ids = new Set(freshOrders.map(o => o.id));
-      let creates = jGet(JC), approves = jGet(JA), deletes = jGet(JD);
-      const deletedHere = new Set(deletes.map(e => e.id));
-
-      // [1] Lost CREATES — an order this device submitted vanished (and we didn't delete it)
-      for (const e of creates) {
-        if ((now - e.ts) >= AGE || (e.tries||0) >= MAXTRIES) continue;
-        if (!e.ord || ids.has(e.id) || deletedHere.has(e.id)) continue;
-        e.tries = (e.tries||0) + 1; jSet(JC, creates);
-        console.warn("SYNC-HEAL: restoring lost order " + (e.ord.poNumber || e.id));
-        await guardedSave("orders", setOrders, (cur) => cur.some(o => o.id === e.id) ? cur : [...cur, e.ord], "SYNC-HEAL restore lost order: " + (e.ord.poNumber || e.id));
+      if (reconRunning.current) return;
+      reconRunning.current = true;
+      const ids = new Set((freshOrders || []).map(o => o.id));
+      const missing = jGet(JC).filter(e => e && e.id && e.ord && !ids.has(e.id));
+      if (missing.length) {
+        console.warn("SYNC-FORENSIC: " + missing.length + " journaled order(s) absent on server (no auto-heal).");
       }
-      // [2] Lost APPROVALS — this device approved it, but it shows pending again (record-only; stock untouched)
-      for (const e of approves) {
-        if ((now - e.ts) >= AGE || (e.tries||0) >= MAXTRIES) continue;
-        const cur = freshOrders.find(o => o.id === e.id);
-        if (!cur || cur.status !== "pending" || !e.ord) continue;
-        e.tries = (e.tries||0) + 1; jSet(JA, approves);
-        console.warn("SYNC-HEAL: re-applying lost approval record " + (e.ord.poNumber || e.id));
-        await atomicUpdateOrder(e.id, (o) => o.status === "pending" ? e.ord : o, "SYNC-HEAL re-apply approval: " + (e.ord.poNumber || e.id));
-      }
-      // [3] Lost DELETES — this device deleted it (stock already handled), but it came back
-      for (const e of deletes) {
-        if ((now - e.ts) >= AGE || (e.tries||0) >= MAXTRIES) continue;
-        if (!ids.has(e.id)) continue;
-        e.tries = (e.tries||0) + 1; jSet(JD, deletes);
-        console.warn("SYNC-HEAL: re-removing resurrected order " + e.id);
-        await atomicRemoveOrder(e.id);
-      }
-      // [4] Prune satisfied / expired receipts
-      jSet(JC, jGet(JC).filter(e => !ids.has(e.id) && (now - e.ts) < AGE && (e.tries||0) < MAXTRIES && !deletedHere.has(e.id)));
-      jSet(JA, jGet(JA).filter(e => { const c = freshOrders.find(o => o.id === e.id); return c && c.status === "pending" && (now - e.ts) < AGE && (e.tries||0) < MAXTRIES; }));
-      jSet(JD, jGet(JD).filter(e => ids.has(e.id) && (now - e.ts) < AGE && (e.tries||0) < MAXTRIES));
-    } catch(err) { console.error("SYNC-HEAL error:", err); }
-    finally { reconRunning.current = false; }
+    } catch (err) {
+      console.warn("reconcile forensic check failed:", err && err.message);
+    } finally {
+      reconRunning.current = false;
+    }
   }, [guardedSave, atomicUpdateOrder, atomicRemoveOrder]);
 
   const atomicUpdateJobs = useCallback((transformFn, audit) => guardedSave("tracked_jobs", setTrackedJobs, transformFn, audit), [guardedSave]);
@@ -946,7 +998,7 @@ export default function App() {
   useEffect(() => { setMatDrop(false); setSettDrop(false); }, [pg]);
 
   if (!rdy) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: C.bg }}><style>{CSS}</style><img src={LOGO} alt="" style={{ height: 60 }} /></div>;
-  if (!user) return <><style>{CSS}</style><Auth users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} login={login} /></>;
+  if (!user) return <><style>{CSS}</style><Auth users={users} atomicUpdateUsers={atomicUpdateUsers} login={login} /></>;
 
   const pendCt = orders.filter((o) => o.status === "pending").length;
 
@@ -996,6 +1048,7 @@ export default function App() {
       <div style={{ background: "#FFFFFF", borderBottom: `3px solid ${RED}`, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100, flexWrap: "wrap", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setPg("home")}>
           <img src={LOGO} alt="Roof USA" style={{ height: 36 }} />
+          <span title="Concurrency-safe storage patch" style={{fontSize:9,fontWeight:900,letterSpacing:".05em",color:"#fff",background:"#1f7a3f",padding:"3px 6px",borderRadius:5}}>CAS SAFE v3.1</span>
         </div>
         <div className="nav-wrap" style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
           <NavBtn icon={Home} label="Home" active={pg === "home"} onClick={() => setPg("home")} />
@@ -1053,50 +1106,38 @@ export default function App() {
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
         {pg === "home" && <HomePage canApprove={canApprove} canJobs={canJobs} go={(page, tpl) => { setStartTpl(tpl || null); setPg(page); }} pendCt={pendCt} templates={templates} />}
-        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} addOrder={atomicAddOrder} sI={sI} saving={saving} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
-        {pg === "approvals" && canApprove && <Approvals orders={orders} updateOrder={atomicUpdateOrder} removeOrder={atomicRemoveOrder} items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} view={setVOrd} saving={saving} syncPaused={syncPaused} />}
-        {pg === "items" && canItems && <ItemMgr items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} atomicAddItem={atomicAddItem} atomicRemoveItem={atomicRemoveItem} orders={orders} />}
-        {pg === "inventory" && canInventory && <InvMgr items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} saving={saving} />}
-        {pg === "shrinkage" && canShrinkage && <ShrinkageMgr items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} shrinkLog={shrinkLog} sSh={sSh} atomicUpdateShrinkage={atomicUpdateShrinkage} />}
-        {pg === "damage" && <DamageReport items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} shrinkLog={shrinkLog} sSh={sSh} atomicUpdateShrinkage={atomicUpdateShrinkage} user={user} />}
-        {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} sSh={sSh} atomicUpdateShrinkage={atomicUpdateShrinkage} items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} />}
-        {pg === "supplier" && canSupplier && <SupplierCost items={items} sI={sI} atomicUpdateItems={atomicUpdateItems} />}
-        {pg === "templates" && canTemplates && <TplMgr templates={templates} sT={sT} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
+        {(pg === "order" || pg === "return") && <OrderBuilder type={pg} items={items} user={user} orders={orders} addOrder={atomicAddOrder} saving={saving} templates={templates} startTpl={startTpl} clearStartTpl={() => setStartTpl(null)} go={() => setPg("home")} />}
+        {pg === "approvals" && canApprove && <Approvals orders={orders} updateOrder={atomicUpdateOrder} items={items} view={setVOrd} saving={saving} syncPaused={syncPaused} deleteOrderWithStock={deleteOrderWithStock} setItemsLocal={setItems} setOrdersLocal={setOrders} />}
+        {pg === "items" && canItems && <ItemMgr items={items} setItemsLocal={setItems} atomicUpdateItems={atomicUpdateItems} atomicAddItem={atomicAddItem} orders={orders} />}
+        {pg === "inventory" && canInventory && <InvMgr items={items} setItemsLocal={setItems} saving={saving} />}
+        {pg === "shrinkage" && canShrinkage && <ShrinkageMgr items={items} shrinkLog={shrinkLog} />}
+        {pg === "damage" && <DamageReport items={items} shrinkLog={shrinkLog} setItemsLocal={setItems} setShrinkLocal={setShrinkLog} user={user} />}
+        {pg === "gallery" && canGallery && <DamageGallery shrinkLog={shrinkLog} setShrinkLocal={setShrinkLog} items={items} setItemsLocal={setItems} />}
+        {pg === "supplier" && canSupplier && <SupplierCost items={items} atomicUpdateItems={atomicUpdateItems} />}
+        {pg === "templates" && canTemplates && <TplMgr templates={templates} atomicUpdateTemplates={atomicUpdateTemplates} items={items} />}
         {pg === "history" && <History orders={orders} items={items} user={user} canViewAll={canViewAllHistory} canEdit={canEditOrders} canDelete={canDeleteOrders} view={setVOrd} />}
-        {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} sJ={sTJ} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
+        {pg === "jobs" && canJobs && <JobTracker jobs={trackedJobs} atomicUpdateJobs={atomicUpdateJobs} orders={orders} items={items} nav={setPg} />}
         {pg === "reports" && canReports && <Reports orders={orders} items={items} shrinkLog={shrinkLog} atomicUpdateItems={atomicUpdateItems} auditDeleteOrder={auditDeleteOrder} atomicUpdateOrder={atomicUpdateOrder} atomicUpdateShrinkage={atomicUpdateShrinkage} />}
-        {pg === "settings" && canSettings && <SettingsPage users={users} sU={sU} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
+        {pg === "settings" && canSettings && <SettingsPage users={users} atomicUpdateUsers={atomicUpdateUsers} me={user} items={items} orders={orders} templates={templates} shrinkLog={shrinkLog} />}
       </div>
       {vOrd && <OrderPDF order={vOrd} items={items} onClose={() => setVOrd(null)}
         onDelete={canDeleteOrders ? async (id) => {
-          // GUARD: read FRESH order — status may have changed since page load
-          let freshOrd;
-          try {
-            const freshOrders = await ldStrict("orders");
-            freshOrd = freshOrders.find(o => o.id === id);
-            if (!freshOrd) { alert("This order was already deleted by someone else."); setVOrd(null); return; }
-          } catch(e) { alert("Cannot verify order — check your internet."); return; }
-          if (freshOrd.jnFileId) deleteFromJN(freshOrd.jnFileId);
-          if (freshOrd.osbNoteId) deleteOSBNote(freshOrd.osbNoteId);
-          // Only restore stock if FRESH status is approved — await before removing order
-          if (freshOrd.status === "approved") {
-            const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-              const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
-              if (!ls.length) return it;
-              const v = { ...(it.variants || getVariants(it)) };
-              ls.forEach((l) => {
-                const optKey = l.option || "_default";
-                if (v[optKey]) {
-                  if (freshOrd.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
-                  else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
-                }
-              });
-              const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
-              return { ...it, variants: v, qtyOnHand: totalQ };
-            }));
-            if (!stockResult) { alert("Stock restoration failed — order NOT deleted."); return; }
+          let deleted;
+          try { deleted = await deleteOrderWithStock(id); }
+          catch (e) {
+            const msg=String(e?.message||e);
+            if (e instanceof AmbiguousWriteError) alert("DELETE OUTCOME UNKNOWN. Do not retry yet. Refresh and verify whether the order is still present.");
+            else if (e?.name === "ConflictError") alert("This order changed while you were deleting it. Nothing was changed. Refresh and try again.");
+            else if (msg === "APPROVED_DELETE_DISABLED") alert("Approved-order deletion is temporarily disabled to protect historical inventory quantity/value. Pending/rejected orders can still be deleted.");
+            else if (msg.startsWith("DEPENDENT_RETURNS_EXIST")) alert("Cannot delete this approved outgoing order because approved returns depend on it. Reverse/delete the returns first.");
+            else if (msg.startsWith("INSUFFICIENT_STOCK")) alert("Cannot delete this approved return because some returned stock has already been consumed. Nothing was changed.");
+            else if (msg === "ORDER_NOT_FOUND") alert("This order was already deleted by someone else.");
+            else alert("Delete could not be saved. Nothing was changed. Check your internet.");
+            return;
           }
-          const rem = await atomicRemoveOrder(id); if (rem) journalDelete(id); setVOrd(null);
+          if (deleted?.jnFileId) { try { deleteFromJN(deleted.jnFileId); } catch(e) {} }
+          if (deleted?.osbNoteId) { try { deleteOSBNote(deleted.osbNoteId); } catch(e) {} }
+          setVOrd(null);
         } : null}
         onEdit={canEditOrders ? async (id, newLines, newNotes) => {
           // GUARD: read FRESH order — someone may have approved/edited it since page load
@@ -1106,62 +1147,57 @@ export default function App() {
             freshOrd = freshOrders.find(o => o.id === id);
             if (!freshOrd) { alert("This order was deleted by someone else."); setVOrd(null); return; }
           } catch(e) { alert("Cannot verify order — check your internet."); return; }
-          // Only adjust stock if FRESH status is approved — reverse FRESH lines (what was actually deducted)
+
+          // APPROVED-ORDER EDITING IS DISABLED (concurrency patch, per reviewer P0-2/P0-9).
+          // Reversing an approved order's stock and re-applying new lines involves re-deriving
+          // historical WAC and return semantics that cannot be done safely against the legacy
+          // blob model without stable variant IDs. It is far safer to reject the action than to
+          // corrupt inventory. To change an approved order: delete it (stock is atomically
+          // reversed) and submit a new one.
           if (freshOrd.status === "approved") {
-            const stockResult = await atomicUpdateItems((freshItems) => {
-              let updated = freshItems.map((it) => {
-                const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
-                if (!ls.length) return it;
-                const v = { ...(it.variants || getVariants(it)) };
-                ls.forEach((l) => {
-                  const optKey = l.option || "_default";
-                  if (v[optKey]) {
-                    if (freshOrd.type === "order") v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
-                    else v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
-                  }
-                });
-                const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
-                return { ...it, variants: v, qtyOnHand: totalQ };
-              });
-              updated = updated.map((it) => {
-                const ls = newLines.filter((l) => l.itemId === it.id);
-                if (!ls.length) return it;
-                const v = { ...(it.variants || getVariants(it)) };
-                ls.forEach((l) => {
-                  const optKey = l.option || "_default";
-                  if (v[optKey]) {
-                    if (freshOrd.type === "order") v[optKey] = { ...v[optKey], qty: Math.max(0, (v[optKey].qty || 0) - l.qty) };
-                    else v[optKey] = { ...v[optKey], qty: (v[optKey].qty || 0) + l.qty };
-                  }
-                });
-                const totalQ = Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0);
-                return { ...it, variants: v, qtyOnHand: totalQ };
-              });
-              return updated;
-            });
-            if (!stockResult) { alert("Stock update failed — order NOT edited."); return; }
+            alert("This order is already approved. Approved-order editing and deletion are temporarily disabled because historical quantity/value reversal must be handled by a dedicated correction transaction. Contact an administrator rather than changing inventory manually.");
+            return;
           }
-          // Build from FRESH order — preserves status/jnFileId/osbNoteId set by others
-          const updatedOrd = { ...freshOrd, lines: newLines, notes: newNotes !== undefined ? newNotes : (freshOrd.notes || "") };
-          await atomicUpdateOrder(id, () => updatedOrd);
-          setVOrd(updatedOrd);
-          // Re-upload to JN if linked
-          if (updatedOrd.jnJobId) {
-            if (updatedOrd.jnFileId) deleteFromJN(updatedOrd.jnFileId);
-            uploadToJN(updatedOrd, items).then((newFileId) => {
-              if (newFileId) atomicUpdateOrder(id, (o) => ({ ...o, jnFileId: newFileId }));
+
+          // PENDING order: no stock has moved yet, so editing lines/notes is a single-blob write.
+          // Use a CAS transaction on orders alone so a concurrent approval can't be clobbered.
+          let saved = null;
+          try {
+            await transactBlobs(["orders"], { orders: [] }, (cur) => {
+              const curOrders = cur.orders || [];
+              const snapOrd = curOrders.find(o => o.id === id);
+              if (!snapOrd) throw new Error("ORDER_NOT_FOUND");
+              if (snapOrd.status !== "pending") throw new Error("ORDER_NOT_PENDING");
+              saved = { ...snapOrd, lines: newLines, notes: newNotes !== undefined ? newNotes : (snapOrd.notes || "") };
+              return { orders: curOrders.map(o => o.id === id ? saved : o) };
             });
+          } catch (e) {
+            const msg = String((e && e.message) || e);
+            if (e && e.name === "ConflictError") alert("This order changed while you were editing it. Nothing was changed. Refresh and try again.");
+            else if (msg === "ORDER_NOT_PENDING") alert("This order was just approved by someone else, so it can no longer be edited. Refresh to see the current state.");
+            else if (msg === "ORDER_NOT_FOUND") alert("This order was deleted by someone else.");
+            else alert("Edit could not be saved. Nothing was changed. Check your internet.");
+            return;
           }
-          // Update OSB note if qty changed
-          if (updatedOrd.osbNoteId && updatedOrd.osbDesc) {
+          try { setOrders(await ldFresh("orders", [])); } catch(e) {}
+          setVOrd(saved);
+          // Re-upload to JN if linked (best-effort, after commit).
+          if (saved && saved.jnJobId) {
+            if (saved.jnFileId) { try { deleteFromJN(saved.jnFileId); } catch(e) {} }
+            uploadToJN(saved, items).then((newFileId) => {
+              if (newFileId) transactBlobs(["orders"], { orders: [] }, (cur) => ({ orders: (cur.orders||[]).map(o => o.id === id ? { ...o, jnFileId: newFileId } : o) })).catch(()=>{});
+            }).catch(()=>{});
+          }
+          // Update OSB note if applicable (best-effort, after commit).
+          if (saved && saved.osbNoteId && saved.osbDesc) {
             const iMap2 = Object.fromEntries(items.map((i) => [i.id, i]));
             const newOsbQty = newLines.filter(l => (iMap2[l.itemId]?.name || "").toLowerCase() === "7/16 osb").reduce((s,l) => s + l.qty, 0);
             if (newOsbQty > 0) {
-              updateOSBNote(updatedOrd.osbNoteId, updatedOrd, newOsbQty);
-              atomicUpdateOrder(id, (o) => ({ ...o, osbQty: newOsbQty }));
+              try { updateOSBNote(saved.osbNoteId, saved, newOsbQty); } catch(e) {}
+              transactBlobs(["orders"], { orders: [] }, (cur) => ({ orders: (cur.orders||[]).map(o => o.id === id ? { ...o, osbQty: newOsbQty } : o) })).catch(()=>{});
             } else {
-              deleteOSBNote(updatedOrd.osbNoteId);
-              atomicUpdateOrder(id, (o) => ({ ...o, osbNoteId: "", osbDesc: "", osbQty: 0 }));
+              try { deleteOSBNote(saved.osbNoteId); } catch(e) {}
+              transactBlobs(["orders"], { orders: [] }, (cur) => ({ orders: (cur.orders||[]).map(o => o.id === id ? { ...o, osbNoteId: "", osbDesc: "", osbQty: 0 } : o) })).catch(()=>{});
             }
           }
         } : null}
@@ -1171,7 +1207,7 @@ export default function App() {
 }
 
 // ═══ AUTH ═══
-function Auth({ users, sU, atomicUpdateUsers, login }) {
+function Auth({ users, atomicUpdateUsers, login }) {
   const [mode, setMode] = useState("login");
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [show, setShow] = useState(false); const [err, setErr] = useState("");
   const [pending, setPending] = useState(false);
@@ -1283,7 +1319,7 @@ function BigBtn({ icon, label, sub, color, onClick }) {
 }
 
 // ═══ ORDER BUILDER ═══
-function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templates, startTpl, clearStartTpl, go }) {
+function OrderBuilder({ type, items, user, orders, addOrder, saving, templates, startTpl, clearStartTpl, go }) {
   const [job, setJob] = useState(""); const [addr, setAddr] = useState(""); const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([]); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All"); const [done, setDone] = useState(false);
   const [step, setStep] = useState("choose"); // choose, job, build
@@ -1374,6 +1410,9 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
   const osbUnit = iMap[osbLines[0]?.itemId]?.unit || "sheet";
 
   const submitBusy = useRef(false);
+  // Preserve the exact pending submit request until its outcome is known. This prevents a
+  // lost response from turning a manual retry into a second order with a fresh id.
+  const pendingOrderSubmit = useRef(null);
   const submit = async () => {
     if (submitBusy.current) return; // in-flight guard — double-click would create duplicate orders
     if (!lines.length || !allOptionsSet) return;
@@ -1411,13 +1450,22 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
     const existingCount = freshOrders.filter(o => o.jobName === jobTrim && o.type === type).length;
     const poLabel = type === "return" ? "Return" : "Materials";
     const autoPoNumber = jobTrim ? `${jobTrim} ${poLabel} #${existingCount + 1}` : "";
-    const ord = { id: uid(), type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, date: new Date().toISOString(), status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: Math.max(1, Math.round(+l.qty)), option: l.option, unitCost: Math.max(0, +l.unitCost || 0), markupCost: Math.max(0, +l.markupCost || 0), supplierCost: Math.max(0, +l.supplierCost || 0) })) };
+    const semantic = { type, userId: user.id, userName: user.name, poNumber: autoPoNumber, jobName: jobTrim, jobAddress: addr.trim(), notes: notes.trim(), jnJobId: jnJobId || "", osbDesc: hasOSB ? osbDesc.trim() : "", osbQty: hasOSB ? osbQty : 0, status: "pending", lines: lines.map((l) => ({ itemId: l.itemId, qty: Math.max(1, Math.round(+l.qty)), option: l.option, unitCost: Math.max(0, +l.unitCost || 0), markupCost: Math.max(0, +l.markupCost || 0), supplierCost: Math.max(0, +l.supplierCost || 0) })) };
+    if (pendingOrderSubmit.current) {
+      if (JSON.stringify(pendingOrderSubmit.current.semantic) !== JSON.stringify(semantic)) {
+        alert("A previous order submission has an unresolved outcome. Do not change it and submit a second version. Refresh and check Pending Orders first.");
+        return;
+      }
+    } else {
+      pendingOrderSubmit.current = { semantic, ord: { id: uid(), ...semantic, date: new Date().toISOString() } };
+    }
+    const ord = pendingOrderSubmit.current.ord;
     // Stock is NOT deducted at submit — only at approval
     submitBusy.current = true;
     try {
       const saved = await addOrder(ord);
-      if (saved) setDone(true);
-      else alert("Order failed to save — check your internet and try again.");
+      if (saved) { pendingOrderSubmit.current = null; setDone(true); }
+      else alert("Order was not confirmed saved. Before changing the order details, refresh/check Pending Orders. If you retry this unchanged form, the same order ID will be reused so it cannot create a second copy.");
     } finally { submitBusy.current = false; }
   };
 
@@ -1639,7 +1687,7 @@ function OrderBuilder({ type, items, user, orders, addOrder, sI, saving, templat
     </div>
   );
 }
-function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateItems, view, saving, syncPaused }) {
+function Approvals({ orders, updateOrder, items, view, saving, syncPaused, deleteOrderWithStock, setItemsLocal, setOrdersLocal }) {
   const approvingIds = useRef(new Set());
   const pend = orders.filter((o) => o.status === "pending" && !approvingIds.current.has(o.id)).sort((a, b) => new Date(b.date) - new Date(a.date));
   const [deleteWarn, setDeleteWarn] = useState(null);
@@ -1661,119 +1709,156 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       }
     } catch(e) { alert("Cannot verify order status — check your internet."); return; }
 
-    // GUARD: If this is a return linked to a job, cap qty at total ordered minus already returned
-    if (fresh.type === "return" && fresh.jnJobId) {
-      try {
-        const freshOrders2 = await ldStrict("orders");
-        // Sum total ordered per item+option for this job
-        const jobOrders = freshOrders2.filter(o => o.jnJobId === fresh.jnJobId && o.status === "approved" && o.type === "order");
-        const jobReturns = freshOrders2.filter(o => o.jnJobId === fresh.jnJobId && o.status === "approved" && o.type === "return" && o.id !== id);
-        const orderedQty = {}; // key: itemId:option → total ordered
-        jobOrders.forEach(o => (o.lines||[]).forEach(l => {
-          const k = l.itemId + ":" + (l.option || "_default");
-          orderedQty[k] = (orderedQty[k] || 0) + l.qty;
-        }));
-        const returnedQty = {}; // key: itemId:option → total already returned
-        jobReturns.forEach(o => (o.lines||[]).forEach(l => {
-          const k = l.itemId + ":" + (l.option || "_default");
-          returnedQty[k] = (returnedQty[k] || 0) + l.qty;
-        }));
-        const iMap = Object.fromEntries(items.map(i => [i.id, i]));
-        const overLines = [];
-        fresh.lines.forEach(l => {
-          const k = l.itemId + ":" + (l.option || "_default");
-          const maxReturn = (orderedQty[k] || 0) - (returnedQty[k] || 0);
-          if (l.qty > maxReturn) {
-            const name = iMap[l.itemId]?.name || "Unknown";
-            const opt = l.option && l.option !== "_default" ? ` (${l.option})` : "";
-            overLines.push(`${name}${opt}: returning ${l.qty} but only ${maxReturn} available to return`);
-          }
+    // Return limits are enforced authoritatively INSIDE the atomic transaction below.
+
+    // ATOMIC COMMIT (concurrency patch P0-2): compute the next items + orders from ONE
+    // fresh snapshot and commit BOTH in a single PostgreSQL transaction via transactBlobs.
+    // Either both change or neither does — no "items committed, order still pending" gap,
+    // and no manual stock-reversal compensation (which could itself conflict). We use the
+    // app's OWN variant logic (getVariants), NOT the external transform module, because
+    // production items may use options[] without a materialized variants object.
+    let committedApproved = null;
+    const approvalOpId = uid();
+    try {
+      await transactBlobs(["items", "orders"], { items: [], orders: [] }, (cur) => {
+        const curItems = cur.items || [];
+        const curOrders = cur.orders || [];
+
+        const snapOrd = curOrders.find((o) => o.id === id);
+        if (!snapOrd) throw new Error("ORDER_NOT_FOUND");
+        if (snapOrd.status !== "pending") throw new Error("ORDER_NOT_PENDING");
+
+        // Lock WAC from the SAME committed snapshot's items.
+        const lines = (snapOrd.lines || []).map((l) => {
+          const it = curItems.find((i) => i.id === l.itemId);
+          if (!it) throw new Error("ITEM_NOT_FOUND:" + l.itemId);
+          const v = getVariants(it);
+          const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 };
+          const wac = vd.wac || it.wacCost || 0;
+          const markup = it.markup || 0;
+          return { ...l, unitCost: wac, markupCost: markup >= 100 ? wac : wac / (1 - markup / 100), supplierCost: it.supplierCost || 0 };
         });
-        if (overLines.length) {
-          if (!confirm("⚠️ RETURN WARNING — quantities exceed what was ordered for this job:\n\n" + overLines.join("\n") + "\n\nThis could mean the original order is still pending or was lost. Click OK to approve anyway, or Cancel to go back.")) {
+
+        // Aggregate duplicate item+option lines so a split can't bypass the stock check.
+        const agg = new Map();
+        for (const l of lines) {
+          const k = l.itemId + "::" + (l.option || "_default");
+          const q = Number(l.qty || 0);
+          if (!(q > 0)) throw new Error("INVALID_LINE_QTY");
+          agg.set(k, (agg.get(k) || 0) + q);
+        }
+
+        const isReturn = snapOrd.type === "return";
+        const dir = isReturn ? +1 : -1;
+
+        if (isReturn) {
+          if (!snapOrd.jnJobId) throw new Error("RETURN_NOT_LINKED_TO_JOB");
+          const issued = new Map(), returned = new Map();
+          for (const o of curOrders) {
+            const sameJob = o.jnJobId === snapOrd.jnJobId || (!o.jnJobId && !!o.jobName && o.jobName === snapOrd.jobName);
+            if (o.id === snapOrd.id || !sameJob || o.status !== "approved") continue;
+            const target = o.type === "return" ? returned : (o.type === "order" ? issued : null);
+            if (!target) continue;
+            for (const l of (o.lines || [])) {
+              const k=l.itemId+"::"+(l.option||"_default"); target.set(k,(target.get(k)||0)+Number(l.qty||0));
+            }
+          }
+          for (const [k,q] of agg.entries()) {
+            const remaining=(issued.get(k)||0)-(returned.get(k)||0);
+            if (q > remaining) throw new Error("EXCESS_RETURN:"+k+":remaining="+remaining);
+          }
+        }
+
+        // Apply the movement with NO clamping — any shortage fails the whole transaction.
+        const nextItems = curItems.map((it) => {
+          const v = { ...(getVariants(it)) };
+          let touched = false;
+          for (const [k, qty] of agg.entries()) {
+            const sep = k.indexOf("::");
+            const iid = k.slice(0, sep);
+            const opt = k.slice(sep + 2);
+            if (iid !== it.id) continue;
+            const cur2 = v[opt];
+            if (!cur2) throw new Error("VARIANT_NOT_FOUND:" + k);
+            const after = Number(cur2.qty || 0) + dir * qty;
+            if (after < 0) throw new Error("INSUFFICIENT_STOCK:" + k);
+            v[opt] = { ...cur2, qty: after };
+            touched = true;
+          }
+          if (!touched) return it;
+          return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s, x) => s + Number(x.qty || 0), 0) };
+        });
+
+        const approvedOrder = { ...snapOrd, lines, status: "approved", approvedDate: new Date().toISOString(), approvalOpId };
+        committedApproved = approvedOrder;
+        const nextOrders = curOrders.map((o) => (o.id === id ? approvedOrder : o));
+        return { items: nextItems, orders: nextOrders };
+      });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (e instanceof AmbiguousWriteError) {
+        try {
+          const freshOrders = await ldFresh("orders", []);
+          const nowOrd = freshOrders.find(o => o.id === id);
+          if (nowOrd?.status === "approved" && nowOrd.approvalOpId === approvalOpId) {
+            committedApproved = nowOrd;
+            try { setItemsLocal(await ldFresh("items", [])); setOrdersLocal(freshOrders); } catch(_) {}
+          } else if (nowOrd?.status === "approved") {
+            alert("This order was approved, but by another operation. Inventory is already handled. Refresh before doing anything else.");
+            return;
+          } else {
+            alert("APPROVAL OUTCOME UNKNOWN. Do NOT approve again yet. Refresh and verify the order status first.");
             return;
           }
+        } catch (verifyErr) {
+          alert("APPROVAL OUTCOME UNKNOWN. Do NOT approve again yet. Refresh and verify the order status first.");
+          return;
         }
-      } catch(e) { alert("Cannot verify return quantities — check your internet and try again."); return; }
+      } else if (e && e.name === "ConflictError") {
+        alert("This order changed while you were approving it (someone else may have edited or approved it). Nothing was changed. Please refresh and try again.");
+        return;
+      } else if (msg.startsWith("INSUFFICIENT_STOCK")) {
+        alert("INSUFFICIENT STOCK — cannot approve this order. Nothing was changed. Receive more inventory or edit the order first.");
+      } else if (msg.startsWith("EXCESS_RETURN")) {
+        alert("RETURN BLOCKED — this exceeds the quantity still returnable for the linked job. Nothing was changed.");
+      } else if (msg === "RETURN_NOT_LINKED_TO_JOB") {
+        alert("RETURN BLOCKED — the return must be linked to a JobNimbus job so prior issued material can be proven. Nothing was changed.");
+      } else if (msg.startsWith("VARIANT_NOT_FOUND") || msg.startsWith("ITEM_NOT_FOUND")) {
+        alert("This order references an item/option that no longer exists. Nothing was changed. Refresh and check the catalog.");
+      } else if (msg === "ORDER_NOT_PENDING") {
+        alert("This order was already approved or changed by someone else. Nothing was changed.");
+      } else if (msg === "ORDER_NOT_FOUND") {
+        alert("This order was deleted by someone else. Nothing was changed.");
+      } else {
+        alert("Approval could not be saved. Nothing was changed. Check your internet and try again.");
+      }
+      if (!committedApproved) return;
     }
 
-    // Read FRESH items from DB for accurate WAC locking
-    let freshItems = items;
-    try { freshItems = await ldStrict("items"); } catch(e) { /* fall back to state */ }
-    // Lock WAC at approval time — recalculate costs from FRESH variant WAC
-    const updatedLines = fresh.lines.map((l) => {
-      const it = freshItems.find((i) => i.id === l.itemId);
-      if (!it) return l;
-      const v = getVariants(it);
-      const vd = v[l.option || "_default"] || { wac: it.wacCost || 0 };
-      const wac = vd.wac || it.wacCost || 0;
-      return { ...l, unitCost: wac, markupCost: (it.markup || 0) >= 100 ? wac : wac / (1 - (it.markup || 0) / 100), supplierCost: it.supplierCost || 0 };
-    });
-    const approvedOrder = { ...fresh, lines: updatedLines, status: "approved", approvedDate: new Date().toISOString() };
+    // Committed. Refresh local state from fresh server rows (cache already updated).
+    try {
+      setItemsLocal(await ldFresh("items", []));
+      setOrdersLocal(await ldFresh("orders", []));
+    } catch (e) { /* poller will catch up */ }
 
-    // STOCK CHECK — block approval if any line would go negative (orders only, returns add stock)
-    if (fresh.type === "order") {
-      const shortages = [];
-      updatedLines.forEach((l) => {
-        const it = freshItems.find((i) => i.id === l.itemId);
-        if (!it) return;
-        const v = getVariants(it);
-        const opt = l.option || "_default";
-        const onHand = v[opt]?.qty || 0;
-        if (l.qty > onHand) {
-          const name = it.name + (opt !== "_default" ? ` (${opt})` : "");
-          shortages.push(`${name}: need ${l.qty}, only ${onHand} in stock`);
-        }
-      });
-      if (shortages.length) {
-        alert("INSUFFICIENT STOCK — cannot approve this order:\n\n" + shortages.join("\n") + "\n\nReceive more inventory or edit the order first.");
-        return;
+    // JobNimbus AFTER the DB transaction. If JN fails: order = approved, inventory = correct,
+    // JN = pending/failed. An external API is never allowed to sit between two commits.
+    if (committedApproved && committedApproved.jnJobId) {
+      let jnFileId = null, osbNoteId = null;
+      try { jnFileId = await uploadToJN(committedApproved, items); } catch (e) { console.error("JN upload failed (inventory already correct):", e); }
+      if (committedApproved.osbDesc) {
+        try { osbNoteId = await createOSBNote(committedApproved); } catch (e) { console.error("OSB note failed (inventory already correct):", e); }
+      }
+      if (jnFileId || osbNoteId) {
+        try {
+          await transactBlobs(["orders"], { orders: [] }, (cur) => ({
+            orders: (cur.orders || []).map((o) => (o.id === id ? { ...o, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || o.osbNoteId || "" } : o))
+          }));
+          setOrdersLocal(await ldFresh("orders", []));
+        } catch (e) { console.error("Could not attach JN ids (approval stands):", e); }
       }
     }
-
-    // Deduct/add stock at approval time — MUST complete before marking order approved
-    const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-      const ls = updatedLines.filter((l) => l.itemId === it.id);
-      if (!ls.length) return it;
-      const v = { ...(getVariants(it)) };
-      ls.forEach((l) => {
-        const k = l.option || "_default";
-        if (v[k]) {
-          if (fresh.type === "order") v[k] = { ...v[k], qty: Math.max(0, (v[k].qty || 0) - l.qty) };
-          else v[k] = { ...v[k], qty: (v[k].qty || 0) + l.qty };
-        }
-      });
-      const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-      return { ...it, variants: v, qtyOnHand: totalQ };
-    }));
-    if (!stockResult) { alert("Stock deduction failed — order NOT approved. Check your internet."); return; }
-    // Upload to JobNimbus if linked
-    let jnFileId = null;
-    if (approvedOrder.jnJobId) {
-      try { jnFileId = await uploadToJN(approvedOrder, items); } catch(e) { console.error("JN upload failed (approval continues):", e); }
-    }
-    // Create OSB note in JN if applicable
-    let osbNoteId = null;
-    if (approvedOrder.osbDesc && approvedOrder.jnJobId) {
-      try { osbNoteId = await createOSBNote(approvedOrder); } catch(e) { console.error("OSB note failed (approval continues):", e); }
-    }
-    // COMPLETE APPROVAL — verified write; retry once; on total failure REVERSE the stock deduction
-    let updResult = await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order: " + (fresh.jobName || fresh.id));
-    if (!updResult) updResult = await updateOrder(id, (o) => ({ ...approvedOrder, jnFileId: jnFileId || o.jnFileId || "", osbNoteId: osbNoteId || "" }), "Approve order (retry): " + (fresh.jobName || fresh.id));
-    if (updResult) journalApprove({ ...approvedOrder, jnFileId: jnFileId || approvedOrder.jnFileId || "", osbNoteId: osbNoteId || "" });
-    if (!updResult) {
-      // Order still pending in DB but stock was deducted — reverse it so nothing is half-done
-      const reversed = await atomicUpdateItems((freshIt) => freshIt.map((it) => {
-        const lsRev = updatedLines.filter((l) => l.itemId === it.id);
-        if (!lsRev.length) return it;
-        const v = { ...(it.variants || getVariants(it)) };
-        lsRev.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: fresh.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
-        return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
-      }));
-      if (reversed) alert("Approval could not be saved — stock changes were rolled back. Nothing was changed. Check your internet and try again.");
-      else alert("⚠️ APPROVAL INCOMPLETE: stock was deducted but the order still shows PENDING and rollback failed. DO NOT re-approve. Refresh, then delete this order and re-submit it.");
-      return;
-    }
+    if (committedApproved) { try { journalApprove(committedApproved); } catch (e) {} }
     } finally {
       approvingIds.current.delete(id);
       syncPaused.current = Math.max(0, syncPaused.current - 1);
@@ -1788,31 +1873,34 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
       if (!freshOrd) { alert("This order was already deleted by someone else."); return; }
       if (freshOrd.status !== "pending") { alert("This order was already " + freshOrd.status + " by someone else — cannot reject."); return; }
     } catch(e) { alert("Cannot verify order status — check your internet."); return; }
-    await updateOrder(id, (o) => o.status !== "pending" ? o : ({ ...o, status: "rejected", approvedDate: new Date().toISOString() }), "Reject order");
+    try {
+      await updateOrder(id, (o) => {
+        if (o.status !== "pending") throw new Error("ORDER_NOT_PENDING");
+        return { ...o, status: "rejected", approvedDate: new Date().toISOString() };
+      }, "Reject order");
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg === "ORDER_NOT_PENDING" || e?.name === "ConflictError") alert("This order changed before rejection committed. Nothing was overwritten. Refresh and review its current status.");
+      else if (e instanceof AmbiguousWriteError) alert("REJECTION OUTCOME UNKNOWN. Refresh and verify the order status before doing anything else.");
+      else alert("Reject failed. Nothing was changed. Refresh and try again.");
+    }
   };
   const deleteOrder = async (id) => {
-    // GUARD: read FRESH order — status/lines may have changed (approval deducts stock)
-    let freshOrd;
-    try {
-      const freshOrders = await ldStrict("orders");
-      freshOrd = freshOrders.find(o => o.id === id);
-      if (!freshOrd) { alert("This order was already deleted by someone else."); setDeleteWarn(null); return; }
-    } catch(e) { alert("Cannot verify order — check your internet."); setDeleteWarn(null); return; }
-    if (freshOrd.jnFileId) deleteFromJN(freshOrd.jnFileId);
-    if (freshOrd.osbNoteId) deleteOSBNote(freshOrd.osbNoteId);
-    // Only restore stock if FRESH status is approved (pending orders never deducted)
-    if (freshOrd.status === "approved") {
-      const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-        const ls = (freshOrd.lines || []).filter((l) => l.itemId === it.id);
-        if (!ls.length) return it;
-        const v = { ...(it.variants || getVariants(it)) };
-        ls.forEach((l) => { const k = l.option || "_default"; if (v[k]) { v[k] = { ...v[k], qty: freshOrd.type === "order" ? (v[k].qty || 0) + l.qty : Math.max(0, (v[k].qty || 0) - l.qty) }; } });
-        return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s2, x) => s2 + (x.qty || 0), 0) };
-      }));
-      if (!stockResult) { alert("Stock restoration failed — order NOT deleted. Check your internet."); setDeleteWarn(null); return; }
+    let deleted;
+    try { deleted = await deleteOrderWithStock(id); }
+    catch (e) {
+      const msg=String(e?.message||e);
+      if (e instanceof AmbiguousWriteError) alert("DELETE OUTCOME UNKNOWN. Do not retry yet. Refresh and verify whether the order is still present.");
+      else if (e?.name === "ConflictError") alert("This order changed while you were deleting it. Nothing was changed. Refresh and try again.");
+      else if (msg === "ORDER_NOT_FOUND") alert("This order was already deleted by someone else.");
+      else if (msg === "APPROVED_DELETE_DISABLED") alert("Approved-order deletion is temporarily disabled to protect historical inventory quantity/value. Pending/rejected orders can still be deleted.");
+      else if (msg.startsWith("DEPENDENT_RETURNS_EXIST")) alert("Cannot delete this approved outgoing order because approved returns depend on it. Reverse/delete the returns first.");
+      else if (msg.startsWith("INSUFFICIENT_STOCK")) alert("Cannot delete this approved return because some returned stock has already been used. Nothing was changed.");
+      else alert("Delete failed. Nothing was changed. Check your internet and refresh.");
+      setDeleteWarn(null); return;
     }
-    const rem = await removeOrder(id);
-    if (rem) journalDelete(id);
+    if (deleted?.jnFileId) { try { deleteFromJN(deleted.jnFileId); } catch(e) {} }
+    if (deleted?.osbNoteId) { try { deleteOSBNote(deleted.osbNoteId); } catch(e) {} }
     setDeleteWarn(null);
   };
 
@@ -1872,7 +1960,7 @@ function Approvals({ orders, updateOrder, removeOrder, items, sI, atomicUpdateIt
 }
 
 // ═══ ITEM MANAGER (multi-option subcategories) ═══
-function ItemMgr({ items, sI, atomicUpdateItems, atomicAddItem, atomicRemoveItem, orders }) {
+function ItemMgr({ items, setItemsLocal, atomicUpdateItems, atomicAddItem, orders }) {
   const [modal, setModal] = useState(null); const [search, setSearch] = useState(""); const [cat, setCat] = useState("All");
   const cats = ["All", ...new Set(items.map((i) => i.category))];
   const filt = items.filter((i) => {
@@ -1929,7 +2017,7 @@ function ItemMgr({ items, sI, atomicUpdateItems, atomicAddItem, atomicRemoveItem
                     <td style={{ padding: "9px 10px" }}>
                       {vi === 0 && <div style={{ display: "flex", gap: 5 }}>
                         <button onClick={() => setModal(it)} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
-                        <button onClick={() => { if (confirm(`Delete "${it.name}"?`)) atomicRemoveItem(it.id); }} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
+                        <button onClick={() => alert("Item deletion is temporarily disabled in the concurrency-safe patch because deleting an item can orphan order/receipt/damage history. Keep the item and stop using it until a safe archive flow is added.")} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Trash2 size={13} /></button>
                       </div>}
                     </td>
                   </tr>
@@ -1939,12 +2027,12 @@ function ItemMgr({ items, sI, atomicUpdateItems, atomicAddItem, atomicRemoveItem
           </table>
         </div>
       </div>
-      <ItemModal open={modal} onClose={() => setModal(null)} items={items} atomicUpdateItems={atomicUpdateItems} atomicAddItem={atomicAddItem} ed={modal && modal !== "new" ? modal : null} />
+      <ItemModal open={modal} onClose={() => setModal(null)} items={items} setItemsLocal={setItemsLocal} orders={orders} atomicUpdateItems={atomicUpdateItems} atomicAddItem={atomicAddItem} ed={modal && modal !== "new" ? modal : null} />
     </div>
   );
 }
 
-function ItemModal({ open, onClose, items, atomicUpdateItems, atomicAddItem, ed }) {
+function ItemModal({ open, onClose, items, setItemsLocal, orders, atomicUpdateItems, atomicAddItem, ed }) {
   const [name, setName] = useState(""); const [cat, setCat] = useState(CATS[0]); const [unit, setUnit] = useState(UNITS[0]);
   const [cost, setCost] = useState(""); const [mk, setMk] = useState("25");
   const [optStr, setOptStr] = useState("");
@@ -1982,16 +2070,93 @@ function ItemModal({ open, onClose, items, atomicUpdateItems, atomicAddItem, ed 
     if (!name.trim() || !cost) return;
     const opts = parsedOpts;
     if (ed) {
-      const existingVariants = ed.variants || {};
       const newOpts = opts.length > 0 ? opts : ["_default"];
-      const updatedVariants = {};
-      newOpts.forEach((o) => {
-        const existing = existingVariants[o] || { qty: 0, wac: +cost };
-        updatedVariants[o] = { ...existing, minStock: +(variantMinStocks[o] || 0) || 0 };
-      });
-      const totalQ = Object.values(updatedVariants).reduce((s, x) => s + (x.qty || 0), 0);
-      const result = await atomicUpdateItems((cur) => cur.map((i) => i.id === ed.id ? { ...i, name: name.trim(), category: cat, unit, wacCost: +cost, markup: +mk, options: opts, variants: updatedVariants, qtyOnHand: totalQ } : i));
-      if (!result) { alert("Failed to save item."); return; }
+      const userChangedBaseCost = Number(cost) !== Number(ed.wacCost || 0);
+      let next;
+      try {
+        // Item edits are based on the FRESH item/history snapshot, not the stale modal copy.
+        // This prevents a metadata edit from overwriting a receive/damage/approval that changed
+        // variant quantities or WAC while the modal was open.
+        next = await transactBlobs(
+          ["items", "orders", "inv_log", "shrinkage"],
+          { items: [], orders: [], inv_log: [], shrinkage: [] },
+          (cur) => {
+            const freshIt = (cur.items || []).find((i) => i.id === ed.id);
+            if (!freshIt) throw new Error("ITEM_NOT_FOUND");
+
+            // If somebody else changed catalog metadata while this modal was open, fail closed
+            // instead of silently overwriting their edit. Inventory/WAC changes are excluded
+            // from this signature because they are expected to change during normal operations.
+            const metaSig = (x) => JSON.stringify({
+              name: x?.name || "", category: x?.category || "", unit: x?.unit || "",
+              markup: Number(x?.markup || 0),
+              options: (x?.options && x.options.length ? x.options : ["_default"]),
+              mins: Object.fromEntries(Object.entries(getVariants(x || {})).map(([k,v]) => [k, Number(v?.minStock || 0)]))
+            });
+            if (metaSig(freshIt) !== metaSig(ed)) throw new Error("ITEM_EDIT_STALE");
+
+            const oldOpts = (freshIt.options && freshIt.options.length > 0) ? freshIt.options : ["_default"];
+            const freshVariants = getVariants(freshIt);
+            const removed = oldOpts.filter((opt) => !newOpts.includes(opt));
+
+            const riskyRemoved = removed.filter((opt) => {
+              const qty = Number(freshVariants[opt]?.qty || 0);
+              const inOrders = (cur.orders || []).some((o) => (o.lines || []).some((l) => l.itemId === freshIt.id && (l.option || "_default") === opt));
+              const inReceipts = (cur.inv_log || []).some((r) => r.itemId === freshIt.id && (r.option || "_default") === opt);
+              const inShrinkage = (cur.shrinkage || []).some((r) => r.itemId === freshIt.id && (r.option || "_default") === opt);
+              return qty !== 0 || inOrders || inReceipts || inShrinkage;
+            });
+            if (riskyRemoved.length) throw new Error("OPTION_IN_USE:" + riskyRemoved.join(","));
+
+            const currentTotalQty = Object.values(freshVariants).reduce((s, x) => s + Number(x?.qty || 0), 0);
+            if (userChangedBaseCost && currentTotalQty > 0) {
+              throw new Error("WAC_EDIT_WITH_STOCK");
+            }
+
+            const updatedVariants = {};
+            newOpts.forEach((o) => {
+              const existing = freshVariants[o] || { qty: 0, wac: +cost };
+              updatedVariants[o] = {
+                ...existing,
+                // A manual base-cost edit is only allowed when there is zero stock, so it
+                // cannot rewrite the value of material already on the shelf.
+                wac: userChangedBaseCost && currentTotalQty === 0 ? +cost : Number(existing.wac || 0),
+                minStock: +(variantMinStocks[o] || 0) || 0
+              };
+            });
+            const totalQ = Object.values(updatedVariants).reduce((s, x) => s + Number(x.qty || 0), 0);
+            const nextItem = {
+              ...freshIt,
+              name: name.trim(), category: cat, unit,
+              wacCost: userChangedBaseCost && currentTotalQty === 0 ? +cost : Number(freshIt.wacCost || 0),
+              markup: +mk, options: opts, variants: updatedVariants, qtyOnHand: totalQ
+            };
+            return {
+              items: (cur.items || []).map((i) => i.id === freshIt.id ? nextItem : i),
+              orders: cur.orders || [],
+              inv_log: cur.inv_log || [],
+              shrinkage: cur.shrinkage || []
+            };
+          }
+        );
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (e instanceof AmbiguousWriteError) {
+          alert("ITEM EDIT OUTCOME UNKNOWN. Do not edit this item again yet. Refresh and verify the catalog first.");
+        } else if (e?.name === "ConflictError" || msg === "ITEM_EDIT_STALE") {
+          alert("This item changed while you were editing it. Nothing was overwritten. Refresh and re-enter your catalog change.");
+        } else if (msg.startsWith("OPTION_IN_USE:")) {
+          alert("Cannot rename/remove option(s) with stock or order/receipt/damage history: " + msg.slice("OPTION_IN_USE:".length) + ". Add a new option instead.");
+        } else if (msg === "WAC_EDIT_WITH_STOCK") {
+          alert("Base WAC cannot be manually changed while this item has stock on hand. Receive/correct inventory instead.");
+        } else if (msg === "ITEM_NOT_FOUND") {
+          alert("This item was deleted or changed. Refresh the catalog.");
+        } else {
+          alert("Item was not saved. Nothing was overwritten. Refresh and try again.");
+        }
+        return;
+      }
+      setItemsLocal(next.items);
     } else {
       const initVariants = {};
       effectiveOpts.forEach((o) => { initVariants[o] = { qty: 0, wac: +cost, minStock: +(variantMinStocks[o] || 0) || 0 }; });
@@ -2096,7 +2261,14 @@ function getLowStockVariants(items, orders) {
 }
 
 // ═══ INVENTORY (WAC) — bulk receive ═══
-function InvMgr({ items, sI, atomicUpdateItems, saving }) {
+function InvMgr({ items, setItemsLocal, saving }) {
+  // Historical receipt edit/delete handlers remain in the legacy JSX below for reference,
+  // but are intentionally unreachable in this emergency patch. If stale UI state ever opens
+  // one of those modals, fail closed rather than executing the old split-write inventory logic.
+  const atomicUpdateItems = async () => {
+    alert("Receipt correction is temporarily disabled in the concurrency-safe patch.");
+    return null;
+  };
   const [lines, setLines] = useState([]); // [{itemId, option, qty, cost}]
   const [note, setNote] = useState("");
   const [log, setLog] = useState([]);
@@ -2111,18 +2283,26 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
 
   useEffect(() => { (async () => { setLog(await ld("inv_log", [])); })(); }, []);
   const svLog = useCallback(async (transformFn) => {
-    // ATOMIC + VERIFIED: read fresh, transform, write, read back to confirm, retry once
+    // ATOMIC + VERIFIED: read FRESH, transform, conditional write, retry on conflict.
+    // Because two people can append to the log at once, a refused write means someone
+    // else appended first — so we re-read the latest and re-apply the transform on top,
+    // rather than giving up or overwriting their entry.
     try {
-      const fresh = await ld("inv_log", []);
-      const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
-      if (!Array.isArray(result)) return false;
-      const sig = JSON.stringify(result);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await sv("inv_log", result);
-        const readBack = await ld("inv_log", null);
-        if (readBack !== null && JSON.stringify(readBack) === sig) { setLog(result); return true; }
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const fresh = await ldFresh("inv_log", []);
+        const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
+        if (!Array.isArray(result)) return false;
+        const sig = JSON.stringify(result);
+        try {
+          await sv("inv_log", result);
+          const readBack = await ld("inv_log", null);
+          if (readBack !== null && JSON.stringify(readBack) === sig) { setLog(result); return true; }
+        } catch (e) {
+          if (e instanceof ConflictError) { continue; } // someone appended first — re-read and retry
+          throw e;
+        }
       }
-      alert("Warning: receive log failed to save after retry. Stock is correct, but the Audit report may show a discrepancy for this receive.");
+      alert("Warning: receive log is very busy and failed to save after several tries. Stock is correct, but the Audit report may show a discrepancy for this receive.");
       return false;
     } catch(e) { console.error("Log save error:", e); return false; }
   }, []);
@@ -2151,36 +2331,52 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
   const receiveBusy = useRef(false);
   const receiveAll = async () => {
     if (receiveBusy.current) return; // in-flight guard — receives are ADDITIVE; a double-click would double stock
-    if (!validLines.length) return;
+    if (!lines.length) return;
+    if (validLines.length !== lines.length) {
+      alert("Every selected receipt line needs both a quantity and a unit cost greater than zero. Nothing was received.");
+      return;
+    }
     receiveBusy.current = true;
+    const receiveBatchId = uid();
     try {
-    const newLogEntries = [];
-
-    const stockResult = await atomicUpdateItems((freshItems) => {
-      let updatedItems = [...freshItems];
-      validLines.forEach((l) => {
-        const idx = updatedItems.findIndex((i) => i.id === l.itemId);
-        if (idx < 0) return;
-        const it = updatedItems[idx];
-        const v = { ...(it.variants || getVariants(it)) };
-        const curV = v[l.option] || { qty: 0, wac: it.wacCost || 0, minStock: 0 };
-        const oQ = curV.qty || 0, oC = curV.wac || 0, nQ = +l.qty, nC = +l.cost;
-        const tQ = oQ + nQ;
-        const wac = tQ > 0 ? Math.round((oQ * oC + nQ * nC) / tQ * 100) / 100 : nC;
-        v[l.option] = { ...curV, qty: tQ, wac };
-        const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-        const totalC = Object.values(v).filter((x) => x.qty > 0).reduce((s, x) => s + x.qty * x.wac, 0);
-        const itemWac = totalQ > 0 ? Math.round(totalC / totalQ * 100) / 100 : wac;
-        updatedItems[idx] = { ...it, variants: v, qtyOnHand: totalQ, wacCost: itemWac };
-        const displayName = l.itemName + (l.option !== "_default" ? ` (${l.option})` : "");
-        newLogEntries.push({ id: uid(), itemId: l.itemId, itemName: displayName, option: l.option, qty: nQ, unitCost: nC, prevWAC: oC, newWAC: wac, prevQty: oQ, newQty: tQ, date: new Date().toISOString(), note: note.trim() });
+    let next;
+    try {
+      next = await transactBlobs(["items", "inv_log"], { items: [], inv_log: [] }, (cur) => {
+        let updatedItems = [...(cur.items || [])]; const newLogEntries = [];
+        for (const l of validLines) {
+          const idx=updatedItems.findIndex(i=>i.id===l.itemId); if (idx<0) throw new Error("ITEM_NOT_FOUND:"+l.itemId);
+          const it=updatedItems[idx], v={...getVariants(it)}, curV=v[l.option]; if (!curV) throw new Error("VARIANT_NOT_FOUND:"+l.itemId+"::"+l.option);
+          const oQ=Number(curV.qty||0),oC=Number(curV.wac||0),nQ=Number(l.qty),nC=Number(l.cost);
+          if (!(nQ>0) || !(nC>0) || !Number.isFinite(nQ) || !Number.isFinite(nC)) throw new Error("INVALID_RECEIPT_LINE");
+          const tQ=oQ+nQ,wac=Math.round(((oQ*oC+nQ*nC)/tQ)*100)/100; v[l.option]={...curV,qty:tQ,wac};
+          const totalQ=Object.values(v).reduce((a,x)=>a+Number(x.qty||0),0),totalC=Object.values(v).filter(x=>Number(x.qty||0)>0).reduce((a,x)=>a+Number(x.qty||0)*Number(x.wac||0),0);
+          updatedItems[idx]={...it,variants:v,qtyOnHand:totalQ,wacCost:totalQ>0?Math.round((totalC/totalQ)*100)/100:wac};
+          const displayName=l.itemName+(l.option!=="_default"?` (${l.option})`:"");
+          newLogEntries.push({id:uid(),receiveBatchId,itemId:l.itemId,itemName:displayName,option:l.option,qty:nQ,unitCost:nC,prevWAC:oC,newWAC:wac,prevQty:oQ,newQty:tQ,date:new Date().toISOString(),note:note.trim()});
+        }
+        return {items:updatedItems,inv_log:[...newLogEntries,...(cur.inv_log||[])]};
       });
-      return updatedItems;
-    });
-    if (!stockResult) { alert("Inventory save failed — receive NOT recorded. Check your internet and try again."); return; }
-
-    await svLog((fresh) => [...newLogEntries, ...fresh]);
-    setDone(true);
+    } catch(e) {
+      const msg=String(e?.message||e);
+      if (e instanceof AmbiguousWriteError) {
+        try {
+          const freshLog = await ldFresh("inv_log", []);
+          if ((freshLog || []).some(x => x.receiveBatchId === receiveBatchId)) {
+            setItemsLocal(await ldFresh("items", [])); setLog(freshLog); setDone(true);
+            setTimeout(() => { setDone(false); setLines([]); setNote(""); }, 2000);
+            return;
+          }
+        } catch (verifyErr) {
+          alert("RECEIVE OUTCOME UNKNOWN. Do NOT enter this receipt again yet. Refresh and check Recent Receipts first.");
+          return;
+        }
+        alert("The receive was not found after the network error. Refresh before retrying.");
+      } else if (e?.name === "ConflictError") alert("Inventory changed while receiving. Nothing was changed. Refresh and re-enter this receipt.");
+      else if (msg.startsWith("ITEM_NOT_FOUND") || msg.startsWith("VARIANT_NOT_FOUND")) alert("An item/option changed while receiving. Nothing was changed. Refresh.");
+      else alert("Receive could not be saved. Nothing was changed. Check your internet and try again.");
+      return;
+    }
+    setItemsLocal(next.items); setLog(next.inv_log); setDone(true);
     setTimeout(() => { setDone(false); setLines([]); setNote(""); }, 2000);
     } finally { receiveBusy.current = false; }
   };
@@ -2321,8 +2517,8 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
                 <td style={{ padding: "7px 8px", color: C.t2 }}>{r.note || "—"}</td>
                 <td style={{ padding: "7px 8px" }}>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <button onClick={() => { setEditReceipt(r); setErQty(String(r.qty)); setErCost(String(r.unitCost)); setErNote(r.note || ""); }} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
-                    <button onClick={() => setDeleteReceipt(r)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer" }}><Trash2 size={13} /></button>
+                    <button onClick={() => alert("Receipt editing is temporarily disabled in the concurrency-safe patch. Historical WAC corrections need a dedicated atomic correction workflow.")} style={{ background: "none", border: "none", color: C.t2, cursor: "pointer" }}><Edit3 size={13} /></button>
+                    <button onClick={() => alert("Receipt deletion is temporarily disabled in the concurrency-safe patch. Historical WAC reversals are not safe on the legacy blob model.")} style={{ background: "none", border: "none", color: C.red, cursor: "pointer" }}><Trash2 size={13} /></button>
                   </div>
                 </td>
               </tr>
@@ -2411,6 +2607,12 @@ function InvMgr({ items, sI, atomicUpdateItems, saving }) {
 
 // ═══ ADJUSTMENTS (Shrinkage, Damage, Loss) ═══
 function AdjustMgr({ items, sI }) {
+  // This legacy adjustment component is not mounted by the current app. Keep any accidental
+  // invocation write-dead until physical-count/adjustment semantics are version-bound.
+  const atomicUpdateItems = async () => {
+    alert("Manual stock adjustment is temporarily disabled in the concurrency-safe patch.");
+    return null;
+  };
   const [sel, setSel] = useState("");
   const [selOpt, setSelOpt] = useState("");
   const [qty, setQty] = useState("");
@@ -2422,9 +2624,17 @@ function AdjustMgr({ items, sI }) {
   useEffect(() => { (async () => { setLog(await ld("adj_log", [])); })(); }, []);
   const svLog = useCallback(async (transformFn) => {
     try {
-      const fresh = await ld("adj_log", []);
-      const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
-      if (Array.isArray(result)) { await sv("adj_log", result); setLog(result); }
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const fresh = await ldFresh("adj_log", []);
+        const result = typeof transformFn === "function" ? transformFn(fresh) : transformFn;
+        if (!Array.isArray(result)) return;
+        try {
+          await sv("adj_log", result); setLog(result); return;
+        } catch (e) {
+          if (e instanceof ConflictError) { continue; }
+          throw e;
+        }
+      }
     } catch(e) { console.error("Log save error:", e); }
   }, []);
 
@@ -2436,6 +2646,8 @@ function AdjustMgr({ items, sI }) {
   const reasons = ["Damaged", "Broken", "Lost", "Stolen", "Expired", "Miscounted", "Sample/Giveaway", "Other"];
 
   const adjustOut = () => {
+    alert("Manual stock adjustment is temporarily disabled in the concurrency-safe patch.");
+    return;
     if (!sel || !selOpt || !qty || +qty <= 0) return;
     if (!it) return;
     const curV = variants[selOpt] || { qty: 0, wac: it.wacCost || 0 };
@@ -2547,7 +2759,7 @@ function AdjustMgr({ items, sI }) {
 }
 
 // ═══ TEMPLATE MANAGER ═══
-function TplMgr({ templates, sT, atomicUpdateTemplates, items }) {
+function TplMgr({ templates, atomicUpdateTemplates, items }) {
   const [modal, setModal] = useState(null);
   return (
     <div className="fu">
@@ -2573,12 +2785,12 @@ function TplMgr({ templates, sT, atomicUpdateTemplates, items }) {
           </div>
         );
       })}
-      <TplModal open={modal} onClose={() => setModal(null)} templates={templates} sT={sT} items={items} ed={modal && modal !== "new" ? modal : null} />
+      <TplModal open={modal} onClose={() => setModal(null)} templates={templates} atomicUpdateTemplates={atomicUpdateTemplates} items={items} ed={modal && modal !== "new" ? modal : null} />
     </div>
   );
 }
 
-function TplModal({ open, onClose, templates, sT, items, ed }) {
+function TplModal({ open, onClose, templates, atomicUpdateTemplates, items, ed }) {
   const [name, setName] = useState("");
   const [tplItems, setTplItems] = useState([]);
   const [search, setSearch] = useState("");
@@ -2598,10 +2810,15 @@ function TplModal({ open, onClose, templates, sT, items, ed }) {
   const filt = items.filter((i) => i.active !== false && (!search || i.name.toLowerCase().includes(search.toLowerCase())));
   const iMap = Object.fromEntries(items.map((i) => [i.id, i]));
 
-  const save = () => {
+  const save = async () => {
     if (!name.trim()) return;
-    if (ed) { atomicUpdateTemplates((cur) => cur.map((t) => t.id === ed.id ? { ...t, name: name.trim(), items: tplItems } : t)); }
-    else { atomicUpdateTemplates((cur) => [...cur, { id: uid(), name: name.trim(), items: tplItems }]); }
+    const result = ed
+      ? await atomicUpdateTemplates((cur) => cur.map((t) => t.id === ed.id ? { ...t, name: name.trim(), items: tplItems } : t))
+      : await atomicUpdateTemplates((cur) => [...cur, { id: uid(), name: name.trim(), items: tplItems }]);
+    if (!result) {
+      alert("Template was not saved. Refresh and try again.");
+      return;
+    }
     onClose();
   };
 
@@ -2706,7 +2923,7 @@ function History({ orders, items, user, canViewAll, canEdit, canDelete, view }) 
 }
 
 // ═══ SHRINKAGE / LOSS MANAGER ═══
-function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpdateShrinkage }) {
+function ShrinkageMgr({ items, shrinkLog }) {
   const [counting, setCounting] = useState(false);
   const [counts, setCounts] = useState({}); // { "itemId:option": actualQty }
   const [catF, setCatF] = useState("All");
@@ -2759,49 +2976,7 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
 
   const countBusy = useRef(false);
   const saveCount = async () => {
-    if (countBusy.current) return; // double-click would duplicate shrinkage/found log entries
-    if (!variances.length) return;
-    countBusy.current = true;
-    try {
-    // Adjust inventory for each variance — MUST complete before logging
-    const stockResult = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
-      const v = { ...(it.variants || getVariants(it)) };
-      let changed = false;
-      Object.entries(v).forEach(([opt, vd]) => {
-        const key = it.id + ":" + opt;
-        const actual = counts[key];
-        if (actual === "" || actual === undefined) return;
-        const newQty = Math.max(0, +actual);
-        if (isNaN(newQty)) return;
-        if (newQty !== (vd.qty || 0)) {
-          v[opt] = { ...vd, qty: newQty };
-          changed = true;
-        }
-      });
-      if (!changed) return it;
-      const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-      return { ...it, variants: v, qtyOnHand: totalQ };
-    }));
-    if (!stockResult) { alert("Inventory update failed — count NOT saved."); return; }
-
-    // Log each variance
-    const newEntries = variances.map((vr) => ({
-      id: uid(),
-      itemId: vr.itemId,
-      itemName: vr.itemName + (vr.option !== "_default" ? ` (${vr.option})` : ""),
-      option: vr.option,
-      qty: Math.abs(vr.variance),
-      unitCost: vr.wac,
-      lostValue: Math.abs(vr.variance) * vr.wac,
-      reason: vr.variance < 0 ? "Physical Count - Shrinkage" : "Physical Count - Found",
-      note: `System: ${vr.systemQty}, Actual: ${vr.systemQty + vr.variance}`,
-      date: new Date().toISOString(),
-      type: vr.variance < 0 ? "shrinkage" : "found",
-    }));
-    await atomicUpdateShrinkage((cur) => [...newEntries, ...cur]);
-    setSaved(true);
-    setCounting(false);
-    } finally { countBusy.current = false; }
+    alert("Saving physical counts is temporarily disabled in the concurrency-safe patch. Absolute counts must be bound to the inventory version from count start so receipts/orders during the count cannot be overwritten.");
   };
 
   const totalLost = shrinkLog.filter((r) => r.type !== "found").reduce((s, r) => s + (r.lostValue || 0), 0);
@@ -2949,7 +3124,7 @@ function ShrinkageMgr({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
 }
 
 // ═══ DAMAGE REPORT (for managers + admin) ═══
-function DamageReport({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpdateShrinkage, user }) {
+function DamageReport({ items, shrinkLog, setItemsLocal, setShrinkLocal, user }) {
   const [sel, setSel] = useState("");
   const [selOpt, setSelOpt] = useState("");
   const [qty, setQty] = useState("");
@@ -2981,31 +3156,60 @@ function DamageReport({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
     if (!sel || !selOpt || !qty || +qty <= 0 || !photo) return;
     setSaving(true);
 
-    // Deduct from inventory — MUST complete before logging
-    const curV = variants[selOpt] || { qty: 0, wac: it.wacCost || 0 };
-    const deductQty = Math.min(+qty, curV.qty || 0);
-    const newQty = Math.max(0, (curV.qty || 0) - (+qty));
-    const newVariants = { ...variants, [selOpt]: { ...curV, qty: newQty } };
-    const totalQ = Object.values(newVariants).reduce((s, x) => s + (x.qty || 0), 0);
-    const stockResult = await atomicUpdateItems((cur) => cur.map((i) => i.id === sel ? { ...i, variants: newVariants, qtyOnHand: totalQ } : i));
-    if (!stockResult) { alert("Stock update failed — damage NOT reported."); setSaving(false); return; }
-
-    // Log it
+    // ATOMIC (concurrency patch P0-2): deducting stock AND logging the shrinkage entry must
+    // happen together. Otherwise a failure between them leaves stock deducted with no record
+    // (or a record with no deduction). We fail closed if the deduction would go negative — no
+    // silent Math.max clamp that would hide reporting damage beyond what's on the shelf.
     const displayName = it.name + (selOpt !== "_default" ? ` (${selOpt})` : "");
-    const entry = {
-      id: uid(), itemId: sel, itemName: displayName, option: selOpt,
-      qty: +qty, unitCost: curV.wac || 0, lostValue: (+qty) * (curV.wac || 0),
-      reason, note: note.trim(), photo,
-      reportedBy: user?.name || "Unknown",
-      date: new Date().toISOString(), type: "damage",
-    };
-    await atomicUpdateShrinkage((cur) => [entry, ...cur]);
+    const wantQty = +qty;
+    const damageId = uid();
+    let committed = false;
+    try {
+      const next = await transactBlobs(["items", "shrinkage"], { items: [], shrinkage: [] }, (cur) => {
+        const curItems = cur.items || [];
+        const snapIt = curItems.find(i => i.id === sel);
+        if (!snapIt) throw new Error("ITEM_NOT_FOUND");
+        const v = { ...getVariants(snapIt) };
+        const cv = v[selOpt];
+        if (!cv) throw new Error("VARIANT_NOT_FOUND:" + selOpt);
+        const after = Number(cv.qty || 0) - wantQty;
+        if (after < 0) throw new Error("INSUFFICIENT_STOCK:" + selOpt);
+        v[selOpt] = { ...cv, qty: after };
+        const totalQ = Object.values(v).reduce((s, x) => s + Number(x.qty || 0), 0);
+        const nextItems = curItems.map(i => i.id === sel ? { ...i, variants: v, qtyOnHand: totalQ } : i);
+        const entry = {
+          id: damageId, itemId: sel, itemName: displayName, option: selOpt,
+          qty: wantQty, unitCost: cv.wac || 0, lostValue: wantQty * (cv.wac || 0),
+          reason, note: note.trim(), photo,
+          reportedBy: user?.name || "Unknown",
+          date: new Date().toISOString(), type: "damage",
+        };
+        return { items: nextItems, shrinkage: [entry, ...(cur.shrinkage || [])] };
+      });
+      setItemsLocal(next.items); setShrinkLocal(next.shrinkage); committed = true;
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (e instanceof AmbiguousWriteError) {
+        try {
+          const freshShrink = await ldFresh("shrinkage", []);
+          if ((freshShrink || []).some(x => x.id === damageId)) {
+            setItemsLocal(await ldFresh("items", [])); setShrinkLocal(freshShrink); committed = true;
+          } else { alert("The damage report was not found after the network error. Refresh before retrying."); setSaving(false); return; }
+        } catch (verifyErr) {
+          alert("DAMAGE OUTCOME UNKNOWN. Do NOT submit this damage again yet. Refresh and check Reported Damage first."); setSaving(false); return;
+        }
+      } else if (e && e.name === "ConflictError") { alert("Inventory changed while reporting this damage. Nothing was changed. Refresh and try again."); setSaving(false); return; }
+      else if (msg.startsWith("INSUFFICIENT_STOCK")) { alert("Cannot report more damage than is on the shelf for this option. Nothing was changed."); setSaving(false); return; }
+      else if (msg.startsWith("VARIANT_NOT_FOUND") || msg === "ITEM_NOT_FOUND") { alert("This item/option no longer exists. Nothing was changed. Refresh."); setSaving(false); return; }
+      else { alert("Damage report could not be saved. Nothing was changed. Check your internet."); setSaving(false); return; }
+    }
     setSaving(false);
     setDone(true);
     setTimeout(() => {
       setDone(false); setSel(""); setSelOpt(""); setQty(""); setReason("Damaged"); setNote(""); setPhoto(null); setPhotoName("");
     }, 2500);
   };
+
 
   const canSubmit = sel && selOpt && qty && +qty > 0 && photo && note.trim();
 
@@ -3119,7 +3323,7 @@ function DamageReport({ items, sI, atomicUpdateItems, shrinkLog, sSh, atomicUpda
 }
 
 // ═══ DAMAGE GALLERY (admin only) ═══
-function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomicUpdateItems }) {
+function DamageGallery({ shrinkLog, setShrinkLocal, items, setItemsLocal }) {
   const [filter, setFilter] = useState("all"); // all, damage, shrinkage, found
   const [search, setSearch] = useState("");
   const [enlarged, setEnlarged] = useState(null);
@@ -3132,45 +3336,26 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
   const REASONS = ["Damaged", "Broken", "Weather Damage", "Theft", "Defective", "Water Damage", "Missing", "Other"];
 
   const deleteDamage = async (r) => {
-    // Restore inventory — MUST complete before removing log
-    const it = items.find((i) => i.id === r.itemId);
-    if (it && r.qty) {
-      const v = { ...(it.variants || getVariants(it)) };
-      const opt = r.option || "_default";
-      const curV = v[opt] || { qty: 0, wac: r.unitCost || 0 };
-      v[opt] = { ...curV, qty: (curV.qty || 0) + r.qty };
-      const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-      const stockResult = await atomicUpdateItems((cur) => cur.map((i) => i.id === r.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
-      if (!stockResult) { alert("Stock restoration failed — damage record NOT deleted."); return; }
-    }
-    await atomicUpdateShrinkage((cur) => cur.filter((x) => x.id !== r.id));
-    setDeleteWarn(null); setEnlarged(null);
+    alert("Damage report deletion is temporarily disabled in the concurrency-safe patch. Use a controlled inventory correction instead."); return;
+    let next;
+    try { next = await transactBlobs(["items","shrinkage"],{items:[],shrinkage:[]},cur=>{
+      const rec=(cur.shrinkage||[]).find(x=>x.id===r.id); if(!rec) throw new Error("DAMAGE_NOT_FOUND"); let found=false;
+      const nextItems=(cur.items||[]).map(it=>{ if(it.id!==rec.itemId)return it; found=true; const v={...getVariants(it)},opt=rec.option||"_default",cv=v[opt]; if(!cv)throw new Error("VARIANT_NOT_FOUND"); v[opt]={...cv,qty:Number(cv.qty||0)+Number(rec.qty||0)}; return {...it,variants:v,qtyOnHand:Object.values(v).reduce((a,x)=>a+Number(x.qty||0),0)}; });
+      if(!found)throw new Error("ITEM_NOT_FOUND"); return {items:nextItems,shrinkage:(cur.shrinkage||[]).filter(x=>x.id!==rec.id)};
+    }); } catch(e){ alert("Damage delete failed. Nothing was changed. Refresh and try again."); return; }
+    setItemsLocal(next.items); setShrinkLocal(next.shrinkage); setDeleteWarn(null); setEnlarged(null);
   };
 
-  const startEdit = (r) => {
-    setEditing(r); setEditQty(String(r.qty || "")); setEditReason(r.reason || "Damaged"); setEditNote(r.note || "");
-  };
-
+  const startEdit = (r) => { setEditing(r); setEditQty(String(r.qty||"")); setEditReason(r.reason||"Damaged"); setEditNote(r.note||""); };
   const saveEdit = async () => {
-    if (!editing) return;
-    const oldQty = editing.qty || 0;
-    const newQty = Math.max(0, +editQty || 0);
-    if (isNaN(newQty)) { alert("Invalid quantity."); return; }
-    const diff = newQty - oldQty;
-    if (diff !== 0) {
-      const it = items.find((i) => i.id === editing.itemId);
-      if (it) {
-        const v = { ...(it.variants || getVariants(it)) };
-        const opt = editing.option || "_default";
-        const curV = v[opt] || { qty: 0, wac: editing.unitCost || 0 };
-        v[opt] = { ...curV, qty: Math.max(0, (curV.qty || 0) - diff) };
-        const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-        const stockResult = await atomicUpdateItems((cur) => cur.map((i) => i.id === editing.itemId ? { ...i, variants: v, qtyOnHand: totalQ } : i));
-        if (!stockResult) { alert("Stock update failed — edit NOT saved."); return; }
-      }
-    }
-    await atomicUpdateShrinkage((cur) => cur.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote, lostValue: newQty * (x.unitCost || 0) } : x));
-    setEditing(null); setEnlarged(null);
+    alert("Damage report editing is temporarily disabled in the concurrency-safe patch. Use a controlled inventory correction instead."); return;
+    if(!editing)return; const newQty=Number(editQty); if(!(newQty>0)||!Number.isFinite(newQty)){alert("Quantity must be greater than zero.");return;} let next;
+    try { next=await transactBlobs(["items","shrinkage"],{items:[],shrinkage:[]},cur=>{
+      const rec=(cur.shrinkage||[]).find(x=>x.id===editing.id); if(!rec)throw new Error("DAMAGE_NOT_FOUND"); const diff=newQty-Number(rec.qty||0); let found=false;
+      const nextItems=(cur.items||[]).map(it=>{if(it.id!==rec.itemId)return it;found=true;const v={...getVariants(it)},opt=rec.option||"_default",cv=v[opt];if(!cv)throw new Error("VARIANT_NOT_FOUND");const after=Number(cv.qty||0)-diff;if(after<0)throw new Error("INSUFFICIENT_STOCK");v[opt]={...cv,qty:after};return {...it,variants:v,qtyOnHand:Object.values(v).reduce((a,x)=>a+Number(x.qty||0),0)};}); if(!found)throw new Error("ITEM_NOT_FOUND");
+      return {items:nextItems,shrinkage:(cur.shrinkage||[]).map(x=>x.id===rec.id?{...x,qty:newQty,reason:editReason,note:editNote.trim(),lostValue:newQty*Number(x.unitCost||0)}:x)};
+    }); } catch(e){alert(String(e?.message||e)==="INSUFFICIENT_STOCK"?"Cannot increase damage beyond current stock. Nothing was changed.":"Damage edit failed. Nothing was changed. Refresh and try again.");return;}
+    setItemsLocal(next.items);setShrinkLocal(next.shrinkage);setEditing(null);setEnlarged(null);
   };
 
   const incidents = shrinkLog.filter((r) => {
@@ -3280,21 +3465,7 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
             <p style={{ color: C.grn, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>This will remove the report and restore {deleteWarn.qty} unit{deleteWarn.qty !== 1 ? "s" : ""} back to inventory.</p>
             <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
               <button onClick={() => setDeleteWarn(null)} style={{ ...bS, padding: "12px 28px", fontSize: 14 }}>Cancel</button>
-              <button onClick={() => {
-                // Restore inventory
-                const r = deleteWarn;
-                const opt = r.option || "_default";
-                atomicUpdateItems((cur) => cur.map((it) => {
-                  if (it.id !== r.itemId) return it;
-                  const v = { ...(it.variants || getVariants(it)) };
-                  const curV = v[opt] || { qty: 0, wac: it.wacCost || 0 };
-                  v[opt] = { ...curV, qty: (curV.qty || 0) + (r.qty || 0) };
-                  const totalQ = Object.values(v).reduce((s, x) => s + (x.qty || 0), 0);
-                  return { ...it, variants: v, qtyOnHand: totalQ };
-                }));
-                atomicUpdateShrinkage((cur) => cur.filter((x) => x.id !== r.id));
-                setDeleteWarn(null);
-              }} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Restore Inventory</button>
+              <button onClick={() => deleteDamage(deleteWarn)} style={{ ...bD, padding: "12px 28px", fontSize: 14 }}><Trash2 size={14} /> Delete & Restore Inventory</button>
             </div>
           </div>
         </Modal>
@@ -3309,12 +3480,7 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
           {editing.photo && <div style={{ marginBottom: 12 }}><img src={editing.photo} alt="" style={{ maxHeight: 150, borderRadius: 6 }} /></div>}
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button onClick={() => setEditing(null)} style={bS}>Cancel</button>
-            <button onClick={() => {
-              const newQty = +editQty || editing.qty;
-              const newCost = (editing.unitCost || 0);
-              atomicUpdateShrinkage((cur) => cur.map((x) => x.id === editing.id ? { ...x, qty: newQty, reason: editReason, note: editNote.trim(), lostValue: newQty * newCost } : x));
-              setEditing(null);
-            }} style={bP}><Check size={14} /> Save Changes</button>
+            <button onClick={saveEdit} style={bP}><Check size={14} /> Save Changes</button>
           </div>
         </Modal>
       )}
@@ -3323,7 +3489,7 @@ function DamageGallery({ shrinkLog, sSh, atomicUpdateShrinkage, items, sI, atomi
 }
 
 // ═══ SUPPLIER COST ═══
-function SupplierCost({ items, sI, atomicUpdateItems }) {
+function SupplierCost({ items, atomicUpdateItems }) {
   const [edits, setEdits] = useState({}); // { itemId: supplierCostValue }
   const [saved, setSaved] = useState(false);
   const [catF, setCatF] = useState("All");
@@ -3353,18 +3519,15 @@ function SupplierCost({ items, sI, atomicUpdateItems }) {
     setSaved(false);
   };
 
-  const saveAll = () => {
+  const saveAll = async () => {
     if (!hasChanges) return;
     const editsCopy = { ...edits };
-    atomicUpdateItems((freshItems) => freshItems.map((it) => {
-      if (editsCopy[it.id] !== undefined) {
-        return { ...it, supplierCost: +editsCopy[it.id] || 0 };
-      }
+    const result = await atomicUpdateItems((freshItems) => freshItems.map((it) => {
+      if (editsCopy[it.id] !== undefined) return { ...it, supplierCost: +editsCopy[it.id] || 0 };
       return it;
     }));
-    setEdits({});
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (!result) { alert("Supplier-cost changes were not saved. Refresh and try again."); return; }
+    setEdits({}); setSaved(true); setTimeout(() => setSaved(false), 2000);
   };
 
   const totalOurValue = filtered.reduce((s, it) => s + totalStock(it) * overallWAC(it), 0);
@@ -3467,7 +3630,7 @@ function SupplierCost({ items, sI, atomicUpdateItems }) {
 }
 
 // ═══ JOB PROFIT TRACKER ═══
-function JobTracker({ jobs, sJ, atomicUpdateJobs, orders, items, nav }) {
+function JobTracker({ jobs, atomicUpdateJobs, orders, items, nav }) {
   const [view, setView] = useState("list"); // list, detail, reports, history
   const [editJob, setEditJob] = useState(null);
   const [filterStatus, setFilterStatus] = useState("all");
@@ -4211,13 +4374,18 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
   const removeInvLogEntry = async (entryId) => {
     if (detBusy) return false; setDetBusy(entryId);
     try {
-      const fresh = await ld("inv_log", []);
-      const next = fresh.filter(e => e.id !== entryId);
-      const sig = JSON.stringify(next);
-      for (let a = 0; a < 2; a++) {
-        await sv("inv_log", next);
-        const rb = await ld("inv_log", null);
-        if (rb !== null && JSON.stringify(rb) === sig) { setInvLog(next); return true; }
+      for (let a = 0; a < 5; a++) {
+        const fresh = await ldFresh("inv_log", []);
+        const next = fresh.filter(e => e.id !== entryId);
+        const sig = JSON.stringify(next);
+        try {
+          await sv("inv_log", next);
+          const rb = await ld("inv_log", null);
+          if (rb !== null && JSON.stringify(rb) === sig) { setInvLog(next); return true; }
+        } catch (e) {
+          if (e instanceof ConflictError) { continue; }
+          throw e;
+        }
       }
       alert("Could not remove log entry — check your internet."); return false;
     } finally { setDetBusy(null); }
@@ -4230,6 +4398,7 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
   const lineWords = (lines, im) => (lines||[]).map(l => `${l.qty}× ${(im[l.itemId]?.name)||"Unknown item"}${l.option && l.option!=="_default" ? " ("+l.option+")" : ""}`);
   // One-click stock restoration for Detector 3 — idempotent via flag on the order, fresh-verified
   const restoreOrderStock = async (orderId, timesWanted, flagField) => {
+    alert("Inventory Rescue stock-fix writes are temporarily disabled in the concurrency-safe patch. Investigate here, then use a controlled correction after physical verification."); return false;
     if (detBusy) return false; setDetBusy(orderId + flagField);
     try {
       let fresh;
@@ -5577,6 +5746,7 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
         const advance = (result) => { setCountVals({}); setRescue(r => { const results=[...r.results, ...(result?[result]:[])]; const nidx=r.idx+1; return nidx>=r.queue.length ? {...r,results,phase:"done"} : {...r,results,idx:nidx}; }); };
 
         const saveVerify = async (it, L) => {
+          alert("Inventory Rescue shelf-count writes are temporarily disabled because an absolute count can overwrite legitimate movements that occur during the count."); return;
           if (busy) return; setDetBusy("verify:"+it.id);
           try {
             const deltas = [];
@@ -5746,7 +5916,7 @@ function Reports({ orders, items, shrinkLog, atomicUpdateItems, auditDeleteOrder
     </div>
   );
 }
-function SettingsPage({ users, sU, atomicUpdateUsers, me, items, orders, templates, shrinkLog }) {
+function SettingsPage({ users, atomicUpdateUsers, me, items, orders, templates, shrinkLog }) {
   const ROLES = ["admin", "manager", "user"];
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [editUser, setEditUser] = useState(null);
@@ -5783,8 +5953,9 @@ function SettingsPage({ users, sU, atomicUpdateUsers, me, items, orders, templat
     setExporting(false);
   };
 
-  const deleteUser = (u) => {
-    atomicUpdateUsers((cur) => cur.filter((x) => x.id !== u.id));
+  const deleteUser = async (u) => {
+    const result = await atomicUpdateUsers((cur) => cur.filter((x) => x.id !== u.id));
+    if (!result) { alert("User was not deleted. Refresh and try again."); return; }
     setDeleteConfirm(null);
   };
 
@@ -5792,15 +5963,26 @@ function SettingsPage({ users, sU, atomicUpdateUsers, me, items, orders, templat
     setEditUser(u); setEditName(u.name); setEditEmail(u.email); setEditRole(u.role); setResetPw("");
     setEditPerms(u.role === "admin" ? { ...ALL_PERMS_ON } : { ...DEFAULT_PERMS, ...(u.perms || {}) });
   };
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editName.trim() || !editEmail.trim()) return;
-    atomicUpdateUsers((cur) => cur.map((x) => {
+    const originalSig = JSON.stringify({
+      name: editUser.name || "", email: (editUser.email || "").toLowerCase(), role: editUser.role || "user",
+      perms: editUser.role === "admin" ? null : (editUser.perms || {})
+    });
+    const result = await atomicUpdateUsers((cur) => cur.map((x) => {
       if (x.id !== editUser.id) return x;
+      const freshSig = JSON.stringify({
+        name: x.name || "", email: (x.email || "").toLowerCase(), role: x.role || "user",
+        perms: x.role === "admin" ? null : (x.perms || {})
+      });
+      if (freshSig !== originalSig) throw new Error("USER_EDIT_STALE");
       const updated = { ...x, name: editName.trim(), email: editEmail.trim().toLowerCase(), role: editRole };
       if (editRole !== "admin") updated.perms = { ...editPerms };
+      else delete updated.perms;
       if (resetPw.trim().length >= 4) updated.pw = hP(resetPw);
       return updated;
     }));
+    if (!result) { alert("User changed while this edit window was open, or the save failed. Nothing was overwritten. Refresh and re-enter the change."); return; }
     setEditUser(null);
   };
   const togglePerm = (key) => {
@@ -5816,11 +5998,13 @@ function SettingsPage({ users, sU, atomicUpdateUsers, me, items, orders, templat
   const pendingUsers = users.filter((u) => u.role === "pending");
   const activeUsers = users.filter((u) => u.role !== "pending");
 
-  const approveUser = (u) => {
-    atomicUpdateUsers((cur) => cur.map((x) => x.id === u.id ? { ...x, role: "user", perms: { ...DEFAULT_PERMS, edit_orders: true } } : x));
+  const approveUser = async (u) => {
+    const result = await atomicUpdateUsers((cur) => cur.map((x) => x.id === u.id ? { ...x, role: "user", perms: { ...DEFAULT_PERMS, edit_orders: true } } : x));
+    if (!result) alert("User approval was not saved. Refresh and try again.");
   };
-  const rejectUser = (u) => {
-    atomicUpdateUsers((cur) => cur.filter((x) => x.id !== u.id));
+  const rejectUser = async (u) => {
+    const result = await atomicUpdateUsers((cur) => cur.filter((x) => x.id !== u.id));
+    if (!result) alert("User rejection was not saved. Refresh and try again.");
   };
 
   const permCount = (u) => {
