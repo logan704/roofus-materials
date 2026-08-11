@@ -1770,6 +1770,9 @@ function Approvals({ orders, updateOrder, items, view, saving, syncPaused, delet
         }
 
         // Apply the movement with NO clamping — any shortage fails the whole transaction.
+        // Collect EVERY short line first so the message can name all of them (item, option,
+        // needed vs on-hand), rather than stopping at the first shortage.
+        const shortages = [];
         const nextItems = curItems.map((it) => {
           const v = { ...(getVariants(it)) };
           let touched = false;
@@ -1780,14 +1783,19 @@ function Approvals({ orders, updateOrder, items, view, saving, syncPaused, delet
             if (iid !== it.id) continue;
             const cur2 = v[opt];
             if (!cur2) throw new Error("VARIANT_NOT_FOUND:" + k);
-            const after = Number(cur2.qty || 0) + dir * qty;
-            if (after < 0) throw new Error("INSUFFICIENT_STOCK:" + k);
+            const onHand = Number(cur2.qty || 0);
+            const after = onHand + dir * qty;
+            if (after < 0) {
+              const label = (it.name || iid) + (opt !== "_default" ? " (" + opt + ")" : "");
+              shortages.push(label + " needs " + qty + ", only " + onHand + " on hand");
+            }
             v[opt] = { ...cur2, qty: after };
             touched = true;
           }
           if (!touched) return it;
           return { ...it, variants: v, qtyOnHand: Object.values(v).reduce((s, x) => s + Number(x.qty || 0), 0) };
         });
+        if (shortages.length) throw new Error("INSUFFICIENT_STOCK:::" + shortages.join(" | "));
 
         const approvedOrder = { ...snapOrd, lines, status: "approved", approvedDate: new Date().toISOString(), approvalOpId };
         committedApproved = approvedOrder;
@@ -1818,7 +1826,9 @@ function Approvals({ orders, updateOrder, items, view, saving, syncPaused, delet
         alert("This order changed while you were approving it (someone else may have edited or approved it). Nothing was changed. Please refresh and try again.");
         return;
       } else if (msg.startsWith("INSUFFICIENT_STOCK")) {
-        alert("INSUFFICIENT STOCK — cannot approve this order. Nothing was changed. Receive more inventory or edit the order first.");
+        const detail = msg.includes(":::") ? msg.split(":::")[1] : "";
+        const lines = detail ? detail.split(" | ").map((s) => "• " + s).join("\n") : "";
+        alert("INSUFFICIENT STOCK — cannot approve this order. Nothing was changed.\n\n" + (lines ? lines + "\n\n" : "") + "Receive more inventory or edit the order first.");
       } else if (msg.startsWith("EXCESS_RETURN")) {
         alert("RETURN BLOCKED — this exceeds the quantity still returnable for the linked job. Nothing was changed.");
       } else if (msg === "RETURN_NOT_LINKED_TO_JOB") {
